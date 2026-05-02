@@ -2,7 +2,6 @@
 ui/settings_tab.py
 ------------------
 Вкладка «Настройки».
-Включает: пути, автозапуск, + блок проверки/обновления Core с отображением версий.
 """
 
 import customtkinter as ctk
@@ -10,7 +9,7 @@ from pathlib import Path
 from ui.theme import theme
 from core.manager import ZapretManager
 from core.updater import (
-    GUI_VERSION, FLOWSEAL_REPO,
+    GUI_VERSION, FLOWZAP_REPO as FLOWSEAL_REPO,
     get_latest_release, get_installed_core_version,
     download_and_install_core,
 )
@@ -23,7 +22,7 @@ class SettingsTab(ctk.CTkFrame):
         super().__init__(parent, fg_color=p.bg_root, corner_radius=0)
         self.manager = manager
         self._config = config or {}
-        self._repo = self._config.get("updater", {}).get("repo", "Flowseal/zapret-discord-youtube")
+        self._repo = self._config.get("updater", {}).get("repo", "xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy")
         self._app_dir = Path(__file__).parent.parent
         self._build()
 
@@ -73,9 +72,38 @@ class SettingsTab(ctk.CTkFrame):
             font=(t.family_ui, t.size_md), text_color=p.text_primary,
         ).pack(anchor="w", padx=m.padding_md, pady=m.padding_md)
 
+        # ── Стиль градиентной полоски ─────────
+        bar_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        bar_card.grid(row=3, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
+
+        ctk.CTkLabel(
+            bar_card, text="Стиль полоски",
+            font=(t.family_ui, t.size_md, "bold"), text_color=p.text_primary,
+        ).pack(anchor="w", padx=m.padding_md, pady=(m.padding_md, 4))
+
+        ctk.CTkLabel(
+            bar_card, text="Анимированная полоска вверху окна",
+            font=(t.family_ui, t.size_xs), text_color=p.text_muted,
+        ).pack(anchor="w", padx=m.padding_md, pady=(0, 8))
+
+        self._bar_style_var = ctk.StringVar(
+            value=self._config.get("ui", {}).get("bar_style", "default")
+        )
+        ctk.CTkSegmentedButton(
+            bar_card,
+            values=["default", "candy", "rainbow", "none"],
+            variable=self._bar_style_var,
+            selected_color=p.accent,
+            selected_hover_color=p.accent_dim,
+            fg_color=p.bg_input,
+            unselected_color=p.bg_input,
+            text_color=p.text_secondary,
+            command=self._on_bar_style_change,
+        ).pack(anchor="w", padx=m.padding_md, pady=(0, m.padding_md))
+
         # ── Обновления Core ───────────────────
         update_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
-        update_card.grid(row=3, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
+        update_card.grid(row=4, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
         update_card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
@@ -84,7 +112,6 @@ class SettingsTab(ctk.CTkFrame):
         ).grid(row=0, column=0, columnspan=3, padx=m.padding_md,
                pady=(m.padding_md, 8), sticky="w")
 
-        # GUI версия
         ctk.CTkLabel(
             update_card, text="GUI:",
             font=(t.family_ui, t.size_sm), text_color=p.text_secondary,
@@ -95,7 +122,6 @@ class SettingsTab(ctk.CTkFrame):
             font=(t.family_ui, t.size_sm, "bold"), text_color=p.text_primary,
         ).grid(row=1, column=1, padx=0, pady=2, sticky="w")
 
-        # Core версия
         ctk.CTkLabel(
             update_card, text="Core:",
             font=(t.family_ui, t.size_sm), text_color=p.text_secondary,
@@ -109,7 +135,6 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._core_ver_label.grid(row=2, column=1, padx=0, pady=2, sticky="w")
 
-        # Последняя доступная версия
         ctk.CTkLabel(
             update_card, text="Доступно:",
             font=(t.family_ui, t.size_sm), text_color=p.text_secondary,
@@ -121,7 +146,6 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._latest_ver_label.grid(row=3, column=1, padx=0, pady=2, sticky="w")
 
-        # Кнопки
         btn_row = ctk.CTkFrame(update_card, fg_color="transparent")
         btn_row.grid(row=4, column=0, columnspan=3,
                      padx=m.padding_md, pady=(8, m.padding_md), sticky="w")
@@ -149,7 +173,6 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._btn_update.pack(side="left")
 
-        # Статус обновления
         self._update_status = ctk.CTkLabel(
             update_card, text="",
             font=(t.family_ui, t.size_xs), text_color=p.text_muted,
@@ -165,7 +188,16 @@ class SettingsTab(ctk.CTkFrame):
             text_color="#000000", height=m.button_height,
             corner_radius=m.corner_radius,
             command=self._save,
-        ).grid(row=4, column=0, sticky="w", padx=m.padding_lg, pady=(0, m.padding_lg))
+        ).grid(row=5, column=0, sticky="w", padx=m.padding_lg, pady=(0, m.padding_lg))
+
+    # ─────────────────────────────────────────
+    #  Полоска
+    # ─────────────────────────────────────────
+
+    def _on_bar_style_change(self, value: str) -> None:
+        root = self.winfo_toplevel()
+        if hasattr(root, "set_bar_style"):
+            root.set_bar_style(value)
 
     # ─────────────────────────────────────────
     #  Обновления
@@ -182,9 +214,12 @@ class SettingsTab(ctk.CTkFrame):
 
         threading.Thread(target=_worker, daemon=True, name="update-check").start()
 
-    def _on_check_done(self, latest: str | None) -> None:
+    def _on_check_done(self, latest) -> None:
         p = theme.palette
         self._btn_check.configure(state="normal", text="Проверить обновления")
+
+        if isinstance(latest, dict):
+            latest = latest.get("tag_name")
 
         if latest is None:
             self._update_status.configure(
@@ -236,7 +271,6 @@ class SettingsTab(ctk.CTkFrame):
 
         if success:
             self._update_status.configure(text=f"✓ {message}", text_color=p.success)
-            # Обновляем отображение версии
             installed = get_installed_core_version(self._app_dir / "zapret")
             if installed:
                 self._core_ver_label.configure(text=installed)
@@ -247,10 +281,10 @@ class SettingsTab(ctk.CTkFrame):
     # ─────────────────────────────────────────
 
     def on_activate(self) -> None:
-        """Вызывается при переходе на вкладку — обновляем версию Core."""
         installed = get_installed_core_version(self._app_dir / "zapret")
         self._core_ver_label.configure(text=installed if installed else "неизвестно")
 
     def _save(self) -> None:
-        # TODO: сохранить в config.toml через tomli_w
-        pass
+        root = self.winfo_toplevel()
+        if hasattr(root, "save_config"):
+            root.save_config()

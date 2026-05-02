@@ -7,6 +7,7 @@ ui/main_window.py
 """
 
 import customtkinter as ctk
+import tkinter as tk
 from typing import Dict, Callable, Optional
 from pathlib import Path
 
@@ -32,11 +33,6 @@ NAV_ICONS: Dict[str, str] = {
 # ─────────────────────────────────────────────
 
 class NavButton(ctk.CTkButton):
-    """
-    Кнопка боковой панели. Показывает иконку + текст,
-    подсвечивается акцентом при активности.
-    """
-
     def __init__(
         self,
         parent: ctk.CTkFrame,
@@ -65,7 +61,6 @@ class NavButton(ctk.CTkButton):
         self._active = False
 
     def set_active(self, active: bool) -> None:
-        """Включить/выключить активное состояние."""
         p = theme.palette
         t = theme.typography
         self._active = active
@@ -88,8 +83,6 @@ class NavButton(ctk.CTkButton):
 # ─────────────────────────────────────────────
 
 class StatusBadge(ctk.CTkFrame):
-    """Маленький бейдж с цветной точкой и текстом состояния."""
-
     _STATE_LABELS: Dict[ServiceState, tuple[str, str]] = {
         ServiceState.STOPPED:  ("●  Остановлен", "#ef4444"),
         ServiceState.STARTING: ("●  Запускается", "#f59e0b"),
@@ -122,19 +115,6 @@ class StatusBadge(ctk.CTkFrame):
 # ─────────────────────────────────────────────
 
 class MainWindow(ctk.CTk):
-    """
-    Корневое окно приложения FlowZap.
-
-    Структура
-    ---------
-    ┌──────────────────────────────────────────┐
-    │  Sidebar (200px)  │  Content Area        │
-    │  ─ Logo           │  (активная вкладка)  │
-    │  ─ Nav buttons    │                      │
-    │  ─ Status badge   │                      │
-    │  ─ Version        │                      │
-    └──────────────────────────────────────────┘
-    """
 
     def __init__(self, manager: ZapretManager, config: dict = None, config_path=None) -> None:
         super().__init__()
@@ -142,7 +122,6 @@ class MainWindow(ctk.CTk):
         self.config_path = config_path
         self.manager = manager
 
-        # ── Настройки окна ────────────────────
         p = theme.palette
         m = theme.metrics
 
@@ -152,40 +131,125 @@ class MainWindow(ctk.CTk):
         self.configure(fg_color=p.bg_root)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # ── Сетка: sidebar | content ──────────
         self.grid_columnconfigure(0, weight=0, minsize=m.sidebar_width)
         self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=0)  # полоска
+        self.grid_rowconfigure(1, weight=1)  # контент
 
-        # ── Инициализация словарей ДО sidebar ─
-        # (sidebar обращается к _nav_buttons при построении)
         self._tabs:        Dict[str, ctk.CTkFrame] = {}
         self._nav_buttons: Dict[str, NavButton]    = {}
         self._active_tab:  str = ""
 
+        # ── Градиентная полоска ───────────────
+        self._bar_canvas = tk.Canvas(
+            self, height=3, bd=0, highlightthickness=0, bg=p.bg_root
+        )
+        self._bar_canvas.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self._bar_offset = 0.0
+        self._bar_style  = self.config.get("ui", {}).get("bar_style", "default")
+        self.after(16, self._animate_bar)
+
         # ── Sidebar ───────────────────────────
         self._sidebar = self._build_sidebar()
-        self._sidebar.grid(row=0, column=0, sticky="nsew")
+        self._sidebar.grid(row=1, column=0, sticky="nsew")
 
         # ── Content area ──────────────────────
         self._content = ctk.CTkFrame(self, fg_color=p.bg_root, corner_radius=0)
-        self._content.grid(row=0, column=1, sticky="nsew")
+        self._content.grid(row=1, column=1, sticky="nsew")
         self._content.grid_columnconfigure(0, weight=1)
         self._content.grid_rowconfigure(0, weight=1)
 
-        # ── Подключить коллбэк менеджера ──────
         self.manager.zapret.on_state_change = self._on_state_change
 
-        # ── Показать первую вкладку ───────────
         self._load_tabs()
         self.show_tab("dashboard")
+
+    # ─────────────────────────────────────────
+    #  Градиентная полоска
+    # ─────────────────────────────────────────
+
+    def set_bar_style(self, style: str) -> None:
+        self._bar_style = style
+        if "ui" not in self.config:
+            self.config["ui"] = {}
+        self.config["ui"]["bar_style"] = style
+        self.save_config()
+
+    def _animate_bar(self) -> None:
+        try:
+            c = self._bar_canvas
+            w = c.winfo_width()
+            if w < 2:
+                self.after(16, self._animate_bar)
+                return
+
+            style = self._bar_style
+            off   = self._bar_offset
+
+            def hsv_to_hex(h):
+                h = h % 1.0
+                i = int(h * 6)
+                f = h * 6 - i
+                q = 1 - f
+                combos = [
+                    (1, f, 0), (q, 1, 0), (0, 1, f),
+                    (0, q, 1), (f, 0, 1), (1, 0, q),
+                ]
+                r, g, b = combos[i % 6]
+                return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+            def lerp_hex(stops, t):
+                t = t % 1.0
+                n = len(stops) - 1
+                seg = t * n
+                i = int(seg)
+                frac = seg - i
+                a = stops[i % len(stops)]
+                b = stops[(i + 1) % len(stops)]
+                ar, ag, ab = int(a[1:3], 16), int(a[3:5], 16), int(a[5:7], 16)
+                br, bg, bb = int(b[1:3], 16), int(b[3:5], 16), int(b[5:7], 16)
+                r = int(ar + (br - ar) * frac)
+                g = int(ag + (bg - ag) * frac)
+                b2 = int(ab + (bb - ab) * frac)
+                return f"#{r:02x}{g:02x}{b2:02x}"
+
+            STYLES = {
+                "default": ["#00b4d8", "#00d4a8", "#00b4d8"],
+                "candy":   ["#ff50b4", "#a050ff", "#50c8ff", "#ff50b4"],
+                "rainbow": None,
+                "none":    None,
+            }
+
+            c.delete("bar")
+
+            if style == "none":
+                self.after(16, self._animate_bar)
+                return
+
+            stops = STYLES.get(style)
+            step  = max(1, w // 120)
+
+            for x in range(0, w, step):
+                t = (x / w + off) % 1.0
+                if style == "rainbow":
+                    color = hsv_to_hex(t)
+                else:
+                    color = lerp_hex(stops, t)
+                x2 = min(x + step + 1, w)
+                c.create_rectangle(x, 0, x2, 3, fill=color, outline="", tags="bar")
+
+            self._bar_offset = (off + 0.0015) % 1.0
+
+        except Exception:
+            pass
+
+        self.after(16, self._animate_bar)
 
     # ─────────────────────────────────────────
     #  Сохранение конфига
     # ─────────────────────────────────────────
 
     def save_config(self) -> None:
-        """Сохранить config в config.toml."""
         if not self.config_path:
             return
         try:
@@ -233,7 +297,6 @@ class MainWindow(ctk.CTk):
         )
         sidebar.pack_propagate(False)
 
-        # Логотип
         logo_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
         logo_frame.pack(fill="x", padx=m.padding_md, pady=(m.padding_lg, m.padding_md))
 
@@ -251,10 +314,8 @@ class MainWindow(ctk.CTk):
             text_color=p.text_muted,
         ).pack(side="left", pady=(6, 0))
 
-        # Разделитель
         ctk.CTkFrame(sidebar, height=1, fg_color=p.border).pack(fill="x", padx=m.padding_md)
 
-        # Навигационные кнопки
         nav_items = [
             ("dashboard",  "Главная",    NAV_ICONS["dashboard"]),
             ("parameters", "Параметры",  NAV_ICONS["parameters"]),
@@ -276,17 +337,13 @@ class MainWindow(ctk.CTk):
             btn.pack(fill="x", pady=2)
             self._nav_buttons[tab_id] = btn
 
-        # Распорка — статус и версия уйдут вниз
         ctk.CTkFrame(sidebar, fg_color="transparent").pack(fill="both", expand=True)
 
-        # Разделитель
         ctk.CTkFrame(sidebar, height=1, fg_color=p.border).pack(fill="x", padx=m.padding_md)
 
-        # Статус-бейдж
         self._status_badge = StatusBadge(sidebar)
         self._status_badge.pack(padx=m.padding_md, pady=(m.padding_md, 4))
 
-        # Версия
         ctk.CTkLabel(
             sidebar,
             text="v0.1.0",
@@ -312,7 +369,7 @@ class MainWindow(ctk.CTk):
                 "dashboard":  (DashboardTab,  {"manager": self.manager, "config": self.config}),
                 "parameters": (ParametersTab, {"manager": self.manager, "config": self.config}),
                 "logs":       (LogsTab,       {"manager": self.manager}),
-                "updates":    (UpdatesTab,    {}),
+                "updates":    (UpdatesTab,    {"config": self.config}),
                 "settings":   (SettingsTab,   {"manager": self.manager, "config": self.config}),
             }
 
@@ -335,21 +392,17 @@ class MainWindow(ctk.CTk):
             logging.getLogger(__name__).error(f"ОШИБКА В _load_tabs:\n{traceback.format_exc()}")
 
     def show_tab(self, tab_id: str) -> None:
-        """Показать вкладку и обновить состояние кнопок."""
         if tab_id not in self._tabs:
             return
 
-        # Скрыть текущую
         if self._active_tab and self._active_tab in self._tabs:
             self._tabs[self._active_tab].grid_remove()
             self._nav_buttons[self._active_tab].set_active(False)
 
-        # Показать новую
         self._tabs[tab_id].grid()
         self._nav_buttons[tab_id].set_active(True)
         self._active_tab = tab_id
 
-        # Уведомить вкладку об активации (если поддерживает)
         tab = self._tabs[tab_id]
         if hasattr(tab, "on_activate"):
             tab.on_activate()
@@ -359,7 +412,6 @@ class MainWindow(ctk.CTk):
     # ─────────────────────────────────────────
 
     def _on_state_change(self, state: ServiceState) -> None:
-        """Обновить статус-бейдж при смене состояния zapret."""
         self.after(0, self._status_badge.update_state, state)
 
         dashboard = self._tabs.get("dashboard")
@@ -367,8 +419,6 @@ class MainWindow(ctk.CTk):
             self.after(0, dashboard.on_state_change, state)
 
     def _on_close(self) -> None:
-        """Корректное завершение: остановить сервисы перед выходом."""
-        # Сбросить DNS на DHCP если был включён
         dashboard = self._tabs.get("dashboard")
         if dashboard and getattr(dashboard, "_dns_enabled", False):
             try:

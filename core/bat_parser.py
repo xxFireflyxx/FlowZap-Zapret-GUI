@@ -59,6 +59,13 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
     args_raw = match.group(1).strip()
 
     # Убираем переменные окружения вида %BIN%, %LISTS% и т.д.
+    # GameFilter-переменные заменяем на плейсхолдер GAMEFILTER_TCP/UDP
+    # чтобы manager мог подставить реальные значения
+    args_raw = re.sub(r'%GameFilterTCP%', '__GAMEFILTER_TCP__', args_raw, flags=re.IGNORECASE)
+    args_raw = re.sub(r'%GameFilterUDP%', '__GAMEFILTER_UDP__', args_raw, flags=re.IGNORECASE)
+    # Убираем остальные переменные и лишние запятые
+    args_raw = re.sub(r',%[^%]+%', '', args_raw)
+    args_raw = re.sub(r'%[^%]+%,', '', args_raw)
     args_raw = _VAR_RE.sub('', args_raw)
 
     # Убираем ^

@@ -204,25 +204,13 @@ class DashboardTab(ctk.CTkFrame):
         btn_cfg = dict(height=m.button_height + 8, corner_radius=m.corner_radius,
                        font=(t.family_ui, t.size_md, "bold"), width=140)
 
-        self._btn_start = ctk.CTkButton(
+        # Кнопка Запуск/Стоп — одна кнопка
+        self._btn_toggle = ctk.CTkButton(
             bf, text="▶  Запуск",
-            fg_color=p.accent, hover_color=p.accent_dim, text_color="#000000",
-            command=self._on_start, **btn_cfg)
-        self._btn_start.pack(side="left", padx=(0, 8))
-
-        self._btn_stop = ctk.CTkButton(
-            bf, text="■  Стоп",
-            fg_color=p.bg_card, hover_color=p.bg_hover,
-            text_color=p.error, border_width=1, border_color=p.error,
-            command=self._on_stop, **btn_cfg)
-        self._btn_stop.pack(side="left", padx=8)
-
-        self._btn_restart = ctk.CTkButton(
-            bf, text="↺  Рестарт",
             fg_color=p.bg_card, hover_color=p.bg_hover,
             text_color=p.text_secondary, border_width=1, border_color=p.border_light,
-            command=self._on_restart, **btn_cfg)
-        self._btn_restart.pack(side="left", padx=8)
+            command=self._on_toggle, **btn_cfg)
+        self._btn_toggle.pack(side="left", padx=(0, 8))
 
         # ── Кнопка DNS ────────────────────────
         self._dns_enabled = False
@@ -235,9 +223,23 @@ class DashboardTab(ctk.CTkFrame):
             height=m.button_height + 8, width=100,
             command=self._on_dns_toggle,
         )
-        self._btn_dns.pack(side="left", padx=(16, 0))
+        self._btn_dns.pack(side="left", padx=(8, 0))
+
+        # ── Кнопка Game Filter ────────────────
+        self._game_filter_enabled = False
+        self._btn_game = ctk.CTkButton(
+            bf, text="Game Filter",
+            fg_color=p.bg_card, hover_color=p.bg_hover,
+            text_color=p.text_secondary, border_width=1, border_color=p.border_light,
+            corner_radius=m.corner_radius,
+            font=(t.family_ui, t.size_md, "bold"),
+            height=m.button_height + 8, width=130,
+            command=self._on_game_filter_toggle,
+        )
+        self._btn_game.pack(side="left", padx=(8, 0))
 
         self._update_buttons()
+        self._load_game_filter_state()
 
     # ──────────────────────────────────────────────
     #  Пресеты
@@ -303,10 +305,11 @@ class DashboardTab(ctk.CTkFrame):
         self._update_ping_indicator(name)
 
         if auto_start and self._auto_var.get() and preset:
+            bat = preset.get('path')
             if self.manager.is_running:
-                self.manager.restart(preset['args'])
+                self.manager.restart(bat_path=bat)
             else:
-                self.manager.start(preset['args'])
+                self.manager.start(bat_path=bat)
 
     def _update_ping_indicator(self, preset_name: str) -> None:
         status = self._ping_mgr.get_status(preset_name)
@@ -355,17 +358,17 @@ class DashboardTab(ctk.CTkFrame):
     #  Управление процессом
     # ──────────────────────────────────────────────
 
-    def _get_current_args(self) -> list:
-        return self._selected_preset['args'] if self._selected_preset else []
+    def _get_current_bat(self):
+        """Вернуть Path к bat файлу текущего пресета."""
+        if self._selected_preset:
+            return self._selected_preset.get('path')
+        return None
 
-    def _on_start(self) -> None:
-        self.manager.start(self._get_current_args())
-
-    def _on_stop(self) -> None:
-        self.manager.stop()
-
-    def _on_restart(self) -> None:
-        self.manager.restart(self._get_current_args())
+    def _on_toggle(self) -> None:
+        if self.manager.is_running:
+            self.manager.stop()
+        else:
+            self.manager.start(bat_path=self._get_current_bat())
 
     def on_state_change(self, state: ServiceState) -> None:
         labels = {
@@ -382,10 +385,65 @@ class DashboardTab(ctk.CTkFrame):
         self._update_buttons()
 
     def _update_buttons(self) -> None:
+        p = theme.palette
         running = self.manager.is_running
-        self._btn_start.configure(state="disabled" if running else "normal")
-        self._btn_stop.configure(state="normal" if running else "disabled")
-        self._btn_restart.configure(state="normal" if running else "disabled")
+        if running:
+            self._btn_toggle.configure(
+                text="■  Стоп",
+                fg_color="#1a3d2b", hover_color="#1f4a33",
+                text_color=p.success, border_color=p.success,
+            )
+        else:
+            self._btn_toggle.configure(
+                text="▶  Запуск",
+                fg_color=p.bg_card, hover_color=p.bg_hover,
+                text_color=p.text_secondary, border_color=p.border_light,
+            )
+
+    # ──────────────────────────────────────────────
+    #  Game Filter
+    # ──────────────────────────────────────────────
+
+    def _game_filter_flag_path(self):
+        from pathlib import Path
+        return Path(__file__).parent.parent / "zapret" / "utils" / "game_filter.enabled"
+
+    def _load_game_filter_state(self) -> None:
+        """Загрузить текущее состояние game filter из файла."""
+        self._game_filter_enabled = self._game_filter_flag_path().exists()
+        self._apply_game_filter_style()
+
+    def _apply_game_filter_style(self) -> None:
+        p = theme.palette
+        if self._game_filter_enabled:
+            self._btn_game.configure(
+                fg_color="#1a3d2b", hover_color="#1f4a33",
+                text_color=p.success, border_color=p.success,
+            )
+        else:
+            self._btn_game.configure(
+                fg_color=p.bg_card, hover_color=p.bg_hover,
+                text_color=p.text_secondary, border_color=p.border_light,
+            )
+
+    def _on_game_filter_toggle(self) -> None:
+        flag = self._game_filter_flag_path()
+        self._game_filter_enabled = not self._game_filter_enabled
+        try:
+            if self._game_filter_enabled:
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.write_text("all", encoding="utf-8")
+            else:
+                if flag.exists():
+                    flag.unlink()
+        except Exception as e:
+            import tkinter.messagebox as mb
+            self._game_filter_enabled = not self._game_filter_enabled
+            mb.showerror("FlowZap — Game Filter", f"Ошибка: {e}")
+        self._apply_game_filter_style()
+        # Рестарт если запущен чтобы применить изменения
+        if self.manager.is_running:
+            self.manager.restart(bat_path=self._get_current_bat())
 
     # ──────────────────────────────────────────────
     #  DNS-кнопка

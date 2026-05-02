@@ -66,6 +66,8 @@ class ServiceManager:
         self._process:    Optional[subprocess.Popen] = None
         self._state:      ServiceState = ServiceState.STOPPED
         self._args:       list[str]   = []
+        self._bat_path:   Optional[Path] = None
+        self._winws_pid:  Optional[int] = None
         self._log_thread: Optional[threading.Thread] = None
         self._stop_event: threading.Event = threading.Event()
 
@@ -87,41 +89,117 @@ class ServiceManager:
 
     # ── Управление ───────────────────────────
 
-    def start(self, args: list[str] | None = None) -> bool:
+    def start(self, args: list[str] | None = None, bat_path: "Path | None" = None) -> bool:
         """
-        Запустить сервис с переданными аргументами CLI.
-        
-        Returns
-        -------
-        bool
-            True если запуск инициирован, False при ошибке.
+        Запустить сервис.
+        Если bat_path передан — запускает bat через cmd /c (bat сам загружает переменные и запускает winws.exe).
+        Иначе — запускает executable напрямую с args.
         """
         if self._state in (ServiceState.RUNNING, ServiceState.STARTING):
             self._emit_log(f"[WARN] {self.name} уже запущен (state={self._state.name})")
             return False
 
-        if not self.executable.exists():
-            self._emit_log(f"[ERROR] Исполняемый файл не найден: {self.executable}")
-            self._set_state(ServiceState.ERROR)
-            return False
-
+        self._bat_path = Path(bat_path) if bat_path else None
         self._args = args or []
+        self._winws_pid = None
         self._stop_event.clear()
         self._set_state(ServiceState.STARTING)
         self._emit_log(f"[START] Запуск {self.name}...")
 
         try:
-            cmd = [str(self.executable)] + self._args
+            # Убиваем старый winws.exe если уже запущен
+            if os.name == "nt":
+                try:
+                    result = subprocess.run(
+                        ["tasklist", "/FI", "IMAGENAME eq winws.exe", "/FO", "CSV", "/NH"],
+                        capture_output=True, text=True, encoding="cp866", errors="replace",
+                        creationflags=0x08000000,
+                    )
+                    if "winws.exe" in result.stdout:
+                        subprocess.run(["taskkill", "/F", "/IM", "winws.exe"],
+                                       capture_output=True, creationflags=0x08000000)
+                        self._emit_log("[INFO] Старый winws.exe завершён")
+                except Exception:
+                    pass
+
+            if self._bat_path and self._bat_path.exists():
+                self._emit_log(f"[INFO] Режим: прямой запуск winws.exe из пресета ({self._bat_path.name})")
+
+                from core.bat_parser import parse_bat
+                bat_args = parse_bat(self._bat_path) or self._args
+
+                bin_dir   = self._bat_path.parent / "bin"
+                lists_dir = self._bat_path.parent / "lists"
+
+                # Определяем значение GameFilter
+                game_flag = self._bat_path.parent / "utils" / "game_filter.enabled"
+                if game_flag.exists():
+                    game_ports = "1024-65535"
+                    self._emit_log("[INFO] Game Filter: включён (1024-65535)")
+                else:
+                    game_ports = "12"  # фиктивный порт — фактически выключен
+                    self._emit_log("[INFO] Game Filter: выключен")
+
+                resolved_args = []
+                for arg in bat_args:
+                    # Подставляем GameFilter плейсхолдеры
+                    arg = arg.replace("__GAMEFILTER_TCP__", game_ports)
+                    arg = arg.replace("__GAMEFILTER_UDP__", game_ports)
+                    # Убираем лишние запятые если плейсхолдер был в середине
+                    arg = arg.replace(",,", ",").rstrip(",")
+
+                    if "=" in arg:
+                        key, val = arg.split("=", 1)
+                        val = val.strip('"').strip("'")
+                        for search_dir in (bin_dir, lists_dir):
+                            candidate = search_dir / val
+                            if candidate.exists():
+                                val = str(candidate)
+                                break
+                            candidate2 = search_dir / Path(val).name
+                            if candidate2.exists():
+                                val = str(candidate2)
+                                break
+                        resolved_args.append(f"{key}={val}")
+                    else:
+                        resolved_args.append(arg)
+
+                if not self.executable.exists():
+                    self._emit_log(f"[ERROR] winws.exe не найден: {self.executable}")
+                    self._set_state(ServiceState.ERROR)
+                    return False
+
+                cmd = [str(self.executable)] + resolved_args
+                cwd = bin_dir
+                self._emit_log(f"[DEBUG] Аргументы: {' '.join(resolved_args[:5])}…")
+            else:
+                if not self.executable.exists():
+                    self._emit_log(f"[ERROR] Исполняемый файл не найден: {self.executable}")
+                    self._set_state(ServiceState.ERROR)
+                    return False
+                self._emit_log(f"[INFO] Режим: прямой запуск winws.exe")
+                cmd = [str(self.executable)] + self._args
+                cwd = self.executable.parent
+
+            # STARTUPINFO скрывает окно дочерних процессов запущенных через "start"
+            # внутри bat файла (winws.exe запускается именно так)
+            si = None
+            if os.name == "nt":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags = subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0  # SW_HIDE
+
             self._process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,   # объединяем stderr в stdout
+                stderr=subprocess.STDOUT,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                bufsize=1,                  # построчный буфер
-                cwd=self.executable.parent,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                bufsize=1,
+                cwd=str(cwd),
+                creationflags=0x08000000 if os.name == "nt" else 0,
+                startupinfo=si,
             )
         except Exception as exc:
             self._emit_log(f"[ERROR] Не удалось запустить: {exc}")
@@ -131,7 +209,6 @@ class ServiceManager:
         self._set_state(ServiceState.RUNNING)
         self._emit_log(f"[INFO] {self.name} запущен (PID {self._process.pid})")
 
-        # Читаем вывод в отдельном потоке
         self._log_thread = threading.Thread(
             target=self._read_output,
             daemon=True,
@@ -139,7 +216,6 @@ class ServiceManager:
         )
         self._log_thread.start()
 
-        # Поток-наблюдатель — следит за завершением процесса
         threading.Thread(
             target=self._watch_process,
             daemon=True,
@@ -149,7 +225,7 @@ class ServiceManager:
         return True
 
     def stop(self) -> bool:
-        """Остановить сервис (SIGTERM → SIGKILL через 3 сек)."""
+        """Остановить сервис — убивает winws.exe напрямую."""
         if self._state not in (ServiceState.RUNNING, ServiceState.STARTING):
             return False
 
@@ -164,19 +240,19 @@ class ServiceManager:
                     self._process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     self._process.kill()
-                    self._emit_log(f"[WARN] {self.name} принудительно завершён (SIGKILL)")
-            except Exception as exc:
-                self._emit_log(f"[ERROR] Ошибка при остановке: {exc}")
+                self._emit_log(f"[INFO] winws.exe завершён")
+            except Exception as e:
+                self._emit_log(f"[WARN] Ошибка при остановке: {e}")
 
         self._set_state(ServiceState.STOPPED)
         self._emit_log(f"[INFO] {self.name} остановлен")
         return True
 
-    def restart(self, args: list[str] | None = None) -> bool:
-        """Рестарт: стоп → старт с теми же (или новыми) аргументами."""
+    def restart(self, args: list[str] | None = None, bat_path: "Path | None" = None) -> bool:
+        """Рестарт: стоп → старт с теми же (или новыми) аргументами/bat-файлом."""
         self._emit_log(f"[INFO] Рестарт {self.name}...")
         self.stop()
-        return self.start(args or self._args)
+        return self.start(args or self._args, bat_path=bat_path or self._bat_path)
 
     def update_args(self, args: list[str]) -> None:
         """Обновить аргументы запуска (применятся при следующем старте)."""
@@ -211,13 +287,33 @@ class ServiceManager:
         except Exception as exc:
             self._emit_log(f"[ERROR] Ошибка чтения вывода: {exc}")
 
+    def _find_winws_pid(self) -> Optional[int]:
+        """Найти PID процесса winws.exe через tasklist."""
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq winws.exe", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True,
+                encoding="cp866", errors="replace",
+                creationflags=0x08000000,
+            )
+            for line in result.stdout.strip().splitlines():
+                parts = line.strip('"').split('","')
+                if len(parts) >= 2:
+                    try:
+                        return int(parts[1])
+                    except ValueError:
+                        pass
+        except Exception as e:
+            self._emit_log(f"[WARN] tasklist error: {e}")
+        return None
+
     def _watch_process(self) -> None:
         """Фоновый поток: ждёт завершения процесса и меняет состояние."""
         if not self._process:
             return
         return_code = self._process.wait()
+
         if not self._stop_event.is_set():
-            # Процесс завершился сам — возможно, ошибка
             if return_code != 0:
                 self._emit_log(f"[ERROR] {self.name} завершился с кодом {return_code}")
                 self._set_state(ServiceState.ERROR)
@@ -253,14 +349,14 @@ class ZapretManager:
 
     # Удобные делегирующие методы
 
-    def start(self, args: list[str] | None = None) -> bool:
-        return self.zapret.start(args)
+    def start(self, args: list[str] | None = None, bat_path: "Path | None" = None) -> bool:
+        return self.zapret.start(args, bat_path=bat_path)
 
     def stop(self) -> bool:
         return self.zapret.stop()
 
-    def restart(self, args: list[str] | None = None) -> bool:
-        return self.zapret.restart(args)
+    def restart(self, args: list[str] | None = None, bat_path: "Path | None" = None) -> bool:
+        return self.zapret.restart(args, bat_path=bat_path)
 
     @property
     def state(self) -> ServiceState:
