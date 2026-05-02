@@ -53,6 +53,7 @@ def load_config(config_path: Path) -> dict:
         },
         "ui":      {"theme": "dark", "remember_tab": True},
         "updater": {"repo": "Flowseal/zapret-discord-youtube", "check_on_start": True},
+        "dns":     {"servers": ["111.88.98.50", "111.88.96.51"]},
     }
     if not config_path.exists():
         return defaults
