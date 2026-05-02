@@ -1,0 +1,221 @@
+"""
+ui/parameters.py
+----------------
+Вкладка «Параметры». Редактор аргументов CLI для zapret.
+Поддерживает режимы: nfqws, tpws, winws.
+Также управление DNS-серверами (основной, запасные и т.д.).
+"""
+
+import customtkinter as ctk
+from ui.theme import theme
+from core.manager import ZapretManager
+
+# Ваши кастомные DNS (пустые по умолчанию)
+CUSTOM_DNS_1 = ""
+CUSTOM_DNS_2 = ""
+
+
+class ParametersTab(ctk.CTkFrame):
+    """Вкладка параметров запуска zapret."""
+
+    def __init__(self, parent: ctk.CTkFrame, manager: ZapretManager, config: dict = None) -> None:
+        p = theme.palette
+        super().__init__(parent, fg_color=p.bg_root, corner_radius=0)
+        self.manager = manager
+        self._config = config or {}
+        self._dns_entries: list = []
+        self._build()
+        self._load_dns_from_config()
+
+    def _load_dns_from_config(self) -> None:
+        """Загрузить DNS-адреса из конфига."""
+        servers = self._config.get("dns", {}).get("servers", [])
+        # Первая строка уже создана в _build()
+        for i, addr in enumerate(servers):
+            if i == 0:
+                # Вписать в первую (уже существующую) строку
+                if self._dns_entries:
+                    self._dns_entries[0][0].delete(0, "end")
+                    self._dns_entries[0][0].insert(0, addr)
+            else:
+                self._add_dns_row()
+                self._dns_entries[-1][0].insert(0, addr)
+
+    def _build(self) -> None:
+        p = theme.palette
+        t = theme.typography
+        m = theme.metrics
+
+        self.grid_columnconfigure(0, weight=1)
+
+        # Заголовок
+        ctk.CTkLabel(
+            self,
+            text="Параметры",
+            font=(t.family_ui, t.size_xl, "bold"),
+            text_color=p.text_primary,
+        ).grid(row=0, column=0, sticky="w", padx=m.padding_lg, pady=(m.padding_lg, m.padding_md))
+
+        # ── DNS-серверы ───────────────────────
+        dns_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        dns_card.grid(row=1, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
+        dns_card.grid_columnconfigure(0, weight=1)
+
+        # Заголовок секции DNS
+        dns_header = ctk.CTkFrame(dns_card, fg_color="transparent")
+        dns_header.grid(row=0, column=0, sticky="ew", padx=m.padding_md, pady=(m.padding_md, 4))
+        dns_header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            dns_header,
+            text="DNS-серверы",
+            font=(t.family_ui, t.size_md, "bold"),
+            text_color=p.text_primary,
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkLabel(
+            dns_header,
+            text="Первый адрес — основной, следующие — запасные",
+            font=(t.family_ui, t.size_xs),
+            text_color=p.text_muted,
+        ).grid(row=1, column=0, sticky="w")
+
+        # Контейнер для строк DNS
+        self._dns_container = ctk.CTkFrame(dns_card, fg_color="transparent")
+        self._dns_container.grid(row=1, column=0, sticky="ew", padx=m.padding_md, pady=(4, 0))
+        self._dns_container.grid_columnconfigure(0, weight=1)
+
+        # Кнопка «Добавить адрес»
+        btn_row = ctk.CTkFrame(dns_card, fg_color="transparent")
+        btn_row.grid(row=2, column=0, sticky="w", padx=m.padding_md, pady=(6, m.padding_md))
+
+        ctk.CTkButton(
+            btn_row,
+            text="＋  Добавить адрес",
+            height=m.button_height - 6,
+            fg_color=p.bg_input,
+            hover_color=p.bg_hover,
+            text_color=p.accent,
+            border_width=1,
+            border_color=p.accent,
+            corner_radius=m.corner_radius_sm,
+            font=(t.family_ui, t.size_sm, "bold"),
+            command=self._add_dns_row,
+        ).pack(side="left")
+
+        # Добавить первую строку сразу (основной DNS)
+        self._add_dns_row(initial=True)
+
+        # Режим работы — скрыт (winws на Windows, в будущем nfqws/tpws для Linux)
+        self._mode_var = ctk.StringVar(value="winws")
+
+        # Кнопка применить
+        ctk.CTkButton(
+            self,
+            text="Применить",
+            fg_color=theme.palette.accent,
+            hover_color=theme.palette.accent_dim,
+            text_color="#000000",
+            height=m.button_height,
+            corner_radius=m.corner_radius,
+            command=self._apply,
+        ).grid(row=3, column=0, sticky="w", padx=m.padding_lg, pady=(0, m.padding_lg))
+
+    # ──────────────────────────────────────────
+    #  DNS: добавление / удаление строк
+    # ──────────────────────────────────────────
+
+    def _add_dns_row(self, initial: bool = False) -> None:
+        p = theme.palette
+        t = theme.typography
+        m = theme.metrics
+
+        idx = len(self._dns_entries)
+        row_frame = ctk.CTkFrame(self._dns_container, fg_color="transparent")
+        row_frame.grid(row=idx, column=0, sticky="ew", pady=(0, 6))
+        row_frame.grid_columnconfigure(1, weight=1)
+
+        # Метка порядка
+        if idx == 0:
+            badge_text = "Основной"
+            badge_color = p.accent
+        else:
+            badge_text = f"Запасной {idx}"
+            badge_color = p.text_muted
+
+        label = ctk.CTkLabel(
+            row_frame,
+            text=badge_text,
+            font=(t.family_ui, t.size_xs),
+            text_color=badge_color,
+            width=72,
+            anchor="e",
+        )
+        label.grid(row=0, column=0, padx=(0, 8), sticky="e")
+
+        entry = ctk.CTkEntry(
+            row_frame,
+            placeholder_text="Пример: 1.1.1.1",
+            fg_color=p.bg_input,
+            text_color=p.text_primary,
+            placeholder_text_color=p.text_muted,
+            border_color=p.border,
+            corner_radius=m.corner_radius_sm,
+            height=32,
+        )
+        entry.grid(row=0, column=1, sticky="ew")
+
+        # Кнопка удаления (не для первой строки)
+        if idx > 0:
+            btn_del = ctk.CTkButton(
+                row_frame,
+                text="✕",
+                width=32,
+                height=32,
+                fg_color="transparent",
+                hover_color=p.bg_hover,
+                text_color=p.error,
+                corner_radius=m.corner_radius_sm,
+                font=(t.family_ui, t.size_md),
+                command=lambda rf=row_frame, e=entry: self._remove_dns_row(rf, e),
+            )
+            btn_del.grid(row=0, column=2, padx=(6, 0))
+        else:
+            ctk.CTkLabel(row_frame, text="", width=38).grid(row=0, column=2)
+
+        self._dns_entries.append((entry, row_frame))
+
+    def _remove_dns_row(self, row_frame: ctk.CTkFrame, entry: ctk.CTkEntry) -> None:
+        """Удалить строку DNS и перенумеровать метки."""
+        self._dns_entries = [(e, rf) for e, rf in self._dns_entries if e is not entry]
+        row_frame.destroy()
+
+        for i, (e, rf) in enumerate(self._dns_entries):
+            rf.grid_forget()
+            rf.grid(row=i, column=0, sticky="ew", pady=(0, 6))
+            for child in rf.winfo_children():
+                if isinstance(child, ctk.CTkLabel) and child.cget("width") == 72:
+                    if i == 0:
+                        child.configure(text="Основной", text_color=theme.palette.accent)
+                    else:
+                        child.configure(text=f"Запасной {i}", text_color=theme.palette.text_muted)
+                    break
+
+    def get_dns_servers(self) -> list:
+        """Вернуть список DNS-адресов (основной первый)."""
+        return [e.get().strip() for e, _ in self._dns_entries if e.get().strip()]
+
+    # ──────────────────────────────────────────
+
+    def _apply(self) -> None:
+        """Сохранить DNS и применить."""
+        # Сохранить DNS в конфиг
+        dns_list = self.get_dns_servers()
+        if "dns" not in self._config:
+            self._config["dns"] = {}
+        self._config["dns"]["servers"] = dns_list
+
+        # Сохранить на диск
+        root_win = self.winfo_toplevel()
+        if hasattr(root_win, "save_config"):
+            root_win.save_config()
