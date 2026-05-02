@@ -47,7 +47,6 @@ class ParametersTab(ctk.CTkFrame):
         m = theme.metrics
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
 
         # Заголовок
         ctk.CTkLabel(
@@ -107,63 +106,20 @@ class ParametersTab(ctk.CTkFrame):
         # Добавить первую строку сразу (основной DNS)
         self._add_dns_row(initial=True)
 
-        # ── Режим ─────────────────────────────
-        mode_frame = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
-        mode_frame.grid(row=2, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
-
-        ctk.CTkLabel(
-            mode_frame,
-            text="Режим работы",
-            font=(t.family_ui, t.size_sm),
-            text_color=p.text_secondary,
-        ).pack(anchor="w", padx=m.padding_md, pady=(m.padding_md, 4))
-
+        # Режим работы — скрыт (winws на Windows, в будущем nfqws/tpws для Linux)
         self._mode_var = ctk.StringVar(value="winws")
-        mode_seg = ctk.CTkSegmentedButton(
-            mode_frame,
-            values=["nfqws", "tpws", "winws"],
-            variable=self._mode_var,
-            selected_color=p.accent,
-            selected_hover_color=p.accent_dim,
-            fg_color=p.bg_input,
-            unselected_color=p.bg_input,
-            text_color=p.text_secondary,
-        )
-        mode_seg.pack(anchor="w", padx=m.padding_md, pady=(0, m.padding_md))
-
-        # ── Аргументы CLI ─────────────────────
-        args_frame = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
-        args_frame.grid(row=3, column=0, sticky="nsew", padx=m.padding_lg, pady=(0, m.padding_md))
-        args_frame.grid_columnconfigure(0, weight=1)
-        args_frame.grid_rowconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            args_frame,
-            text="Аргументы командной строки",
-            font=(t.family_ui, t.size_sm),
-            text_color=p.text_secondary,
-        ).grid(row=0, column=0, sticky="w", padx=m.padding_md, pady=(m.padding_md, 4))
-
-        self._args_text = ctk.CTkTextbox(
-            args_frame,
-            fg_color=p.bg_input,
-            text_color=p.text_primary,
-            font=(theme.typography.family_mono, theme.typography.size_sm),
-            corner_radius=m.corner_radius_sm,
-        )
-        self._args_text.grid(row=1, column=0, sticky="nsew", padx=m.padding_md, pady=(0, m.padding_md))
 
         # Кнопка применить
         ctk.CTkButton(
             self,
-            text="Применить и рестартовать",
+            text="Применить",
             fg_color=theme.palette.accent,
             hover_color=theme.palette.accent_dim,
             text_color="#000000",
             height=m.button_height,
             corner_radius=m.corner_radius,
             command=self._apply,
-        ).grid(row=4, column=0, sticky="w", padx=m.padding_lg, pady=(0, m.padding_lg))
+        ).grid(row=3, column=0, sticky="w", padx=m.padding_lg, pady=(0, m.padding_lg))
 
     # ──────────────────────────────────────────
     #  DNS: добавление / удаление строк
@@ -252,7 +208,7 @@ class ParametersTab(ctk.CTkFrame):
     # ──────────────────────────────────────────
 
     def _apply(self) -> None:
-        """Применить новые аргументы, сохранить DNS и рестартовать."""
+        """Сохранить DNS и применить."""
         # Сохранить DNS в конфиг
         dns_list = self.get_dns_servers()
         if "dns" not in self._config:
@@ -263,8 +219,3 @@ class ParametersTab(ctk.CTkFrame):
         root_win = self.winfo_toplevel()
         if hasattr(root_win, "save_config"):
             root_win.save_config()
-
-        # Рестарт zapret
-        raw = self._args_text.get("1.0", "end").strip()
-        args = raw.split() if raw else []
-        self.manager.restart(args)

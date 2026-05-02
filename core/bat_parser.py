@@ -35,6 +35,33 @@ _VAR_RE = re.compile(r'%[^%]+%')
 _CARET_RE = re.compile(r'\^')
 
 
+def _get_game_filter(bat_dir: Path) -> tuple[str, str]:
+    """
+    Читает utils/game_filter.enabled и возвращает (GameFilterTCP, GameFilterUDP).
+    Если файл не существует — игровой фильтр выключен, возвращает ('12', '12').
+    Логика из service.bat:
+      all  → TCP=1024-65535, UDP=1024-65535
+      tcp  → TCP=1024-65535, UDP=12
+      udp  → TCP=12,         UDP=1024-65535
+      нет  → TCP=12,         UDP=12
+    """
+    flag_file = bat_dir / "utils" / "game_filter.enabled"
+    if not flag_file.exists():
+        return "12", "12"
+    try:
+        mode = flag_file.read_text(encoding="utf-8", errors="replace").strip().lower()
+    except Exception:
+        return "12", "12"
+
+    if mode == "all":
+        return "1024-65535", "1024-65535"
+    elif mode == "tcp":
+        return "1024-65535", "12"
+    elif mode == "udp":
+        return "12", "1024-65535"
+    return "12", "12"
+
+
 def parse_bat(bat_path: Path) -> Optional[list[str]]:
     """
     Распарсить .bat файл и вернуть список аргументов для winws.exe.
@@ -58,32 +85,51 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
 
     args_raw = match.group(1).strip()
 
-    # Убираем переменные окружения вида %BIN%, %LISTS% и т.д.
-    # GameFilter-переменные заменяем на плейсхолдер GAMEFILTER_TCP/UDP
-    # чтобы manager мог подставить реальные значения
-    args_raw = re.sub(r'%GameFilterTCP%', '__GAMEFILTER_TCP__', args_raw, flags=re.IGNORECASE)
-    args_raw = re.sub(r'%GameFilterUDP%', '__GAMEFILTER_UDP__', args_raw, flags=re.IGNORECASE)
-    # Убираем остальные переменные и лишние запятые
+    # Папки рядом с .bat файлом
+    bat_dir   = bat_path.parent
+    bin_dir   = bat_dir / "bin"
+    lists_dir = bat_dir / "lists"
+
+    # Подставляем реальные пути вместо %BIN% и %LISTS%
+    # Используем lambda чтобы избежать интерпретации \ как regex escape
+    bin_str   = str(bin_dir) + "\\"
+    lists_str = str(lists_dir) + "\\"
+    args_raw = re.sub(r'%BIN%',   lambda m: bin_str,   args_raw, flags=re.IGNORECASE)
+    args_raw = re.sub(r'%LISTS%', lambda m: lists_str, args_raw, flags=re.IGNORECASE)
+
+    # Читаем игровой фильтр и подставляем реальные значения
+    game_tcp, game_udp = _get_game_filter(bat_dir)
+    args_raw = re.sub(r'%GameFilterTCP%', lambda m: game_tcp, args_raw, flags=re.IGNORECASE)
+    args_raw = re.sub(r'%GameFilterUDP%', lambda m: game_udp, args_raw, flags=re.IGNORECASE)
+    args_raw = re.sub(r'%GameFilter%',    lambda m: game_tcp, args_raw, flags=re.IGNORECASE)
+
+    # Убираем оставшиеся переменные окружения вида %VAR%
+    # Порядок важен: сначала ,VAR потом VAR, потом одиночные
     args_raw = re.sub(r',%[^%]+%', '', args_raw)
     args_raw = re.sub(r'%[^%]+%,', '', args_raw)
-    args_raw = _VAR_RE.sub('', args_raw)
+    args_raw = re.sub(r'%[^%]+%', '', args_raw)
 
     # Убираем ^
     args_raw = _CARET_RE.sub('', args_raw)
 
     # Убираем "pause", "exit", echo и подобные хвосты
-    args_raw = re.sub(r'\b(pause|exit|echo\.?)\b.*', '', args_raw, flags=re.IGNORECASE)
+    args_raw = re.sub(r'\\b(pause|exit|echo\\.?)\\b.*', '', args_raw, flags=re.IGNORECASE)
 
-    # Убираем одиночные и двойные кавычки
-    args_raw = args_raw.replace('"', '').replace("'", '')
+    # Разбиваем на токены с учётом кавычек
+    import shlex
+    try:
+        args = shlex.split(args_raw, posix=False)
+    except ValueError:
+        args = args_raw.split()
 
-    # Разбиваем на токены
-    args = args_raw.split()
+    # Убираем кавычки вокруг значений и оставляем только --аргументы
+    cleaned = []
+    for a in args:
+        if a.startswith('--'):
+            a = a.replace('"', '').replace("'", '')
+            cleaned.append(a)
 
-    # Оставляем только аргументы вида --xxx и --xxx=yyy
-    args = [a for a in args if a.startswith('--')]
-
-    return args if args else None
+    return cleaned if cleaned else None
 
 
 def get_bat_description(bat_path: Path) -> str:

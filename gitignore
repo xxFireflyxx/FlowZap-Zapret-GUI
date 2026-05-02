@@ -1,0 +1,34 @@
+# Конфиг пользователя — у каждого свой
+config.toml
+
+# Папка zapret — не наш код
+zapret/
+
+# PyInstaller — генерируется автоматически
+build/
+dist/
+FlowZap.spec
+FlowZap.manifest
+build.bat
+
+# Логи
+logs/
+
+# Python кэш
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Windows
+Thumbs.db
+desktop.ini

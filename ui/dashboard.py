@@ -3,6 +3,7 @@ ui/dashboard.py — Главная вкладка FlowZap.
 """
 
 import customtkinter as ctk
+import time
 from pathlib import Path
 from typing import Optional
 from core.manager import ZapretManager, ServiceState
@@ -10,51 +11,206 @@ from core.bat_parser import list_presets
 from core.ping_checker import PresetPingManager, PingStatus
 from ui.theme import theme
 
-_PING_DOT_COLOR = {
+
+
+
+_PING_COLOR = {
     PingStatus.UNKNOWN:  "#4a5568",
     PingStatus.CHECKING: "#f59e0b",
     PingStatus.OK:       "#22c55e",
     PingStatus.WARN:     "#f59e0b",
     PingStatus.FAIL:     "#ef4444",
 }
-_PING_SYMBOL = {
-    PingStatus.UNKNOWN:  "○",
-    PingStatus.CHECKING: "◌",
-    PingStatus.OK:       "●",
-    PingStatus.WARN:     "●",
-    PingStatus.FAIL:     "●",
-}
-_PING_TEXT = {
-    PingStatus.UNKNOWN:  "не проверялось",
-    PingStatus.CHECKING: "проверка…",
-    PingStatus.OK:       "работает",
-    PingStatus.WARN:     "частично работает",
-    PingStatus.FAIL:     "не работает",
-}
 
 
-def _preset_label(name: str, status: PingStatus) -> str:
-    return f"{_PING_SYMBOL[status]} {name}"
+class PresetDropdown(ctk.CTkFrame):
+    """
+    Кастомный дропдаун для выбора пресета с цветными индикаторами пинга.
+    API:
+      set_items([(name, PingStatus), ...])
+      set_selected(name, status)
+      get_selected_name() -> str
+      on_select: callable(name) — коллбэк при выборе
+    """
 
+    def __init__(self, parent, on_select=None, fg_color="#1c2128",
+                 text_color="#e8edf2", height=38, corner_radius=4, **kwargs):
+        p = theme.palette
+        super().__init__(parent, fg_color="transparent", corner_radius=0)
+        self.grid_columnconfigure(0, weight=1)
 
-def _strip_symbol(label: str) -> str:
-    for sym in ("● ", "○ ", "◌ "):
-        if label.startswith(sym):
-            return label[len(sym):]
-    return label
+        self._on_select = on_select
+        self._items: list = []           # [(name, PingStatus)]
+        self._selected_name: str = ""
+        self._selected_status = PingStatus.UNKNOWN
+        self._popup = None
+
+        self._fg   = fg_color
+        self._tc   = text_color
+        self._h    = height
+        self._cr   = corner_radius
+        self._p    = p
+
+        # Кнопка-заголовок
+        self._btn_frame = ctk.CTkFrame(self, fg_color=self._fg,
+                                        corner_radius=self._cr, cursor="hand2")
+        self._btn_frame.grid(row=0, column=0, sticky="ew")
+        self._btn_frame.grid_columnconfigure(1, weight=1)
+        self._btn_frame.bind("<Button-1>", self._toggle_popup)
+
+        self._dot = ctk.CTkLabel(self._btn_frame, text="●", width=16,
+                                  font=("Segoe UI", 11, "bold"),
+                                  text_color=_PING_COLOR[PingStatus.UNKNOWN])
+        self._dot.grid(row=0, column=0, padx=(10, 4), pady=8)
+        self._dot.bind("<Button-1>", self._toggle_popup)
+
+        self._lbl = ctk.CTkLabel(self._btn_frame, text="— загрузка —",
+                                  text_color=self._tc, anchor="w",
+                                  font=("Segoe UI", 12))
+        self._lbl.grid(row=0, column=1, sticky="ew", pady=8)
+        self._lbl.bind("<Button-1>", self._toggle_popup)
+
+        self._arrow = ctk.CTkLabel(self._btn_frame, text="▾", width=20,
+                                    text_color=p.accent,
+                                    font=("Segoe UI", 13))
+        self._arrow.grid(row=0, column=2, padx=(4, 8), pady=8)
+        self._arrow.bind("<Button-1>", self._toggle_popup)
+
+    # ── Публичный API ─────────────────────
+
+    def set_items(self, items: list) -> None:
+        """items: [(name, PingStatus), ...]"""
+        self._items = list(items)
+
+    def set_selected(self, name: str, status) -> None:
+        self._selected_name = name
+        self._selected_status = status
+        self._dot.configure(text_color=_PING_COLOR.get(status, "#4a5568"))
+        self._lbl.configure(text=name or "— нет пресетов —")
+
+    def get_selected_name(self) -> str:
+        return self._selected_name
+
+    def set_status_text(self, text: str) -> None:
+        """Показать мелкий статус под кнопкой (например 'проверка пресетов…')."""
+        try:
+            if not hasattr(self, '_status_lbl'):
+                self._status_lbl = ctk.CTkLabel(
+                    self, text="",
+                    font=("Segoe UI", 10),
+                    text_color=self._p.text_muted,
+                    anchor="w",
+                )
+                self._status_lbl.grid(row=1, column=0, sticky="w", padx=4, pady=(1, 0))
+            self._status_lbl.configure(text=f"⏳ {text}")
+        except Exception:
+            pass
+
+    def clear_status_text(self) -> None:
+        """Убрать статусный текст."""
+        try:
+            if hasattr(self, '_status_lbl'):
+                self._status_lbl.configure(text="")
+        except Exception:
+            pass
+
+    # ── Попап ─────────────────────────────
+
+    def _toggle_popup(self, event=None) -> None:
+        if self._popup and self._popup.winfo_exists():
+            self._close_popup()
+        else:
+            self._open_popup()
+
+    def _open_popup(self) -> None:
+        if not self._items:
+            return
+        p = self._p
+
+        # Координаты
+        self.update_idletasks()
+        x = self._btn_frame.winfo_rootx()
+        y = self._btn_frame.winfo_rooty() + self._btn_frame.winfo_height() + 2
+        w = self._btn_frame.winfo_width()
+
+        popup = ctk.CTkToplevel(self)
+        popup.wm_overrideredirect(True)
+        popup.geometry(f"{w}x{min(len(self._items)*36, 300)}+{x}+{y}")
+        popup.configure(fg_color=p.bg_card)
+        popup.lift()
+        popup.focus_force()
+        popup.bind("<FocusOut>", lambda e: self.after(100, self._close_popup))
+
+        scroll = ctk.CTkScrollableFrame(popup, fg_color=p.bg_card,
+                                         scrollbar_button_color=p.border,
+                                         scrollbar_button_hover_color=p.border_light,
+                                         corner_radius=0)
+        scroll.pack(fill="both", expand=True)
+        scroll.grid_columnconfigure(0, weight=1)
+
+        for i, (name, status) in enumerate(self._items):
+            row = ctk.CTkFrame(scroll, fg_color="transparent", cursor="hand2",
+                                corner_radius=0)
+            row.grid(row=i, column=0, sticky="ew", padx=2, pady=1)
+            row.grid_columnconfigure(1, weight=1)
+
+            dot = ctk.CTkLabel(row, text="●", width=16,
+                                font=("Segoe UI", 11, "bold"),
+                                text_color=_PING_COLOR.get(status, "#4a5568"))
+            dot.grid(row=0, column=0, padx=(8, 4), pady=4)
+
+            lbl = ctk.CTkLabel(row, text=name, text_color=p.text_primary,
+                                anchor="w", font=("Segoe UI", 12))
+            lbl.grid(row=0, column=1, sticky="ew", pady=4, padx=(0, 8))
+
+            # Подсветить выбранный
+            if name == self._selected_name:
+                row.configure(fg_color=p.bg_hover)
+
+            def _pick(n=name, s=status, r=row):
+                self._select_item(n, s)
+
+            for w_ in (row, dot, lbl):
+                w_.bind("<Button-1>", lambda e, fn=_pick: fn())
+                w_.bind("<Enter>", lambda e, r_=row: r_.configure(fg_color=p.bg_hover))
+                w_.bind("<Leave>", lambda e, r_=row, n_=name:
+                    r_.configure(fg_color=p.bg_hover if n_ == self._selected_name else "transparent"))
+
+        self._popup = popup
+        self._arrow.configure(text="▴")
+
+    def _close_popup(self) -> None:
+        if self._popup and self._popup.winfo_exists():
+            try:
+                self._popup.destroy()
+            except Exception:
+                pass
+        self._popup = None
+        try:
+            self._arrow.configure(text="▾")
+        except Exception:
+            pass
+
+    def _select_item(self, name: str, status) -> None:
+        self.set_selected(name, status)
+        self._close_popup()
+        if self._on_select:
+            self._on_select(name)
 
 
 class DashboardTab(ctk.CTkFrame):
 
-    def __init__(self, parent, manager: ZapretManager, config: dict = None) -> None:
+    def __init__(self, parent, manager: ZapretManager, config: dict = None, save_config_fn=None) -> None:
         p = theme.palette
         super().__init__(parent, fg_color=p.bg_root, corner_radius=0)
         self.manager = manager
         self._config = config or {}
+        self._save_config_fn = save_config_fn  # callable() → сохраняет config в toml
         self._presets: list = []
         self._selected_preset: Optional[dict] = None
 
-        zapret_dir = Path(__file__).parent.parent / "zapret"
+        _app_dir = Path(self._config.get("_app_dir", "")) or Path(__file__).parent.parent
+        zapret_dir = _app_dir / "zapret"
         self._ping_mgr = PresetPingManager(
             zapret_dir=zapret_dir,
             on_update=self._on_ping_update,
@@ -67,6 +223,8 @@ class DashboardTab(ctk.CTkFrame):
         self._load_presets()
         # Кэш загружаем через after() чтобы UI успел отрисоваться
         self.after(200, self._load_cache_silent)
+        # Автоматически запускаем тесты если кэш старше 24 часов
+        self.after(500, self._maybe_run_tests)
 
     # ──────────────────────────────────────────────
     #  Построение UI
@@ -113,18 +271,13 @@ class DashboardTab(ctk.CTkFrame):
                      text_color=p.text_secondary).grid(
             row=0, column=0, padx=(m.padding_md, 8), pady=(m.padding_md, 4), sticky="w")
 
-        self._preset_var = ctk.StringVar(value="— нет пресетов —")
-        self._preset_menu = ctk.CTkOptionMenu(
-            pc, variable=self._preset_var, values=["— загрузка —"],
+        self._preset_menu = PresetDropdown(
+            pc,
+            on_select=self._on_preset_select,
             fg_color=p.bg_input,
-            button_color=p.accent, button_hover_color=p.accent_dim,
             text_color=p.text_primary,
-            dropdown_fg_color=p.bg_card,
-            dropdown_text_color=p.text_primary,
-            dropdown_hover_color=p.bg_hover,
-            corner_radius=m.corner_radius_sm,
-            command=self._on_preset_select,
             height=m.button_height,
+            corner_radius=m.corner_radius_sm,
         )
         self._preset_menu.grid(row=0, column=1, padx=(0, 4),
                                pady=(m.padding_md, 4), sticky="ew")
@@ -158,48 +311,9 @@ class DashboardTab(ctk.CTkFrame):
         ).grid(row=3, column=0, columnspan=3,
                padx=m.padding_md, pady=(0, m.padding_md), sticky="w")
 
-        # ── Индикатор пинга текущего пресета ─────
-        ping_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
-        ping_card.grid(row=3, column=0, sticky="ew", padx=m.padding_lg,
-                       pady=(0, m.padding_md))
-        ping_card.grid_columnconfigure(2, weight=1)
-
-        ctk.CTkLabel(ping_card, text="Пинг пресета",
-                     font=(t.family_ui, t.size_sm), text_color=p.text_secondary).grid(
-            row=0, column=0, padx=(m.padding_md, 8), pady=m.padding_md, sticky="w")
-
-        self._ping_dot = ctk.CTkLabel(
-            ping_card, text="○",
-            font=(t.family_ui, 18, "bold"),
-            text_color=_PING_DOT_COLOR[PingStatus.UNKNOWN], width=20)
-        self._ping_dot.grid(row=0, column=1, sticky="w", pady=m.padding_md)
-
-        self._ping_text = ctk.CTkLabel(
-            ping_card, text="не проверялось",
-            font=(t.family_ui, t.size_sm), text_color=p.text_muted)
-        self._ping_text.grid(row=0, column=2, sticky="w", padx=(6, 0),
-                             pady=m.padding_md)
-
-        self._btn_run_tests = ctk.CTkButton(
-            ping_card, text="Запустить тесты",
-            height=m.button_height - 4,
-            fg_color=p.accent, hover_color=p.accent_dim,
-            text_color="#000000", corner_radius=m.corner_radius_sm,
-            font=(t.family_ui, t.size_sm, "bold"),
-            command=self._on_run_tests,
-        )
-        self._btn_run_tests.grid(row=0, column=3, padx=m.padding_md,
-                                 pady=m.padding_md)
-
-        self._ping_status_label = ctk.CTkLabel(
-            ping_card, text="",
-            font=(t.family_ui, t.size_xs), text_color=p.text_muted, anchor="w")
-        self._ping_status_label.grid(row=1, column=0, columnspan=4,
-                                     padx=m.padding_md, pady=(0, 8), sticky="w")
-
         # ── Кнопки управления ─────────────────────
         bf = ctk.CTkFrame(self, fg_color="transparent")
-        bf.grid(row=4, column=0, padx=m.padding_lg, pady=(0, m.padding_md), sticky="w")
+        bf.grid(row=3, column=0, padx=m.padding_lg, pady=(0, m.padding_md), sticky="w")
 
         btn_cfg = dict(height=m.button_height + 8, corner_radius=m.corner_radius,
                        font=(t.family_ui, t.size_md, "bold"), width=140)
@@ -246,52 +360,71 @@ class DashboardTab(ctk.CTkFrame):
     # ──────────────────────────────────────────────
 
     def _load_presets(self) -> None:
-        base = Path(__file__).parent.parent
+        _app_dir = Path(self._config.get("_app_dir", "")) or Path(__file__).parent.parent
+        base = _app_dir
         self._presets = list_presets(base / "zapret")
 
         if not self._presets:
-            self._preset_menu.configure(values=["— пресеты не найдены —"])
-            self._preset_var.set("— пресеты не найдены —")
+            self._preset_menu.set_items([])
             return
 
         self._refresh_menu_values()
         names = [p['name'] for p in self._presets]
-        current = _strip_symbol(self._preset_var.get())
-        target = current if current in names else names[0]
-        self._preset_var.set(_preset_label(target, self._ping_mgr.get_status(target)))
-        self._on_preset_select(self._preset_var.get(), auto_start=False)
+        # Восстанавливаем сохранённый пресет из конфига
+        saved = self._config.get("zapret", {}).get("last_preset", "")
+        current = self._preset_menu.get_selected_name()
+        target = saved if saved in names else (current if current in names else names[0])
+        self._preset_menu.set_selected(target, self._ping_mgr.get_status(target))
+        self._on_preset_select(target, auto_start=False)
 
     def _load_cache_silent(self) -> None:
         """Загружает кэш тихо — без сообщений об ошибках если файла нет."""
         self._ping_mgr.load_cached()
 
+    def _maybe_run_tests(self) -> None:
+        """Запустить тесты автоматически если кэш устарел (>24 часов) или отсутствует."""
+        from core.ping_checker import find_latest_results
+        results_dir = self._ping_mgr._results_dir
+        latest = find_latest_results(results_dir)
+        if latest is None:
+            # Нет файла вообще — запускаем
+            self._run_auto_tests()
+            return
+        age_hours = (time.time() - latest.stat().st_mtime) / 3600
+        if age_hours > 24:
+            self._run_auto_tests()
+
+    def _run_auto_tests(self) -> None:
+        """Запустить тесты в фоне, показать статус в дропдауне."""
+        if self._ping_mgr.is_testing:
+            return
+        self._preset_menu.set_status_text("обновление…")
+        self._ping_mgr.run_tests()
+
     def _refresh_menu_values(self) -> None:
-        """Обновить все пункты меню с актуальными символами пинга."""
-        values = [
-            _preset_label(p['name'], self._ping_mgr.get_status(p['name']))
-            for p in self._presets
-        ]
-        self._preset_menu.configure(values=values)
-        # Обновить текущий выбор
+        """Обновить все пункты меню с актуальными статусами пинга."""
+        items = [(p['name'], self._ping_mgr.get_status(p['name'])) for p in self._presets]
+        self._preset_menu.set_items(items)
         if self._selected_preset:
             name = self._selected_preset['name']
-            self._preset_var.set(_preset_label(name, self._ping_mgr.get_status(name)))
+            self._preset_menu.set_selected(name, self._ping_mgr.get_status(name))
 
     def _on_refresh_presets(self) -> None:
         self._btn_refresh.configure(state="disabled", text="…")
+        self._preset_menu.set_status_text("обновление…")
         self.after(50, self._do_refresh)
 
     def _do_refresh(self) -> None:
         self._load_presets()
         self._load_cache_silent()
         self._btn_refresh.configure(state="normal", text="↻")
+        self._run_auto_tests()
 
     # ──────────────────────────────────────────────
     #  Выбор пресета
     # ──────────────────────────────────────────────
 
-    def _on_preset_select(self, display_name: str, auto_start: bool = True) -> None:
-        name = _strip_symbol(display_name)
+    def _on_preset_select(self, name: str, auto_start: bool = True) -> None:
         preset = next((p for p in self._presets if p['name'] == name), None)
         self._selected_preset = preset
 
@@ -301,6 +434,12 @@ class DashboardTab(ctk.CTkFrame):
                 args_str = args_str[:127] + '…'
             self._args_label.configure(text=args_str or '(нет аргументов)')
             self._preset_desc.configure(text=preset.get('desc', ''))
+            # Сохраняем выбор в конфиг
+            if "zapret" not in self._config:
+                self._config["zapret"] = {}
+            self._config["zapret"]["last_preset"] = name
+            if self._save_config_fn:
+                self._save_config_fn()
 
         self._update_ping_indicator(name)
 
@@ -312,47 +451,27 @@ class DashboardTab(ctk.CTkFrame):
                 self.manager.start(bat_path=bat)
 
     def _update_ping_indicator(self, preset_name: str) -> None:
-        status = self._ping_mgr.get_status(preset_name)
-        self._ping_dot.configure(
-            text=_PING_SYMBOL[status],
-            text_color=_PING_DOT_COLOR[status],
-        )
-        self._ping_text.configure(
-            text=_PING_TEXT[status],
-            text_color=_PING_DOT_COLOR[status],
-        )
+        pass
 
     # ──────────────────────────────────────────────
     #  Тестирование
     # ──────────────────────────────────────────────
 
-    def _on_run_tests(self) -> None:
-        if self._ping_mgr.is_testing:
-            return
-        self._btn_run_tests.configure(state="disabled", text="Тестирование…")
-        self._ping_status_label.configure(
-            text="⏳ Тесты запущены (несколько минут)…",
-            text_color=theme.palette.warning)
-        self._ping_mgr.run_tests()
-
     def _on_ping_update(self, preset_name: str, status: PingStatus) -> None:
         self.after(0, self._apply_ping_update, preset_name, status)
 
     def _apply_ping_update(self, preset_name: str, status: PingStatus) -> None:
-        self._refresh_menu_values()
-        if self._selected_preset and self._selected_preset['name'] == preset_name:
-            self._update_ping_indicator(preset_name)
+        # Обновляем только конкретный элемент в списке — не перестраиваем весь список
+        for i, (name, _) in enumerate(self._preset_menu._items):
+            if name == preset_name:
+                self._preset_menu._items[i] = (name, status)
+                break
+        # Если это выбранный пресет — обновить точку цвета в заголовке
+        if preset_name == self._preset_menu.get_selected_name():
+            self._preset_menu.set_selected(preset_name, status)
 
     def _on_tests_done(self, success: bool, message: str) -> None:
-        self.after(0, self._apply_tests_done, success, message)
-
-    def _apply_tests_done(self, success: bool, message: str) -> None:
-        p = theme.palette
-        self._btn_run_tests.configure(state="normal", text="Запустить тесты")
-        self._ping_status_label.configure(
-            text=f"✓ {message}" if success else f"✗ {message}",
-            text_color=p.success if success else p.error,
-        )
+        self.after(0, self._preset_menu.clear_status_text)
 
     # ──────────────────────────────────────────────
     #  Управление процессом
@@ -384,21 +503,30 @@ class DashboardTab(ctk.CTkFrame):
         self._pid_label.configure(text=f"PID: {pid}" if pid else "PID: —")
         self._update_buttons()
 
-    def _update_buttons(self) -> None:
+    def _btn_style_on(self) -> dict:
         p = theme.palette
+        return dict(
+            fg_color=p.btn_on_bg,
+            hover_color=p.btn_on_hover,
+            text_color=p.btn_on_text,
+            border_color=p.btn_on_border,
+        )
+
+    def _btn_style_off(self) -> dict:
+        p = theme.palette
+        return dict(
+            fg_color=p.bg_card,
+            hover_color=p.bg_hover,
+            text_color=p.text_secondary,
+            border_color=p.border_light,
+        )
+
+    def _update_buttons(self) -> None:
         running = self.manager.is_running
         if running:
-            self._btn_toggle.configure(
-                text="■  Стоп",
-                fg_color="#1a3d2b", hover_color="#1f4a33",
-                text_color=p.success, border_color=p.success,
-            )
+            self._btn_toggle.configure(text="■  Стоп", **self._btn_style_on())
         else:
-            self._btn_toggle.configure(
-                text="▶  Запуск",
-                fg_color=p.bg_card, hover_color=p.bg_hover,
-                text_color=p.text_secondary, border_color=p.border_light,
-            )
+            self._btn_toggle.configure(text="▶  Запуск", **self._btn_style_off())
 
     # ──────────────────────────────────────────────
     #  Game Filter
@@ -414,17 +542,10 @@ class DashboardTab(ctk.CTkFrame):
         self._apply_game_filter_style()
 
     def _apply_game_filter_style(self) -> None:
-        p = theme.palette
         if self._game_filter_enabled:
-            self._btn_game.configure(
-                fg_color="#1a3d2b", hover_color="#1f4a33",
-                text_color=p.success, border_color=p.success,
-            )
+            self._btn_game.configure(**self._btn_style_on())
         else:
-            self._btn_game.configure(
-                fg_color=p.bg_card, hover_color=p.bg_hover,
-                text_color=p.text_secondary, border_color=p.border_light,
-            )
+            self._btn_game.configure(**self._btn_style_off())
 
     def _on_game_filter_toggle(self) -> None:
         flag = self._game_filter_flag_path()
@@ -483,10 +604,7 @@ class DashboardTab(ctk.CTkFrame):
                     "FlowZap — DNS",
                     "Сначала добавьте DNS-адреса во вкладке «Параметры» и нажмите «Применить»."
                 )
-                self._btn_dns.configure(
-                    fg_color=p.bg_card, hover_color=p.bg_hover,
-                    text_color=p.text_secondary, border_color=p.border_light,
-                )
+                self._btn_dns.configure(**self._btn_style_off())
                 return
 
         # Показываем промежуточное состояние — кнопка серая и заблокирована
@@ -549,17 +667,8 @@ class DashboardTab(ctk.CTkFrame):
                 f"Ошибка: {error}\n\n"
                 f"Убедитесь что приложение запущено от администратора."
             )
-            self._btn_dns.configure(
-                fg_color=p.bg_card, hover_color=p.bg_hover,
-                text_color=p.text_secondary, border_color=p.border_light,
-            )
+            self._btn_dns.configure(**self._btn_style_off())
         elif enable:
-            self._btn_dns.configure(
-                fg_color="#1a3d2b", hover_color="#1f4a33",
-                text_color=p.success, border_color=p.success,
-            )
+            self._btn_dns.configure(**self._btn_style_on())
         else:
-            self._btn_dns.configure(
-                fg_color=p.bg_card, hover_color=p.bg_hover,
-                text_color=p.text_secondary, border_color=p.border_light,
-            )
+            self._btn_dns.configure(**self._btn_style_off())

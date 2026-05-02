@@ -17,13 +17,14 @@ import threading
 
 
 class SettingsTab(ctk.CTkFrame):
-    def __init__(self, parent: ctk.CTkFrame, manager: ZapretManager, config: dict = None) -> None:
+    def __init__(self, parent: ctk.CTkFrame, manager: ZapretManager, config: dict = None, on_core_updated=None) -> None:
         p = theme.palette
         super().__init__(parent, fg_color=p.bg_root, corner_radius=0)
         self.manager = manager
         self._config = config or {}
         self._repo = self._config.get("updater", {}).get("repo", "xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy")
         self._app_dir = Path(__file__).parent.parent
+        self._on_core_updated = on_core_updated  # коллбэк -> запуск тестов пинга
         self._build()
 
     def _build(self) -> None:
@@ -32,9 +33,19 @@ class SettingsTab(ctk.CTkFrame):
         m = theme.metrics
 
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # Скроллируемый контейнер
+        scroll = ctk.CTkScrollableFrame(
+            self, fg_color=p.bg_root, corner_radius=0,
+            scrollbar_button_color=p.border,
+            scrollbar_button_hover_color=p.border_light,
+        )
+        scroll.grid(row=0, column=0, sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            self,
+            scroll,
             text="Настройки",
             font=(t.family_ui, t.size_xl, "bold"),
             text_color=p.text_primary,
@@ -42,7 +53,7 @@ class SettingsTab(ctk.CTkFrame):
                pady=(m.padding_lg, m.padding_md))
 
         # ── Пути ─────────────────────────────
-        paths_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        paths_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
         paths_card.grid(row=1, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
         paths_card.grid_columnconfigure(1, weight=1)
 
@@ -61,7 +72,7 @@ class SettingsTab(ctk.CTkFrame):
                              pady=(m.padding_md, m.padding_md), sticky="ew")
 
         # ── Поведение ─────────────────────────
-        beh_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        beh_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
         beh_card.grid(row=2, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
 
         self._autostart_var = ctk.BooleanVar(value=False)
@@ -73,7 +84,7 @@ class SettingsTab(ctk.CTkFrame):
         ).pack(anchor="w", padx=m.padding_md, pady=m.padding_md)
 
         # ── Стиль градиентной полоски ─────────
-        bar_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        bar_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
         bar_card.grid(row=3, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
 
         ctk.CTkLabel(
@@ -101,9 +112,39 @@ class SettingsTab(ctk.CTkFrame):
             command=self._on_bar_style_change,
         ).pack(anchor="w", padx=m.padding_md, pady=(0, m.padding_md))
 
+        # ── Выбор темы ────────────────────────
+        theme_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        theme_card.grid(row=4, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
+
+        ctk.CTkLabel(
+            theme_card, text="Тема интерфейса",
+            font=(t.family_ui, t.size_md, "bold"), text_color=p.text_primary,
+        ).pack(anchor="w", padx=m.padding_md, pady=(m.padding_md, 4))
+
+        ctk.CTkLabel(
+            theme_card, text="Применится после перезапуска приложения",
+            font=(t.family_ui, t.size_xs), text_color=p.text_muted,
+        ).pack(anchor="w", padx=m.padding_md, pady=(0, 8))
+
+        from ui.theme import THEME_NAMES
+        self._theme_var = ctk.StringVar(
+            value=self._config.get("ui", {}).get("theme_name", "default")
+        )
+        ctk.CTkSegmentedButton(
+            theme_card,
+            values=list(THEME_NAMES.keys()),
+            variable=self._theme_var,
+            selected_color=p.accent,
+            selected_hover_color=p.accent_dim,
+            fg_color=p.bg_input,
+            unselected_color=p.bg_input,
+            text_color=p.text_secondary,
+            command=self._on_theme_change,
+        ).pack(anchor="w", padx=m.padding_md, pady=(0, m.padding_md))
+
         # ── Обновления Core ───────────────────
-        update_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
-        update_card.grid(row=4, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
+        update_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        update_card.grid(row=5, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
         update_card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
@@ -183,12 +224,24 @@ class SettingsTab(ctk.CTkFrame):
 
         # ── Кнопка сохранить ─────────────────
         ctk.CTkButton(
-            self, text="Сохранить",
+            scroll, text="Сохранить",
             fg_color=p.accent, hover_color=p.accent_dim,
             text_color="#000000", height=m.button_height,
             corner_radius=m.corner_radius,
             command=self._save,
-        ).grid(row=5, column=0, sticky="w", padx=m.padding_lg, pady=(0, m.padding_lg))
+        ).grid(row=6, column=0, sticky="w", padx=m.padding_lg, pady=(0, m.padding_lg))
+
+    # ─────────────────────────────────────────
+    #  Тема
+    # ─────────────────────────────────────────
+
+    def _on_theme_change(self, value: str) -> None:
+        if "ui" not in self._config:
+            self._config["ui"] = {}
+        self._config["ui"]["theme_name"] = value
+        root = self.winfo_toplevel()
+        if hasattr(root, "save_config"):
+            root.save_config()
 
     # ─────────────────────────────────────────
     #  Полоска
@@ -274,6 +327,13 @@ class SettingsTab(ctk.CTkFrame):
             installed = get_installed_core_version(self._app_dir / "zapret")
             if installed:
                 self._core_ver_label.configure(text=installed)
+            # Запустить тесты пинга после успешного обновления Core
+            if self._on_core_updated:
+                self._update_status.configure(
+                    text=f"✓ {message} — запускаем тесты пресетов…",
+                    text_color=p.success,
+                )
+                self._on_core_updated()
         else:
             self._update_status.configure(text=f"✗ {message}", text_color=p.error)
             self._btn_update.configure(state="normal")

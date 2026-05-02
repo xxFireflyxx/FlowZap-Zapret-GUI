@@ -2,68 +2,53 @@
 ui/theme.py
 -----------
 Централизованная тема FlowZap.
-Все цвета, шрифты и стили хранятся здесь — менять только здесь.
+Поддерживает несколько тем — переключается в настройках.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict
 
 
-# ─────────────────────────────────────────────
-#  Цветовая палитра
-# ─────────────────────────────────────────────
-
 @dataclass(frozen=True)
 class Palette:
-    # Фоны
-    bg_root:    str = "#0d0f11"      # самый тёмный — корень окна
-    bg_sidebar: str = "#111417"      # боковая панель
-    bg_card:    str = "#161a1f"      # карточки / панели
-    bg_input:   str = "#1c2128"      # поля ввода
-    bg_hover:   str = "#1e2530"      # hover на кнопках навигации
-
-    # Акцент — teal/голубой
-    accent:         str = "#00b4d8"
-    accent_dim:     str = "#0096b4"   # чуть темнее (pressed)
-    accent_glow:    str = "#00b4d820" # полупрозрачный для рамок
-
-    # Текст
-    text_primary:   str = "#e8edf2"
-    text_secondary: str = "#8a9ab0"
-    text_muted:     str = "#4a5568"
-
-    # Состояния
-    success: str = "#22c55e"
-    warning: str = "#f59e0b"
-    error:   str = "#ef4444"
-    info:    str = "#00b4d8"
-
-    # Разделители
-    border:       str = "#232b35"
-    border_light: str = "#2d3748"
+    bg_root:        str
+    bg_sidebar:     str
+    bg_card:        str
+    bg_input:       str
+    bg_hover:       str
+    accent:         str
+    accent_dim:     str
+    accent_glow:    str
+    text_primary:   str
+    text_secondary: str
+    text_muted:     str
+    success:        str
+    warning:        str
+    error:          str
+    info:           str
+    border:         str
+    border_light:   str
+    # Цвета активных (включённых) кнопок
+    btn_on_bg:      str
+    btn_on_hover:   str
+    btn_on_text:    str
+    btn_on_border:  str
 
 
 @dataclass(frozen=True)
 class Typography:
-    # Шрифты (CustomTkinter использует системные + Google Fonts через ctk)
-    family_ui:   str = "Segoe UI"          # Windows; fallback — системный
-    family_mono: str = "Cascadia Code"     # для логов; fallback — Consolas
-
-    size_xs:  int = 10
-    size_sm:  int = 11
-    size_md:  int = 13
-    size_lg:  int = 15
-    size_xl:  int = 18
-    size_xxl: int = 24
-    size_hero: int = 32
-
+    family_ui:     str = "Segoe UI"
+    family_mono:   str = "Cascadia Code"
+    size_xs:       int = 10
+    size_sm:       int = 11
+    size_md:       int = 13
+    size_lg:       int = 15
+    size_xl:       int = 18
+    size_xxl:      int = 24
+    size_hero:     int = 32
     weight_normal: str = "normal"
     weight_bold:   str = "bold"
 
-
-# ─────────────────────────────────────────────
-#  Константы виджетов
-# ─────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class Metrics:
@@ -77,18 +62,14 @@ class Metrics:
     icon_size:        int = 18
 
 
-# ─────────────────────────────────────────────
-#  Цвета для лог-парсера
-# ─────────────────────────────────────────────
-
 LOG_COLORS: Dict[str, str] = {
-    "INFO":    "#22c55e",   # зелёный
-    "ERROR":   "#ef4444",   # красный
-    "WARN":    "#f59e0b",   # жёлтый
+    "INFO":    "#22c55e",
+    "ERROR":   "#ef4444",
+    "WARN":    "#f59e0b",
     "WARNING": "#f59e0b",
-    "DEBUG":   "#8a9ab0",   # серый
-    "DPI":     "#00b4d8",   # голубой (акцент)
-    "CONNECT": "#a78bfa",   # фиолетовый
+    "DEBUG":   "#8a9ab0",
+    "DPI":     "#00b4d8",
+    "CONNECT": "#a78bfa",
     "BLOCK":   "#ef4444",
     "BYPASS":  "#22c55e",
     "START":   "#22c55e",
@@ -96,40 +77,102 @@ LOG_COLORS: Dict[str, str] = {
     "DEFAULT": "#e8edf2",
 }
 
-# ─────────────────────────────────────────────
-#  Singleton-доступ к теме
-# ─────────────────────────────────────────────
+THEMES: Dict[str, Palette] = {
+    "default": Palette(
+        bg_root="#0d0f11",      bg_sidebar="#111417",
+        bg_card="#161a1f",      bg_input="#1c2128",
+        bg_hover="#1e2530",
+        accent="#00b4d8",       accent_dim="#0096b4",
+        accent_glow="#00b4d820",
+        text_primary="#e8edf2", text_secondary="#8a9ab0",
+        text_muted="#4a5568",
+        success="#22c55e",      warning="#f59e0b",
+        error="#ef4444",        info="#00b4d8",
+        border="#232b35",       border_light="#2d3748",
+        btn_on_bg="#0d2e1a",    btn_on_hover="#0f3820",
+        btn_on_text="#22c55e",  btn_on_border="#22c55e",
+    ),
+    "indigo": Palette(
+        bg_root="#13151a",      bg_sidebar="#0e1014",
+        bg_card="#1a1c24",      bg_input="#1e2030",
+        bg_hover="#1a1c2e",
+        accent="#6366f1",       accent_dim="#4f52d4",
+        accent_glow="#6366f120",
+        text_primary="#e0e0e8", text_secondary="#6468a0",
+        text_muted="#444860",
+        success="#4ade80",      warning="#fbbf24",
+        error="#f87171",        info="#818cf8",
+        border="#1e2028",       border_light="#2a2c3e",
+        btn_on_bg="#0d2e1a",    btn_on_hover="#0f3820",
+        btn_on_text="#4ade80",  btn_on_border="#4ade80",
+    ),
+    "paper": Palette(
+        bg_root="#faf8f5",      bg_sidebar="#f2ede6",
+        bg_card="#ffffff",      bg_input="#f7f4ef",
+        bg_hover="#ede8e0",
+        accent="#c4894a",       accent_dim="#a8733a",
+        accent_glow="#c4894a20",
+        text_primary="#2d2520", text_secondary="#8a7060",
+        text_muted="#b0a090",
+        success="#4a7c59",      warning="#c4894a",
+        error="#a0403a",        info="#4a6fa0",
+        border="#e8e4de",       border_light="#ddd8d0",
+        btn_on_bg="#e8f5ec",    btn_on_hover="#d8eede",
+        btn_on_text="#4a7c59",  btn_on_border="#4a7c59",
+    ),
+    "terminal": Palette(
+        bg_root="#0a0a0a",      bg_sidebar="#0a0a0a",
+        bg_card="#111111",      bg_input="#161616",
+        bg_hover="#1a1a1a",
+        accent="#ff3c00",       accent_dim="#cc3000",
+        accent_glow="#ff3c0020",
+        text_primary="#ffffff", text_secondary="#666666",
+        text_muted="#333333",
+        success="#00ff41",      warning="#ffaa00",
+        error="#ff3c00",        info="#ff3c00",
+        border="#1a1a1a",       border_light="#222222",
+        btn_on_bg="#001a0a",    btn_on_hover="#002010",
+        btn_on_text="#00ff41",  btn_on_border="#00ff41",
+    ),
+}
+
+THEME_NAMES: Dict[str, str] = {
+    "default":  "Default",
+    "indigo":   "Indigo",
+    "paper":    "Paper",
+    "terminal": "Terminal",
+}
+
 
 class Theme:
-    """
-    Главный объект темы. Импортируй и используй:
-        from ui.theme import theme
-        color = theme.palette.accent
-    """
-    palette:    Palette    = Palette()
-    typography: Typography = Typography()
-    metrics:    Metrics    = Metrics()
-    log_colors: Dict[str, str] = field(default_factory=lambda: LOG_COLORS)
-
     def __init__(self) -> None:
-        self.palette    = Palette()
+        self.palette    = THEMES["default"]
         self.typography = Typography()
         self.metrics    = Metrics()
         self.log_colors = LOG_COLORS
+        self._current   = "default"
+
+    def set_theme(self, name: str) -> None:
+        if name in THEMES:
+            self.palette  = THEMES[name]
+            self._current = name
+            if name == "terminal":
+                self.typography = Typography(family_ui="Cascadia Code")
+            else:
+                self.typography = Typography()
+
+    @property
+    def current(self) -> str:
+        return self._current
 
     def get_log_color(self, tag: str) -> str:
-        """Вернуть цвет для лог-тега. Если не найден — дефолтный."""
         return self.log_colors.get(tag.upper(), self.log_colors["DEFAULT"])
 
     def apply_ctk_theme(self) -> None:
-        """
-        Применить глобальные настройки CustomTkinter.
-        Вызывать ОДИН раз до создания виджетов.
-        """
         import customtkinter as ctk
-        ctk.set_appearance_mode("dark")
+        mode = "light" if self._current == "paper" else "dark"
+        ctk.set_appearance_mode(mode)
         ctk.set_default_color_theme("dark-blue")
 
 
-# Глобальный экземпляр — импортируй его везде
 theme = Theme()

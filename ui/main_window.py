@@ -122,6 +122,10 @@ class MainWindow(ctk.CTk):
         self.config_path = config_path
         self.manager = manager
 
+        # Загрузить тему из конфига
+        saved_theme = self.config.get("ui", {}).get("theme_name", "default")
+        theme.set_theme(saved_theme)
+
         p = theme.palette
         m = theme.metrics
 
@@ -349,7 +353,17 @@ class MainWindow(ctk.CTk):
             text="v0.1.0",
             font=(t.family_ui, t.size_xs),
             text_color=p.text_muted,
-        ).pack(pady=(0, m.padding_md))
+        ).pack(pady=(0, 2))
+
+        _author_lbl = ctk.CTkLabel(
+            sidebar,
+            text="by xxFireflyxx",
+            font=(t.family_ui, t.size_xs),
+            text_color=p.text_muted,
+            cursor="hand2",
+        )
+        _author_lbl.pack(pady=(0, m.padding_md))
+        _author_lbl.bind("<Button-1>", lambda e: __import__("webbrowser").open("https://github.com/xxFireflyxx"))
 
         return sidebar
 
@@ -366,11 +380,11 @@ class MainWindow(ctk.CTk):
             from ui.settings_tab import SettingsTab
 
             tab_classes = {
-                "dashboard":  (DashboardTab,  {"manager": self.manager, "config": self.config}),
+                "dashboard":  (DashboardTab,  {"manager": self.manager, "config": self.config, "save_config_fn": self.save_config}),
                 "parameters": (ParametersTab, {"manager": self.manager, "config": self.config}),
                 "logs":       (LogsTab,       {"manager": self.manager}),
                 "updates":    (UpdatesTab,    {"config": self.config}),
-                "settings":   (SettingsTab,   {"manager": self.manager, "config": self.config}),
+                "settings":   (SettingsTab,   {"manager": self.manager, "config": self.config, "on_core_updated": self._on_core_updated}),
             }
 
             for tab_id, (cls, kwargs) in tab_classes.items():
@@ -410,6 +424,12 @@ class MainWindow(ctk.CTk):
     # ─────────────────────────────────────────
     #  Коллбэки
     # ─────────────────────────────────────────
+
+    def _on_core_updated(self) -> None:
+        """Вызывается после успешного обновления Core — запускает тесты пинга."""
+        dashboard = self._tabs.get("dashboard")
+        if dashboard and hasattr(dashboard, "_ping_mgr"):
+            dashboard._ping_mgr.run_tests()
 
     def _on_state_change(self, state: ServiceState) -> None:
         self.after(0, self._status_badge.update_state, state)

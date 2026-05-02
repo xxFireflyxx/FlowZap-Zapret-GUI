@@ -52,7 +52,7 @@ def load_config(config_path: Path) -> dict:
             "autostart": False,
         },
         "ui":      {"theme": "dark", "remember_tab": True},
-        "updater": {"repo": "bol-van/zapret", "check_on_start": True},
+        "updater": {"repo": "Flowseal/zapret-discord-youtube", "check_on_start": True},
     }
     if not config_path.exists():
         return defaults
@@ -86,6 +86,7 @@ def main() -> None:
     manager = ZapretManager(zapret_exe=zapret_exe)
 
     from ui.main_window import MainWindow
+    config["_app_dir"] = str(ROOT)   # служебный ключ — путь к корню приложения
     app = MainWindow(manager=manager, config=config, config_path=ROOT / "config.toml")
     if config["zapret"].get("autostart", False):
         startup_args = config["zapret"].get("args", [])
