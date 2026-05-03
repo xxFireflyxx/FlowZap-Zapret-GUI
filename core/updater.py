@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.1.0"
+GUI_VERSION = "0.1.1"
 FLOWZAP_REPO = "xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy"
 
 
@@ -106,14 +106,90 @@ def get_installed_core_version(zapret_dir: Path) -> Optional[str]:
     return None
 
 
+def find_zip_asset(release: dict) -> Optional[dict]:
+    """Найти zip архив zapret в ассетах релиза."""
+    for asset in release.get("assets", []):
+        name = asset.get("name", "").lower()
+        if name.startswith("zapret") and name.endswith(".zip"):
+            return asset
+    return None
+
+
 def download_and_install_core(
     zapret_dir: Path,
-    repo: str = FLOWZAP_REPO,
+    repo: str = "Flowseal/zapret-discord-youtube",
     on_progress: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
 ) -> None:
-    """Заглушка — обновление Core пока не реализовано."""
-    if on_progress:
-        on_progress("Обновление Core не поддерживается в этой версии.")
-    if on_done:
-        on_done(False, "Не поддерживается.")
+    """
+    Скачать последний релиз zapret-discord-youtube и распаковать в zapret_dir.
+    Запускается в отдельном потоке.
+    """
+    def _log(msg: str) -> None:
+        logger.info(msg)
+        if on_progress:
+            on_progress(msg)
+
+    def _worker() -> None:
+        try:
+            import urllib.request, json, zipfile, io, tempfile, os
+
+            _log("Получаем информацию о последнем релизе zapret...")
+            release = get_latest_release(repo)
+            if not release:
+                raise ValueError("Не удалось получить информацию о релизе")
+
+            tag = release.get("tag_name", "unknown")
+            asset = find_zip_asset(release)
+            if not asset:
+                raise ValueError(f"Архив zapret не найден в релизе {tag}")
+
+            dl_url = asset["browser_download_url"]
+            zip_name = asset["name"]
+            size_mb = asset.get("size", 0) / 1024 / 1024
+            _log(f"Скачиваем {zip_name} ({tag}, {size_mb:.1f} МБ)...")
+
+            req = urllib.request.Request(dl_url, headers={"User-Agent": "FlowZap/1.0"})
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = r.read()
+
+            _log("Распаковываем архив...")
+
+            # Распаковываем во временную папку
+            with tempfile.TemporaryDirectory() as tmp:
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    zf.extractall(tmp)
+
+                # Находим корневую папку внутри архива
+                entries = os.listdir(tmp)
+                if len(entries) == 1 and os.path.isdir(os.path.join(tmp, entries[0])):
+                    src = Path(tmp) / entries[0]
+                else:
+                    src = Path(tmp)
+
+                # Копируем файлы в zapret_dir (перезаписываем)
+                zapret_dir.mkdir(parents=True, exist_ok=True)
+                for item in src.iterdir():
+                    dst = zapret_dir / item.name
+                    if item.is_dir():
+                        if dst.exists():
+                            shutil.rmtree(dst)
+                        shutil.copytree(item, dst)
+                    else:
+                        shutil.copy2(item, dst)
+
+                # Сохраняем версию
+                ver_file = zapret_dir / "version.txt"
+                ver_file.write_text(tag, encoding="utf-8")
+
+            _log(f"✓ zapret обновлён до {tag}.")
+            if on_done:
+                on_done(True, f"zapret обновлён до {tag}")
+
+        except Exception as exc:
+            logger.error(f"Ошибка обновления Core: {exc}")
+            _log(f"✗ Ошибка: {exc}")
+            if on_done:
+                on_done(False, str(exc))
+
+    threading.Thread(target=_worker, daemon=True, name="core-updater").start()

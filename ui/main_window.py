@@ -258,8 +258,10 @@ class MainWindow(ctk.CTk):
             return
         try:
             import tomli_w
+            # Убираем служебные ключи (начинающиеся с "_") — они невалидны в TOML
+            data = {k: v for k, v in self.config.items() if not k.startswith("_")}
             with open(self.config_path, "wb") as f:
-                tomli_w.dump(self.config, f)
+                tomli_w.dump(data, f)
         except Exception as exc:
             import logging
             logging.getLogger(__name__).error(f"Ошибка сохранения конфига: {exc}")
@@ -313,7 +315,7 @@ class MainWindow(ctk.CTk):
 
         ctk.CTkLabel(
             logo_frame,
-            text=" β",
+            text="",
             font=(t.family_ui, t.size_sm),
             text_color=p.text_muted,
         ).pack(side="left", pady=(6, 0))
@@ -381,7 +383,10 @@ class MainWindow(ctk.CTk):
 
             tab_classes = {
                 "dashboard":  (DashboardTab,  {"manager": self.manager, "config": self.config, "save_config_fn": self.save_config}),
-                "parameters": (ParametersTab, {"manager": self.manager, "config": self.config}),
+                "parameters": (ParametersTab, {"manager": self.manager, "config": self.config,
+                                                   **( {"on_dns_changed": self._on_dns_changed}
+                                                       if "on_dns_changed" in ParametersTab.__init__.__code__.co_varnames
+                                                       else {} )}),
                 "logs":       (LogsTab,       {"manager": self.manager}),
                 "updates":    (UpdatesTab,    {"config": self.config}),
                 "settings":   (SettingsTab,   {"manager": self.manager, "config": self.config, "on_core_updated": self._on_core_updated}),
@@ -425,11 +430,30 @@ class MainWindow(ctk.CTk):
     #  Коллбэки
     # ─────────────────────────────────────────
 
-    def _on_core_updated(self) -> None:
-        """Вызывается после успешного обновления Core — запускает тесты пинга."""
+    def _on_dns_changed(self) -> None:
+        """Вызывается когда пользователь сменил активный DNS в parameters.
+        Если DNS сейчас включён — переподключаемся к новому адресу.
+        """
         dashboard = self._tabs.get("dashboard")
-        if dashboard and hasattr(dashboard, "_ping_mgr"):
-            dashboard._ping_mgr.run_tests()
+        if dashboard and getattr(dashboard, "_dns_enabled", False):
+            self.after(0, dashboard._restart_dns)
+
+    def _on_core_updated(self) -> None:
+        """Вызывается после успешного обновления Core.
+        1. Перезагружает список пресетов (новые bat файлы)
+        2. Запускает тесты пинга
+        """
+        dashboard = self._tabs.get("dashboard")
+        if not dashboard:
+            return
+
+        # Перезагружаем пресеты — после обновления могут появиться новые bat
+        if hasattr(dashboard, "_load_presets"):
+            self.after(0, dashboard._load_presets)
+
+        # Запускаем тесты пинга с задержкой чтобы пресеты успели загрузиться
+        if hasattr(dashboard, "_ping_mgr"):
+            self.after(500, dashboard._ping_mgr.run_tests)
 
     def _on_state_change(self, state: ServiceState) -> None:
         self.after(0, self._status_badge.update_state, state)

@@ -10,7 +10,8 @@ import traceback
 import tomllib
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+# При запуске из exe (PyInstaller onedir) используем папку с exe, иначе папку со скриптом
+ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
 
 # ─────────────────────────────────────────────
 #  Аварийный лог — пишем ДО настройки логгера

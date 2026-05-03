@@ -48,9 +48,9 @@ DEFAULT_PING_TARGETS = [
 ]
 
 # Таймаут одной HTTP проверки (сек)
-HTTP_TIMEOUT = 5
+HTTP_TIMEOUT = 4
 # Пауза после запуска winws перед проверками (сек)
-WINWS_INIT_DELAY = 5
+WINWS_INIT_DELAY = 4
 # Максимум параллельных HTTP проверок
 MAX_WORKERS = 10
 
@@ -199,6 +199,33 @@ def _run_checks_parallel(
 #  Менеджер пресетов
 # ─────────────────────────────────────────────
 
+
+class _ShellExecProcess:
+    """Заглушка процесса для случая когда winws запущен через ShellExecute."""
+    pid = None
+
+    def poll(self):
+        # Проверяем жив ли winws.exe через tasklist
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq winws.exe", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, encoding="cp866",
+                creationflags=0x08000000,
+            )
+            return None if "winws.exe" in result.stdout else 0
+        except Exception:
+            return 0
+
+    def terminate(self):
+        subprocess.run(["taskkill", "/F", "/IM", "winws.exe"],
+                       capture_output=True, creationflags=0x08000000)
+
+    def kill(self):
+        self.terminate()
+
+    def wait(self, timeout=None):
+        return 0
+
 class PresetPingManager:
     """
     Управляет статусами пинга для всех пресетов.
@@ -322,16 +349,36 @@ class PresetPingManager:
 
                 try:
                     # Ждём инициализации WinDivert
-                    time.sleep(WINWS_INIT_DELAY)
+                    # При первом запуске драйвер грузится дольше — ждём больше
+                    init_delay = WINWS_INIT_DELAY + 2 if i == 0 else WINWS_INIT_DELAY
+                    time.sleep(init_delay)
 
                     if self._stop_event.is_set():
                         break
 
-                    # Параллельные проверки всех хостов
-                    http_ok, http_err, ping_ok, ping_fail = _run_checks_parallel(
-                        DEFAULT_HTTP_TARGETS,
-                        DEFAULT_PING_TARGETS,
-                    )
+                    # Параллельные проверки с retry — первый пресет может дать
+                    # ложный красный пока WinDivert не инициализировался
+                    best_http_ok = best_http_err = best_ping_ok = best_ping_fail = 0
+                    max_attempts = 2
+                    for attempt in range(max_attempts):
+                        if self._stop_event.is_set():
+                            break
+                        http_ok, http_err, ping_ok, ping_fail = _run_checks_parallel(
+                            DEFAULT_HTTP_TARGETS,
+                            DEFAULT_PING_TARGETS,
+                        )
+                        # Если хотя бы частично работает — берём лучший результат
+                        if http_ok > best_http_ok:
+                            best_http_ok, best_http_err = http_ok, http_err
+                            best_ping_ok, best_ping_fail = ping_ok, ping_fail
+                        if http_ok > 0:
+                            break  # Есть результат — не повторяем
+                        if attempt < max_attempts - 1:
+                            logger.debug(f"  Попытка {attempt+1} неудачна, повтор через 3 сек...")
+                            time.sleep(3)
+
+                    http_ok, http_err = best_http_ok, best_http_err
+                    ping_ok, ping_fail = best_ping_ok, best_ping_fail
 
                     analytics[name] = {
                         "ok": http_ok, "err": http_err,
@@ -373,19 +420,33 @@ class PresetPingManager:
             self._kill_winws()  # Гарантированно убиваем winws
 
     def _start_winws(self, args: list[str]) -> Optional[subprocess.Popen]:
-        """Запустить winws.exe напрямую без окон."""
+        """Запустить winws.exe напрямую без окон.
+        
+        Если winws.exe требует прав администратора (WinError 740) —
+        используем STARTUPINFO с SW_HIDE (приложение уже запущено от админа,
+        поэтому дополнительный UAC не нужен).
+        """
+        import time as _t
         try:
             cmd = [str(self._winws_exe)] + args
             logger.debug(f"winws cmd ({len(cmd)} args): {cmd[0]} {' '.join(cmd[1:3])}...")
+
+            # STARTUPINFO скрывает окно и наследует права администратора
+            si = None
+            if os.name == "nt":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags = subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0  # SW_HIDE
+
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=str(self._winws_exe.parent),
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                startupinfo=si,
             )
             # Даём 1 сек и проверяем не упал ли сразу
-            import time as _t
             _t.sleep(1)
             if proc.poll() is not None:
                 stdout = proc.stdout.read().decode("utf-8", errors="replace").strip()
@@ -394,6 +455,36 @@ class PresetPingManager:
                 return None
             logger.debug(f"winws запущен PID={proc.pid}")
             return proc
+        except OSError as e:
+            if getattr(e, "winerror", None) == 740:
+                # WinError 740 — требуется повышение прав.
+                # Пробуем через ShellExecute (работает если FlowZap запущен от админа)
+                logger.warning("winws.exe требует повышения прав, пробуем ShellExecute...")
+                try:
+                    import ctypes
+                    bat_args = " ".join(f'"{a}"' if " " in str(a) else str(a) for a in args)
+                    ret = ctypes.windll.shell32.ShellExecuteW(
+                        None, "runas", str(self._winws_exe), bat_args,
+                        str(self._winws_exe.parent), 0,  # SW_HIDE
+                    )
+                    if ret > 32:
+                        _t.sleep(1.5)
+                        # Ищем запущенный winws.exe
+                        result = subprocess.run(
+                            ["tasklist", "/FI", "IMAGENAME eq winws.exe", "/FO", "CSV", "/NH"],
+                            capture_output=True, text=True, encoding="cp866",
+                            creationflags=0x08000000,
+                        )
+                        if "winws.exe" in result.stdout:
+                            logger.info("winws.exe запущен через ShellExecute")
+                            # Возвращаем None — watcher найдёт процесс сам
+                            return _ShellExecProcess()
+                    logger.error(f"ShellExecute вернул {ret}")
+                except Exception as e2:
+                    logger.error(f"ShellExecute ошибка: {e2}")
+            else:
+                logger.error(f"Ошибка запуска winws: {e}")
+            return None
         except Exception as e:
             logger.error(f"Ошибка запуска winws: {e}")
             return None

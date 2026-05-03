@@ -76,6 +76,15 @@ class PresetDropdown(ctk.CTkFrame):
         self._arrow.grid(row=0, column=2, padx=(4, 8), pady=8)
         self._arrow.bind("<Button-1>", self._toggle_popup)
 
+        # Фиксированная строка статуса — всегда в layout, текст меняется
+        self._status_lbl = ctk.CTkLabel(
+            self, text=" ",
+            font=("Segoe UI", 10),
+            text_color=p.text_muted,
+            anchor="w",
+        )
+        self._status_lbl.grid(row=1, column=0, sticky="w", padx=4, pady=(1, 0))
+
     # ── Публичный API ─────────────────────
 
     def set_items(self, items: list) -> None:
@@ -94,14 +103,6 @@ class PresetDropdown(ctk.CTkFrame):
     def set_status_text(self, text: str) -> None:
         """Показать мелкий статус под кнопкой (например 'проверка пресетов…')."""
         try:
-            if not hasattr(self, '_status_lbl'):
-                self._status_lbl = ctk.CTkLabel(
-                    self, text="",
-                    font=("Segoe UI", 10),
-                    text_color=self._p.text_muted,
-                    anchor="w",
-                )
-                self._status_lbl.grid(row=1, column=0, sticky="w", padx=4, pady=(1, 0))
             self._status_lbl.configure(text=f"⏳ {text}")
         except Exception:
             pass
@@ -109,8 +110,7 @@ class PresetDropdown(ctk.CTkFrame):
     def clear_status_text(self) -> None:
         """Убрать статусный текст."""
         try:
-            if hasattr(self, '_status_lbl'):
-                self._status_lbl.configure(text="")
+            self._status_lbl.configure(text=" ")
         except Exception:
             pass
 
@@ -293,14 +293,14 @@ class DashboardTab(ctk.CTkFrame):
         self._preset_desc = ctk.CTkLabel(
             pc, text="", font=(t.family_ui, t.size_xs),
             text_color=p.text_muted, anchor="w")
-        self._preset_desc.grid(row=1, column=0, columnspan=3,
-                               padx=m.padding_md, pady=(0, 4), sticky="w")
+        # Описание пресета скрыто
+        # self._preset_desc.grid(row=1, column=0, columnspan=3,
+        #                        padx=m.padding_md, pady=(0, 4), sticky="w")
 
         self._args_label = ctk.CTkLabel(
             pc, text="", font=(t.family_ui, t.size_xs),
             text_color=p.text_muted, anchor="w", wraplength=580, justify="left")
-        self._args_label.grid(row=2, column=0, columnspan=3,
-                              padx=m.padding_md, pady=(0, 4), sticky="ew")
+        # Аргументы скрыты — слишком много текста на главном экране
 
         self._auto_var = ctk.BooleanVar(value=True)
         ctk.CTkSwitch(
@@ -627,12 +627,20 @@ class DashboardTab(ctk.CTkFrame):
         error = ""
         try:
             if enable:
+                # Сначала сбрасываем ВСЕ DNS на DHCP — очищаем старые записи
+                subprocess.run(
+                    f'netsh interface ip set dns name="{interface}" source=dhcp',
+                    shell=True, capture_output=True,
+                    text=True, encoding='cp866', errors='replace'
+                )
+                # Устанавливаем основной DNS
                 cmd1 = f'netsh interface ip set dns name="{interface}" source=static addr={dns1} validate=no'
                 log.debug(f"DNS cmd: {cmd1}")
                 r1 = subprocess.run(cmd1, shell=True, capture_output=True,
                                     text=True, encoding='cp866', errors='replace')
                 if r1.returncode != 0:
                     raise RuntimeError(r1.stdout.strip() or r1.stderr.strip() or f"код {r1.returncode}")
+                # Добавляем запасной DNS если есть
                 if dns2:
                     cmd2 = f'netsh interface ip add dns name="{interface}" addr={dns2} index=2 validate=no'
                     subprocess.run(cmd2, shell=True, capture_output=True,
@@ -651,6 +659,46 @@ class DashboardTab(ctk.CTkFrame):
             log.error(f"Ошибка DNS: {e}")
 
         self.after(0, self._dns_done, enable, interface, error)
+
+    def _restart_dns(self) -> None:
+        """Переподключиться к DNS — выключить и включить с новыми адресами."""
+        if not self._dns_enabled:
+            return
+        # Выключаем текущий DNS
+        self._dns_enabled = False
+        interface = self._get_active_interface()
+        import threading
+        threading.Thread(
+            target=self._dns_worker,
+            args=(False, "", "", interface),
+            daemon=True,
+        ).start()
+        # Включаем новый DNS через секунду
+        self.after(1500, self._apply_new_dns)
+
+    def _apply_new_dns(self) -> None:
+        """Включить DNS с новыми адресами после переподключения."""
+        dns_cfg = self._config.get("dns", {})
+        pairs = dns_cfg.get("pairs", [])
+        if pairs and isinstance(pairs[0], dict):
+            dns1 = pairs[0].get("main", "")
+            dns2 = pairs[0].get("backup", "")
+        else:
+            servers = dns_cfg.get("servers", [])
+            dns1 = servers[0] if servers else ""
+            dns2 = servers[1] if len(servers) > 1 else ""
+
+        if not dns1:
+            return
+
+        self._dns_enabled = True
+        interface = self._get_active_interface()
+        import threading
+        threading.Thread(
+            target=self._dns_worker,
+            args=(True, dns1, dns2, interface),
+            daemon=True,
+        ).start()
 
     def _dns_done(self, enable: bool, interface: str, error: str) -> None:
         """Вызывается в главном потоке после завершения фоновой операции."""

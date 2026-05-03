@@ -131,6 +131,25 @@ class ServiceManager:
                 bin_dir   = self._bat_path.parent / "bin"
                 lists_dir = self._bat_path.parent / "lists"
 
+                # Создаём пустые пользовательские файлы если не существуют —
+                # winws.exe падает с ошибкой если файл указан но отсутствует
+                _user_files = [
+                    "list-general-user.txt",
+                    "list-exclude-user.txt",
+                    "list-exclude.txt",
+                    "ipset-exclude-user.txt",
+                    "ipset-exclude.txt",
+                ]
+                lists_dir.mkdir(parents=True, exist_ok=True)
+                for _uf in _user_files:
+                    _fp = lists_dir / _uf
+                    if not _fp.exists():
+                        try:
+                            _fp.touch()
+                            self._emit_log(f"[INFO] Создан пустой файл: {_uf}")
+                        except Exception as _e:
+                            self._emit_log(f"[WARN] Не удалось создать {_uf}: {_e}")
+
                 # Определяем значение GameFilter
                 game_flag = self._bat_path.parent / "utils" / "game_filter.enabled"
                 if game_flag.exists():
