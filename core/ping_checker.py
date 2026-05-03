@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 # Регулярка для строки аналитики в файле результатов
 _ANALYTICS_RE = re.compile(
     r'^(?P<name>.+?)\s*:\s*HTTP OK:\s*(?P<ok>\d+),\s*ERR:\s*(?P<err>\d+),'
-    r'\s*UNSUP:\s*(?P<unsup>\d+),\s*Ping OK:\s*(?P<ping_ok>\d+),\s*Fail:\s*(?P<fail>\d+)',
+    r'\s*UNSUP:\s*(?P<unsup>\d+),\s*Ping OK:\s*(?P<ping_ok>\d+),\s*Fail:\s*(?P<fail>\d+)'
+    r'(?:,\s*RETRY:(?P<retry>\d))?',
     re.MULTILINE,
 )
 
@@ -63,10 +64,19 @@ class PingStatus(Enum):
     FAIL     = auto()   # не работает
 
 
-def _classify(ok: int, err: int, fail: int) -> PingStatus:
-    if err == 0 and fail == 0:
-        return PingStatus.OK
-    if err > 0 and ok > 0 and err < ok:
+def _classify(ok: int, err: int, fail: int, needed_retry: bool = False) -> PingStatus:
+    """
+    Логика классификации:
+      🟢 OK   — err=0, без повторных попыток (независимо от ok — нули тоже OK если нет ошибок)
+      🟡 WARN — была повторная попытка но в итоге err=0; или err>0 но ok>err
+      🔴 FAIL — err>0 и ok<=err; или fail>0
+    """
+    has_errors = err > 0 or fail > 0
+    if not has_errors:
+        # Нет ошибок — если была повторная попытка то WARN, иначе OK
+        return PingStatus.WARN if needed_retry else PingStatus.OK
+    # Есть ошибки
+    if ok > 0 and err < ok and fail == 0:
         return PingStatus.WARN
     return PingStatus.FAIL
 
@@ -78,7 +88,9 @@ def parse_results_file(path: Path) -> dict[str, PingStatus]:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
         for m in _ANALYTICS_RE.finditer(text):
             name = re.sub(r'\.bat$', '', m.group("name").strip(), flags=re.IGNORECASE).strip()
-            results[name] = _classify(int(m.group("ok")), int(m.group("err")), int(m.group("fail")))
+            retry = m.group("retry")
+            needed_retry = retry == "1" if retry is not None else False
+            results[name] = _classify(int(m.group("ok")), int(m.group("err")), int(m.group("fail")), needed_retry=needed_retry)
     except Exception as e:
         logger.error(f"Ошибка парсинга {path}: {e}")
     return results
@@ -285,6 +297,12 @@ class PresetPingManager:
             logger.warning("Тесты уже запущены")
             return
 
+        if getattr(self, "_dns_active", False):
+            logger.warning("Тесты пропущены — DNS включён, результаты будут некорректными")
+            if self._on_tests_done:
+                self._on_tests_done(False, "Отключите DNS перед запуском тестов")
+            return
+
         if not self._winws_exe.exists():
             msg = f"winws.exe не найден: {self._winws_exe}"
             logger.error(msg)
@@ -301,6 +319,10 @@ class PresetPingManager:
             daemon=True,
             name="preset-tester",
         ).start()
+
+    def set_dns_active(self, active: bool) -> None:
+        """Сообщить менеджеру что DNS включён/выключен."""
+        self._dns_active = active
 
     def stop_tests(self) -> None:
         """Прервать текущее тестирование."""
@@ -332,6 +354,9 @@ class PresetPingManager:
 
                 logger.info(f"[{i+1}/{len(presets)}] Тестируем: {name}")
 
+                # Запомнить старый статус — откатим к нему если winws не запустится
+                prev_status = self._statuses.get(name, PingStatus.UNKNOWN)
+
                 # Уведомить UI что пресет проверяется
                 self._statuses[name] = PingStatus.CHECKING
                 if self._on_update:
@@ -341,9 +366,11 @@ class PresetPingManager:
                 proc = self._start_winws(args)
                 if proc is None:
                     logger.warning(f"Не удалось запустить winws для {name}")
-                    self._statuses[name] = PingStatus.FAIL
+                    # Откатываем к предыдущему статусу — не затираем кэш ложным FAIL
+                    rollback = prev_status if prev_status != PingStatus.UNKNOWN else PingStatus.FAIL
+                    self._statuses[name] = rollback
                     if self._on_update:
-                        self._on_update(name, PingStatus.FAIL)
+                        self._on_update(name, rollback)
                     analytics[name] = {"ok": 0, "err": 1, "unsup": 0, "ping_ok": 0, "fail": 1}
                     continue
 
@@ -356,9 +383,9 @@ class PresetPingManager:
                     if self._stop_event.is_set():
                         break
 
-                    # Параллельные проверки с retry — первый пресет может дать
-                    # ложный красный пока WinDivert не инициализировался
+                    # Параллельные проверки с retry
                     best_http_ok = best_http_err = best_ping_ok = best_ping_fail = 0
+                    needed_retry = False
                     max_attempts = 2
                     for attempt in range(max_attempts):
                         if self._stop_event.is_set():
@@ -375,6 +402,7 @@ class PresetPingManager:
                             break  # Есть результат — не повторяем
                         if attempt < max_attempts - 1:
                             logger.debug(f"  Попытка {attempt+1} неудачна, повтор через 3 сек...")
+                            needed_retry = True
                             time.sleep(3)
 
                     http_ok, http_err = best_http_ok, best_http_err
@@ -384,9 +412,10 @@ class PresetPingManager:
                         "ok": http_ok, "err": http_err,
                         "unsup": 0,
                         "ping_ok": ping_ok, "fail": ping_fail,
+                        "needed_retry": needed_retry,
                     }
 
-                    status = _classify(http_ok, http_err, ping_fail)
+                    status = _classify(http_ok, http_err, ping_fail, needed_retry=needed_retry)
                     self._statuses[name] = status
                     if self._on_update:
                         self._on_update(name, status)
@@ -522,9 +551,10 @@ class PresetPingManager:
 
             lines = ["=== ANALYTICS ==="]
             for name, a in analytics.items():
+                retry_flag = "RETRY:1" if a.get("needed_retry") else "RETRY:0"
                 lines.append(
                     f"{name}.bat : HTTP OK: {a['ok']}, ERR: {a['err']}, "
-                    f"UNSUP: {a['unsup']}, Ping OK: {a['ping_ok']}, Fail: {a['fail']}"
+                    f"UNSUP: {a['unsup']}, Ping OK: {a['ping_ok']}, Fail: {a['fail']}, {retry_flag}"
                 )
 
             result_file.write_text("\n".join(lines), encoding="utf-8")

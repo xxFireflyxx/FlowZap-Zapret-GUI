@@ -21,13 +21,13 @@ from typing import Optional
 # Формат: start "..." [/min|/max|...] ["%BIN%winws.exe" | "...winws.exe" | winws.exe]
 _WINWS_RE = re.compile(
     r'start\s+"[^"]*"\s+(?:/\w+\s+)*(?:"[^"]*winws(?:\.exe)?"|[^\s"]*winws(?:\.exe)?)\s+(.*)',
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
 
 # Запасная регулярка: просто winws.exe где-то на строке (без start)
 _WINWS_FALLBACK_RE = re.compile(
     r'winws(?:\.exe)?\s+(.*)',
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE,
 )
 
 # Убираем: %ПЕРЕМЕННАЯ%, ^ (продолжение строки BAT)
@@ -113,7 +113,7 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
     args_raw = _CARET_RE.sub('', args_raw)
 
     # Убираем "pause", "exit", echo и подобные хвосты
-    args_raw = re.sub(r'\\b(pause|exit|echo\\.?)\\b.*', '', args_raw, flags=re.IGNORECASE)
+    args_raw = re.sub(r'(?i)\b(pause|exit|echo[^\n]*).*', '', args_raw)
 
     # Разбиваем на токены с учётом кавычек
     import shlex
@@ -122,12 +122,17 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
     except ValueError:
         args = args_raw.split()
 
-    # Убираем кавычки вокруг значений и оставляем только --аргументы
+    # Убираем кавычки, оставляем только --аргументы
+    # Ранняя остановка: первый токен не начинающийся с -- завершает список
     cleaned = []
     for a in args:
-        if a.startswith('--'):
-            a = a.replace('"', '').replace("'", '')
-            cleaned.append(a)
+        a_clean = a.replace('"', '').replace("'", '').strip()
+        if not a_clean:
+            continue
+        if a_clean.startswith('--'):
+            cleaned.append(a_clean)
+        elif cleaned:
+            break  # хвост файла — стоп
 
     return cleaned if cleaned else None
 

@@ -12,6 +12,7 @@ from typing import Dict, Callable, Optional
 from pathlib import Path
 
 from ui.theme import theme
+from core.updater import GUI_VERSION
 from core.manager import ZapretManager, ServiceState
 
 
@@ -77,6 +78,47 @@ class NavButton(ctk.CTkButton):
                 font=(t.family_ui, t.size_md),
             )
 
+    def show_dot(self) -> None:
+        """Показать пульсирующую оранжевую точку рядом с кнопкой."""
+        if hasattr(self, "_dot_canvas"):
+            return
+        dot = tk.Canvas(self, width=8, height=8, bd=0, highlightthickness=0,
+                        bg=theme.palette.bg_sidebar, cursor="hand2")
+        dot.place(relx=1.0, rely=0.5, x=-14, anchor="center")
+        dot.create_oval(1, 1, 7, 7, fill="#f97316", outline="")
+        self._dot_canvas = dot
+        self._dot_phase = 0
+        self._animate_dot()
+
+    def hide_dot(self) -> None:
+        """Скрыть точку обновления."""
+        if hasattr(self, "_dot_canvas"):
+            try:
+                self._dot_canvas.destroy()
+            except Exception:
+                pass
+            del self._dot_canvas
+
+    def _animate_dot(self) -> None:
+        if not hasattr(self, "_dot_canvas"):
+            return
+        try:
+            self._dot_canvas.winfo_exists()
+        except Exception:
+            return
+        import math
+        self._dot_phase = (self._dot_phase + 0.07) % (2 * math.pi)
+        alpha = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(self._dot_phase))
+        r = int(0xf9 * alpha + 0x1a * (1 - alpha))
+        g = int(0x73 * alpha + 0x1a * (1 - alpha))
+        b = int(0x16 * alpha + 0x1a * (1 - alpha))
+        color = f"#{r:02x}{g:02x}{b:02x}"
+        try:
+            self._dot_canvas.itemconfig(1, fill=color)
+            self.after(50, self._animate_dot)
+        except Exception:
+            pass
+
 
 # ─────────────────────────────────────────────
 #  Статус-индикатор (в sidebar)
@@ -123,6 +165,12 @@ class MainWindow(ctk.CTk):
         self.manager = manager
 
         # Загрузить тему из конфига
+        # Загружаем GitHub токен из конфига
+        _gh_token = self.config.get("github", {}).get("token", "")
+        if _gh_token:
+            from core.updater import set_github_token
+            set_github_token(_gh_token)
+
         saved_theme = self.config.get("ui", {}).get("theme_name", "default")
         theme.set_theme(saved_theme)
 
@@ -167,6 +215,11 @@ class MainWindow(ctk.CTk):
 
         self._load_tabs()
         self.show_tab("dashboard")
+
+        # Автопроверка обновлений: при старте и затем каждый час
+        self._update_dots: dict = {}   # tab_id -> bool (есть ли обновление)
+        self.after(3000, self._check_updates_bg)          # 3 сек после старта
+        self._schedule_periodic_update_check()
 
     # ─────────────────────────────────────────
     #  Градиентная полоска
@@ -352,8 +405,8 @@ class MainWindow(ctk.CTk):
 
         ctk.CTkLabel(
             sidebar,
-            text="v0.1.0",
-            font=(t.family_ui, t.size_xs),
+            text=f"v{GUI_VERSION}",
+            font=(t.family_ui, t.size_sm),
             text_color=p.text_muted,
         ).pack(pady=(0, 2))
 
@@ -388,8 +441,11 @@ class MainWindow(ctk.CTk):
                                                        if "on_dns_changed" in ParametersTab.__init__.__code__.co_varnames
                                                        else {} )}),
                 "logs":       (LogsTab,       {"manager": self.manager}),
-                "updates":    (UpdatesTab,    {"config": self.config}),
-                "settings":   (SettingsTab,   {"manager": self.manager, "config": self.config, "on_core_updated": self._on_core_updated}),
+                "updates":    (UpdatesTab,    {"config": self.config, "manager": self.manager, "on_core_updated": self._on_core_updated}),
+                "settings":   (SettingsTab,   {"manager": self.manager, "config": self.config,
+                                               **( {"on_dns_changed": self._on_dns_changed}
+                                                   if "on_dns_changed" in SettingsTab.__init__.__code__.co_varnames
+                                                   else {} )}),
             }
 
             for tab_id, (cls, kwargs) in tab_classes.items():
@@ -461,6 +517,83 @@ class MainWindow(ctk.CTk):
         dashboard = self._tabs.get("dashboard")
         if dashboard and hasattr(dashboard, "on_state_change"):
             self.after(0, dashboard.on_state_change, state)
+
+    # ─────────────────────────────────────────
+    #  Автопроверка обновлений
+    # ─────────────────────────────────────────
+
+    UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000  # 1 час
+
+    def _schedule_periodic_update_check(self) -> None:
+        self.after(self.UPDATE_CHECK_INTERVAL_MS, self._periodic_update_check)
+
+    def _periodic_update_check(self) -> None:
+        self._check_updates_bg()
+        self._schedule_periodic_update_check()
+
+    def _check_updates_bg(self) -> None:
+        """Запускает проверку обновлений в фоновом потоке."""
+        import threading
+        threading.Thread(target=self._do_check_updates, daemon=True,
+                         name="update-checker").start()
+
+    def _do_check_updates(self) -> None:
+        """Фоновая проверка: сравниваем текущие версии с GitHub."""
+        from core.updater import (
+            get_latest_release, GUI_VERSION,
+            FLOWZAP_REPO, get_installed_core_version,
+        )
+        from pathlib import Path
+
+        has_app_update = False
+        has_core_update = False
+
+        # ── FlowZap GUI ──────────────────────────────────────────────────────
+        try:
+            rel = get_latest_release(FLOWZAP_REPO)
+            if rel:
+                latest_tag = rel.get("tag_name", "").lstrip("v")
+                current = GUI_VERSION.lstrip("v")
+                if latest_tag and latest_tag != current:
+                    has_app_update = True
+        except Exception:
+            pass
+
+        # ── Zapret core ──────────────────────────────────────────────────────
+        try:
+            core_repo = self.config.get("updater", {}).get(
+                "repo", "Flowseal/zapret-discord-youtube"
+            )
+            rel_core = get_latest_release(core_repo)
+            if rel_core:
+                latest_core = rel_core.get("tag_name", "").lstrip("v")
+                app_dir = Path(self.config.get("_app_dir", "."))
+                zapret_dir = app_dir / self.config.get("zapret", {}).get(
+                    "presets_dir", "zapret"
+                )
+                installed = (get_installed_core_version(zapret_dir) or "").lstrip("v")
+                if latest_core and latest_core != installed:
+                    has_core_update = True
+        except Exception:
+            pass
+
+        # ── Обновить точки в UI (только в main thread) ───────────────────────
+        self.after(0, lambda: self._apply_update_dots(has_app_update, has_core_update))
+
+    def _apply_update_dots(self, has_app: bool, has_core: bool) -> None:
+        """Показать/скрыть точки на кнопках навигации."""
+        # Точка «Обновления» — если есть хоть одно обновление
+        updates_btn = self._nav_buttons.get("updates")
+        if updates_btn:
+            if has_app or has_core:
+                updates_btn.show_dot()
+            else:
+                updates_btn.hide_dot()
+
+        # Уведомить вкладку Updates чтобы она тоже подсветила что именно
+        updates_tab = self._tabs.get("updates")
+        if updates_tab and hasattr(updates_tab, "set_update_flags"):
+            updates_tab.set_update_flags(has_app=has_app, has_core=has_core)
 
     def _on_close(self) -> None:
         dashboard = self._tabs.get("dashboard")

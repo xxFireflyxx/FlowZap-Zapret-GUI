@@ -7,11 +7,10 @@ release.py — Сборщик релиза FlowZap
   1. Спрашивает номер версии
   2. Прописывает версию в core/updater.py
   3. Собирает FlowZap.exe через PyInstaller
-  4. Упаковывает exe + библиотеки в release-vX.X.X.zip
+  4. Упаковывает в flowzap-vX.X.X.zip и flowzap-vX.X.X.rar
   5. Сохраняет на Рабочий стол
 """
 
-import os
 import re
 import shutil
 import subprocess
@@ -19,9 +18,16 @@ import sys
 import zipfile
 from pathlib import Path
 
-# ── Настройки ─────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent.resolve()
 UPDATER_FILE = PROJECT_ROOT / "core" / "updater.py"
+
+WINRAR_PATHS = [
+    r"D:\WinRAR.exe",
+    r"C:\Program Files\WinRAR\Rar.exe",
+    r"C:\Program Files (x86)\WinRAR\Rar.exe",
+    r"C:\Program Files\WinRAR\WinRAR.exe",
+    r"C:\Program Files (x86)\WinRAR\WinRAR.exe",
+]
 
 CONFIG_TEMPLATE = """\
 [zapret]
@@ -42,7 +48,6 @@ check_on_start = true
 [dns]
 servers = []
 """
-# ──────────────────────────────────────────────────────────────────────
 
 
 def ask_version() -> str:
@@ -80,8 +85,15 @@ def get_desktop() -> Path:
     return Path.home() / "Desktop"
 
 
+def find_winrar() -> Path | None:
+    for path in WINRAR_PATHS:
+        p = Path(path)
+        if p.exists():
+            return p
+    return None
+
+
 def build_exe() -> bool:
-    """Запустить PyInstaller."""
     print("\n  Сборка exe (PyInstaller)...")
     spec_file = PROJECT_ROOT / "FlowZap.spec"
 
@@ -91,6 +103,19 @@ def build_exe() -> bool:
             sys.executable, "-m", "PyInstaller",
             "--onefile", "--windowed", "--name", "FlowZap",
             "--uac-admin",
+            "--exclude-module", "unittest",
+            "--exclude-module", "email",
+            "--exclude-module", "html",
+            "--exclude-module", "http",
+            "--exclude-module", "xml",
+            "--exclude-module", "pydoc",
+            "--exclude-module", "doctest",
+            "--exclude-module", "difflib",
+            "--exclude-module", "ftplib",
+            "--exclude-module", "getpass",
+            "--exclude-module", "imaplib",
+            "--exclude-module", "mailbox",
+            "--exclude-module", "mimetypes",
             str(PROJECT_ROOT / "main.py"),
         ]
     else:
@@ -106,10 +131,9 @@ def build_exe() -> bool:
 
 
 def find_dist_dir() -> Path | None:
-    """Найти папку с собранным приложением."""
     candidates = [
-        PROJECT_ROOT / "dist" / "FlowZap",  # onedir
-        PROJECT_ROOT / "dist",               # onefile
+        PROJECT_ROOT / "dist" / "FlowZap",
+        PROJECT_ROOT / "dist",
     ]
     for c in candidates:
         if (c / "FlowZap.exe").exists():
@@ -117,22 +141,19 @@ def find_dist_dir() -> Path | None:
     return None
 
 
-def pack_release(version: str, dist_dir: Path, out_dir: Path) -> Path:
-    """
-    Упаковать содержимое dist_dir в release-vX.X.X.zip.
-    Добавляет config.toml шаблон.
-    Возвращает путь к zip файлу.
-    """
-    tag = f"v{version}"
-    zip_name = f"release-{tag}.zip"
-    zip_path = out_dir / zip_name
-
-    print(f"\n  Упаковка в {zip_name}...")
-
-    # Добавляем шаблон config.toml в dist папку перед упаковкой
+def ensure_config(dist_dir: Path) -> None:
     config_path = dist_dir / "config.toml"
     if not config_path.exists():
         config_path.write_text(CONFIG_TEMPLATE, encoding="utf-8")
+
+
+def pack_zip(version: str, dist_dir: Path, out_dir: Path) -> Path:
+    tag = f"v{version}"
+    zip_name = f"flowzap-{tag}.zip"
+    zip_path = out_dir / zip_name
+
+    print(f"\n  Упаковка в {zip_name}...")
+    ensure_config(dist_dir)
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for file in dist_dir.rglob("*"):
@@ -142,12 +163,51 @@ def pack_release(version: str, dist_dir: Path, out_dir: Path) -> Path:
                 print(f"    + {arcname}")
 
     size_mb = zip_path.stat().st_size / 1024 / 1024
-    print(f"  [OK] Архив создан: {zip_path} ({size_mb:.1f} МБ)")
+    print(f"  [OK] ZIP создан: {zip_path} ({size_mb:.1f} МБ)")
     return zip_path
 
 
+def pack_rar(version: str, dist_dir: Path, out_dir: Path, winrar: Path) -> Path | None:
+    tag = f"v{version}"
+    rar_name = f"flowzap-{tag}.rar"
+    rar_path = out_dir / rar_name
+
+    print(f"\n  Упаковка в {rar_name}...")
+    ensure_config(dist_dir)
+
+    exe_name = winrar.name.lower()
+    if exe_name == "rar.exe":
+        cmd = [
+            str(winrar), "a",
+            "-r", "-m5", "-ep1",
+            str(rar_path),
+            str(dist_dir / "*"),
+        ]
+    else:
+        cmd = [
+            str(winrar), "a",
+            "-r", "-m5", "-ep1", "-ibck",
+            str(rar_path),
+            str(dist_dir / "*"),
+        ]
+
+    try:
+        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True)
+        if result.returncode not in (0, 1):
+            print(f"  [ERROR] WinRAR завершился с кодом {result.returncode}")
+            print(f"  {result.stderr.decode(errors='replace')}")
+            return None
+
+        size_mb = rar_path.stat().st_size / 1024 / 1024
+        print(f"  [OK] RAR создан: {rar_path} ({size_mb:.1f} МБ)")
+        return rar_path
+
+    except Exception as e:
+        print(f"  [ERROR] Ошибка создания RAR: {e}")
+        return None
+
+
 def clean_build() -> None:
-    """Удалить папки build/ и dist/ после сборки."""
     for folder in ["build", "dist"]:
         p = PROJECT_ROOT / folder
         if p.exists():
@@ -164,40 +224,47 @@ def main() -> None:
 
     print(f"\n  Папка вывода: {out_dir}")
 
-    # Удаляем старую папку если есть
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
 
-    # 1. Обновляем версию в коде
+    winrar = find_winrar()
+    if winrar:
+        print(f"  [OK] WinRAR найден: {winrar}")
+    else:
+        print("  [WARN] WinRAR не найден — RAR архив создан не будет")
+
     set_version(version)
 
-    # 2. Собираем exe
     exe_ok = build_exe()
     if not exe_ok:
         print("\n  [!] Сборка прервана — PyInstaller вернул ошибку")
         input("  Нажмите Enter для выхода...")
         return
 
-    # 3. Находим папку dist
     dist_dir = find_dist_dir()
     if not dist_dir:
         print("\n  [ERROR] Папка с exe не найдена после сборки")
         input("  Нажмите Enter для выхода...")
         return
 
-    # 4. Упаковываем в zip
-    zip_path = pack_release(version, dist_dir, out_dir)
+    zip_path = pack_zip(version, dist_dir, out_dir)
 
-    # 5. Чистим временные папки PyInstaller
+    rar_path = None
+    if winrar:
+        rar_path = pack_rar(version, dist_dir, out_dir, winrar)
+
     clean_build()
 
-    # Итог
     print(f"\n{'='*50}")
     print(f"  Готово! FlowZap {tag}")
     print(f"{'='*50}")
-    print(f"  Архив для релиза: {zip_path}")
-    print(f"  Загрузите {zip_path.name} в GitHub Releases")
+    print(f"  ZIP: {zip_path}")
+    if rar_path:
+        print(f"  RAR: {rar_path}")
+    else:
+        print(f"  RAR: не создан (WinRAR не найден)")
+    print(f"\n  Загрузите оба файла в GitHub Releases")
     print(f"{'='*50}\n")
 
     input("  Нажмите Enter для выхода...")

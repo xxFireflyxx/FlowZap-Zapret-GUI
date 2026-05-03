@@ -307,7 +307,7 @@ class DashboardTab(ctk.CTkFrame):
             pc, text="Авто-рестарт при смене пресета",
             variable=self._auto_var,
             progress_color=p.accent, button_color=p.text_primary,
-            font=(t.family_ui, t.size_xs), text_color=p.text_muted,
+            font=(t.family_ui, t.size_sm), text_color=p.text_muted,
         ).grid(row=3, column=0, columnspan=3,
                padx=m.padding_md, pady=(0, m.padding_md), sticky="w")
 
@@ -705,6 +705,10 @@ class DashboardTab(ctk.CTkFrame):
         import tkinter.messagebox as mb
         p = theme.palette
         self._btn_dns.configure(text="DNS", state="normal")
+
+        # Сообщаем ping_mgr об актуальном состоянии DNS
+        if hasattr(self, "_ping_mgr"):
+            self._ping_mgr.set_dns_active(enable and not bool(error))
 
         if error:
             self._dns_enabled = not enable  # откатить состояние

@@ -39,11 +39,11 @@ class Palette:
 class Typography:
     family_ui:     str = "Segoe UI"
     family_mono:   str = "Cascadia Code"
-    size_xs:       int = 10
-    size_sm:       int = 11
-    size_md:       int = 13
-    size_lg:       int = 15
-    size_xl:       int = 18
+    size_xs:       int = 12
+    size_sm:       int = 13
+    size_md:       int = 14
+    size_lg:       int = 16
+    size_xl:       int = 20
     size_xxl:      int = 24
     size_hero:     int = 32
     weight_normal: str = "normal"
