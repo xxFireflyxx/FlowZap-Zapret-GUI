@@ -1,3 +1,10 @@
+> [!WARNING]
+> ## ⚠️ Проект находится в активной разработке
+> 
+> Приложение может содержать баги и нестабильные функции. Если вы столкнулись с проблемой или что-то не работает — пожалуйста, [создайте Issue](../../issues/new) и опишите проблему. Ваши отчёты помогают улучшить проект.
+
+
+
 # FlowZap
 
 **RU** | [EN](#english)
@@ -24,11 +31,12 @@
 
 ### Вариант 1 — EXE (рекомендуется)
 
-1. Скачай последний релиз со страницы [Releases](../../releases)
+1. Скачай последний релиз со страницы **[Releases](https://github.com/xxFireflyxx/Flowzap-zapret-dns/releases)**
 2. Распакуй архив
-3. Убедись что папка `zapret/` находится рядом с `FlowZap.exe`  
-   *(папку zapret нужно скачать отдельно с [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube), либо обновить через вкладку Настройки)*
-4. Запусти `FlowZap.exe`
+3. Запусти `FlowZap.exe` от имени администратора
+4. Если у вас уже есть папка `zapret/` — просто положите её рядом с `FlowZap.exe`
+5. Если папки нет — перейди во вкладку **Настройки** → раздел **Версии и обновления** → нажми **Проверить обновления** → нажми **Обновить Core** — zapret скачается автоматически
+6. Готово — можно запускать обход блокировок
 
 ### Вариант 2 — из исходников
 
@@ -45,15 +53,28 @@
 1. Открой приложение
 2. В главном окне выбери нужный пресет из списка
 3. Нажми **Запуск**
-4. При необходимости включи **DNS** кнопкой на главном экране
+4. При необходимости включи DNS кнопкой на главном экране
 5. Для смены пресета — просто выбери другой, zapret перезапустится автоматически
 
+### Управление DNS
+
+1. Перейди во вкладку **Параметры** → раздел **DNS серверы**
+2. Нажми **+** чтобы добавить новую пару DNS (основной + запасной адрес)
+3. Чтобы выбрать активный DNS — нажми на нужную запись в списке
+4. Чтобы удалить — нажми **✕** рядом с записью
+5. Включи/выключи DNS кнопкой на главном экране
+
+### Списки запрета
+
+1. Перейди во вкладку **Параметры** → раздел **Списки zapret**
+2. Введи домен в поле ввода и нажми **Добавить**
+3. Чтобы удалить домен — выбери его в списке и нажми **Удалить**
+
 ### Обновление zapret
-Вкладка **Настройки** → раздел «Версии и обновления» → «Проверить обновления» → «Обновить»
+Вкладка **Настройки** → раздел **Версии и обновления** → **Проверить обновления** → **Обновить Core**
 
 ### Обновление FlowZap
-Вкладка **Обновления** → «Проверить» → «Обновить»
-
+Вкладка **Обновления** → **Проверить** → **Обновить**
 ---
 
 ## Скриншоты
@@ -79,6 +100,14 @@
 MIT License — делай что хочешь, упоминание автора приветствуется.
 
 ---
+
+
+> [!WARNING]
+> ## ⚠️ This project is under active development
+> 
+> The application may contain bugs and unstable features. If you encounter a problem or something doesn't work — please [open an Issue](../../issues/new) and describe the problem. Your reports help improve the project.
+
+
 
 <a name="english"></a>
 
@@ -106,11 +135,12 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 
 ### Option 1 — EXE (recommended)
 
-1. Download the latest release from [Releases](../../releases)
+1. Download the latest release from the **[Releases](https://github.com/xxFireflyxx/Flowzap-zapret-dns/releases)** page
 2. Extract the archive
-3. Make sure the `zapret/` folder is placed next to `FlowZap.exe`  
-   *(download zapret separately from [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube), or update it via the Settings tab)*
-4. Run `FlowZap.exe`
+3. Run `FlowZap.exe` as administrator
+4. If you already have a `zapret/` folder — place it next to `FlowZap.exe`
+5. If you don't have it — go to the **Settings** tab → **Versions and Updates** section → click **Check for updates** → click **Update Core** — zapret will be downloaded automatically
+6. Done — you can now start bypassing blocks
 
 ### Option 2 — from source
 
@@ -122,19 +152,33 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 
 ---
 
-## Usage
+markdown## Usage
 
-1. Open the app
-2. Select a preset from the dropdown list
+1. Open the application
+2. In the main window, select the desired preset from the list
 3. Click **Start**
-4. Enable **DNS** using the button on the main screen if needed
+4. If needed, enable DNS using the button on the main screen
 5. To switch presets — just select another one, zapret will restart automatically
 
-### Update zapret
-**Settings** tab → "Versions & Updates" section → "Check for updates" → "Update"
+### DNS Management
 
-### Update FlowZap
-**Updates** tab → "Check" → "Update"
+1. Go to the **Parameters** tab → **DNS Servers** section
+2. Click **+** to add a new DNS pair (primary + backup address)
+3. To select the active DNS — click on the desired entry in the list
+4. To delete — click **✕** next to the entry
+5. Enable/disable DNS using the button on the main screen
+
+### Block Lists
+
+1. Go to the **Parameters** tab → **zapret Lists** section
+2. Enter a domain in the input field and click **Add**
+3. To remove a domain — select it in the list and click **Delete**
+
+### Updating zapret
+**Settings** tab → **Versions and Updates** section → **Check for updates** → **Update Core**
+
+### Updating FlowZap
+**Updates** tab → **Check** → **Update**
 
 ---
 
