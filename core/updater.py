@@ -48,11 +48,11 @@ def find_exe_asset(release: dict) -> Optional[dict]:
     """
     Найти asset для обновления FlowZap GUI.
     Приоритеты:
-      1. flowzap-vX.X.X.zip / flowzap-vX.X.X.rar
-      2. flowzap-*.zip / flowzap-*.rar
-      3. release-*.zip / release-*.rar (старый формат)
-      4. release.zip / release.rar
-      5. любой zip/rar
+      1. flowzap-vX.X.X.zip
+      2. flowzap-*.zip
+      3. release-*.zip (старый формат)
+      4. release.zip
+      5. любой zip
       6. прямой exe
     """
     assets = release.get("assets", [])
@@ -63,34 +63,34 @@ def find_exe_asset(release: dict) -> Optional[dict]:
         and a.get("browser_download_url", "")
     ]
 
-    # Приоритет 1: flowzap-vX.X.X.zip или flowzap-vX.X.X.rar
+    # Приоритет 1: flowzap-vX.X.X.zip
     for asset in real_assets:
         name = asset.get("name", "").lower()
-        if name.startswith("flowzap-v") and (name.endswith(".zip") or name.endswith(".rar")):
+        if name.startswith("flowzap-v") and name.endswith(".zip"):
             return asset
 
-    # Приоритет 2: flowzap-*.zip или flowzap-*.rar
+    # Приоритет 2: flowzap-*.zip
     for asset in real_assets:
         name = asset.get("name", "").lower()
-        if name.startswith("flowzap-") and (name.endswith(".zip") or name.endswith(".rar")):
+        if name.startswith("flowzap-") and name.endswith(".zip"):
             return asset
 
-    # Приоритет 3: release-*.zip или release-*.rar (старый формат)
+    # Приоритет 3: release-*.zip (старый формат)
     for asset in real_assets:
         name = asset.get("name", "").lower()
-        if name.startswith("release-") and (name.endswith(".zip") or name.endswith(".rar")):
+        if name.startswith("release-") and name.endswith(".zip"):
             return asset
 
-    # Приоритет 4: release.zip или release.rar
+    # Приоритет 4: release.zip
     for asset in real_assets:
         name = asset.get("name", "").lower()
-        if name in ("release.zip", "release.rar"):
+        if name == "release.zip":
             return asset
 
-    # Приоритет 5: любой zip/rar
+    # Приоритет 5: любой zip
     for asset in real_assets:
         name = asset.get("name", "").lower()
-        if name.endswith(".zip") or name.endswith(".rar"):
+        if name.endswith(".zip"):
             return asset
 
     # Fallback: прямой exe
@@ -180,47 +180,6 @@ def download_and_install_exe(
                 new_exe = target_dir / exe_name
                 new_exe.write_bytes(exe_data)
 
-            elif asset_lower.endswith(".rar"):
-                import tempfile, subprocess
-                _log("Распаковываем rar архив...")
-                with tempfile.TemporaryDirectory() as tmp:
-                    rar_path = Path(tmp) / asset_name
-                    rar_path.write_bytes(data)
-                    extracted = False
-
-                    # Пробуем WinRAR, затем 7-Zip
-                    tools = [
-                        r"C:\Program Files\WinRAR\Rar.exe",
-                        r"C:\Program Files (x86)\WinRAR\Rar.exe",
-                        r"C:\Program Files\WinRAR\WinRAR.exe",
-                        "7z.exe",
-                        r"C:\Program Files\7-Zip\7z.exe",
-                    ]
-                    for tool in tools:
-                        try:
-                            r = subprocess.run(
-                                [tool, "e", str(rar_path), tmp, "-y"],
-                                capture_output=True, timeout=30,
-                            )
-                            if r.returncode in (0, 1):
-                                extracted = True
-                                break
-                        except Exception:
-                            continue
-
-                    if not extracted:
-                        raise ValueError("Не удалось распаковать rar. Установите WinRAR или 7-Zip.")
-
-                    exe_files = [
-                        f for f in Path(tmp).iterdir()
-                        if f.suffix.lower() == ".exe"
-                    ]
-                    if not exe_files:
-                        raise ValueError("exe не найден в rar архиве")
-
-                    new_exe = target_dir / exe_files[0].name
-                    shutil.copy2(exe_files[0], new_exe)
-
             else:
                 new_exe = target_dir / asset_name
                 new_exe.write_bytes(data)
@@ -258,6 +217,43 @@ def find_zip_asset(release: dict) -> Optional[dict]:
     return None
 
 
+
+def _unload_windivert() -> None:
+    """
+    Выгрузить драйвер WinDivert из ядра перед обновлением.
+    Без этого Windows блокирует перезапись WinDivert64.sys с WinError 5.
+    """
+    import subprocess, os, time
+    if os.name != "nt":
+        return
+    flags = 0x08000000  # CREATE_NO_WINDOW
+
+    # Убиваем все winws.exe — они держат хэндл на драйвер
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "winws.exe"],
+                       capture_output=True, creationflags=flags)
+    except Exception:
+        pass
+
+    time.sleep(1)
+
+    # Останавливаем и удаляем службу WinDivert (возможны оба имени)
+    for svc in ("WinDivert", "WinDivert14"):
+        try:
+            subprocess.run(["sc", "stop", svc],
+                           capture_output=True, creationflags=flags, timeout=5)
+        except Exception:
+            pass
+        try:
+            subprocess.run(["sc", "delete", svc],
+                           capture_output=True, creationflags=flags, timeout=5)
+        except Exception:
+            pass
+
+    time.sleep(1)  # Ждём выгрузки драйвера из ядра
+    logger.info("WinDivert выгружен перед обновлением")
+
+
 def download_and_install_core(
     zapret_dir: Path,
     repo: str = "Flowseal/zapret-discord-youtube",
@@ -292,6 +288,8 @@ def download_and_install_core(
             with urllib.request.urlopen(req, timeout=120) as r:
                 data = r.read()
 
+            _log("Останавливаем WinDivert...")
+            _unload_windivert()
             _log("Распаковываем архив...")
             with tempfile.TemporaryDirectory() as tmp:
                 with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -304,14 +302,22 @@ def download_and_install_core(
                     src = Path(tmp)
 
                 zapret_dir.mkdir(parents=True, exist_ok=True)
-                for item in src.iterdir():
-                    dst = zapret_dir / item.name
-                    if item.is_dir():
-                        if dst.exists():
-                            shutil.rmtree(dst)
-                        shutil.copytree(item, dst)
-                    else:
-                        shutil.copy2(item, dst)
+
+                def _merge_copy(src_dir: Path, dst_dir: Path) -> None:
+                    """Рекурсивно копирует файлы с заменой, не трогая лишние файлы в dst."""
+                    dst_dir.mkdir(parents=True, exist_ok=True)
+                    for item in src_dir.iterdir():
+                        dst_item = dst_dir / item.name
+                        if item.is_dir():
+                            _merge_copy(item, dst_item)
+                        else:
+                            # Пропускаем *users.txt — пользовательские списки
+                            if item.name.endswith("users.txt"):
+                                logger.debug(f"Пропущен пользовательский файл: {item.name}")
+                                continue
+                            shutil.copy2(item, dst_item)
+
+                _merge_copy(src, zapret_dir)
 
                 (zapret_dir / "version.txt").write_text(tag, encoding="utf-8")
 

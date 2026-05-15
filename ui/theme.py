@@ -78,88 +78,85 @@ LOG_COLORS: Dict[str, str] = {
 }
 
 THEMES: Dict[str, Palette] = {
-    "default": Palette(
-        bg_root="#0d0f11",      bg_sidebar="#111417",
-        bg_card="#161a1f",      bg_input="#1c2128",
-        bg_hover="#1e2530",
-        accent="#00b4d8",       accent_dim="#0096b4",
-        accent_glow="#00b4d820",
-        text_primary="#e8edf2", text_secondary="#8a9ab0",
-        text_muted="#4a5568",
-        success="#22c55e",      warning="#f59e0b",
-        error="#ef4444",        info="#00b4d8",
-        border="#232b35",       border_light="#2d3748",
-        btn_on_bg="#0d2e1a",    btn_on_hover="#0f3820",
-        btn_on_text="#22c55e",  btn_on_border="#22c55e",
+    "dark": Palette(
+        bg_root="#222831",      bg_sidebar="#393E46",
+        bg_card="#393E46",      bg_input="#222831",
+        bg_hover="#2e3540",
+        accent="#948979",       accent_dim="#7a7060",
+        accent_glow="#94897920",
+        text_primary="#DFD0B8", text_secondary="#a89e8a",
+        text_muted="#6e6658",
+        success="#4a9c6a",      warning="#c49a3a",
+        error="#c05040",        info="#948979",
+        border="#4a4e56",       border_light="#3e4350",
+        btn_on_bg="#3a3630",    btn_on_hover="#44403a",
+        btn_on_text="#DFD0B8",  btn_on_border="#948979",
     ),
-    "indigo": Palette(
-        bg_root="#13151a",      bg_sidebar="#0e1014",
-        bg_card="#1a1c24",      bg_input="#1e2030",
-        bg_hover="#1a1c2e",
-        accent="#6366f1",       accent_dim="#4f52d4",
-        accent_glow="#6366f120",
-        text_primary="#e0e0e8", text_secondary="#6468a0",
-        text_muted="#444860",
-        success="#4ade80",      warning="#fbbf24",
-        error="#f87171",        info="#818cf8",
-        border="#1e2028",       border_light="#2a2c3e",
-        btn_on_bg="#0d2e1a",    btn_on_hover="#0f3820",
-        btn_on_text="#4ade80",  btn_on_border="#4ade80",
-    ),
-    "paper": Palette(
-        bg_root="#faf8f5",      bg_sidebar="#f2ede6",
-        bg_card="#ffffff",      bg_input="#f7f4ef",
-        bg_hover="#ede8e0",
-        accent="#c4894a",       accent_dim="#a8733a",
-        accent_glow="#c4894a20",
-        text_primary="#2d2520", text_secondary="#8a7060",
-        text_muted="#b0a090",
-        success="#4a7c59",      warning="#c4894a",
-        error="#a0403a",        info="#4a6fa0",
-        border="#e8e4de",       border_light="#ddd8d0",
-        btn_on_bg="#e8f5ec",    btn_on_hover="#d8eede",
+    "earthy": Palette(
+        bg_root="#f0ebe3",      bg_sidebar="#e4dccf",
+        bg_card="#e4dccf",      bg_input="#f0ebe3",
+        bg_hover="#d8d0c4",
+        accent="#7d9d9c",       accent_dim="#6a8a89",
+        accent_glow="#7d9d9c20",
+        text_primary="#2d3a3c", text_secondary="#576f72",
+        text_muted="#8a9e9f",
+        success="#4a7c59",      warning="#b07840",
+        error="#a0403a",        info="#7d9d9c",
+        border="#ccc5b8",       border_light="#d8d0c4",
+        btn_on_bg="#d0e8e6",    btn_on_hover="#c0dbd8",
         btn_on_text="#4a7c59",  btn_on_border="#4a7c59",
     ),
-    "terminal": Palette(
-        bg_root="#0a0a0a",      bg_sidebar="#0a0a0a",
-        bg_card="#111111",      bg_input="#161616",
-        bg_hover="#1a1a1a",
-        accent="#ff3c00",       accent_dim="#cc3000",
-        accent_glow="#ff3c0020",
-        text_primary="#ffffff", text_secondary="#666666",
-        text_muted="#333333",
-        success="#00ff41",      warning="#ffaa00",
-        error="#ff3c00",        info="#ff3c00",
-        border="#1a1a1a",       border_light="#222222",
-        btn_on_bg="#001a0a",    btn_on_hover="#002010",
-        btn_on_text="#00ff41",  btn_on_border="#00ff41",
+    "carbon": Palette(
+        bg_root="#161616",      bg_sidebar="#1e1e1e",
+        bg_card="#1e1e1e",      bg_input="#161616",
+        bg_hover="#2a2a2a",
+        accent="#1f6feb",       accent_dim="#1a5fd4",
+        accent_glow="#1f6feb20",
+        text_primary="#e8edf2", text_secondary="#a0aab4",
+        text_muted="#555e6d",
+        success="#22c55e",      warning="#f59e0b",
+        error="#ef4444",        info="#1f6feb",
+        border="#2e2e2e",       border_light="#333333",
+        btn_on_bg="#1a3a5c",    btn_on_hover="#1e4470",
+        btn_on_text="#e8edf2",  btn_on_border="#1f6feb",
+    ),
+    "peach": Palette(
+        bg_root="#fcf9ea",      bg_sidebar="#badfdb",
+        bg_card="#badfdb",      bg_input="#fcf9ea",
+        bg_hover="#a8d4cf",
+        accent="#f8a978",       accent_dim="#e09060",
+        accent_glow="#f8a97820",
+        text_primary="#2d2010", text_secondary="#4a7a76",
+        text_muted="#7ab0ac",
+        success="#4a7c59",      warning="#e07840",
+        error="#c05040",        info="#4a7a76",
+        border="#9ecfca",       border_light="#b8ddd8",
+        btn_on_bg="#e8f5ec",    btn_on_hover="#d8eede",
+        btn_on_text="#4a7c59",  btn_on_border="#4a7c59",
     ),
 }
 
 THEME_NAMES: Dict[str, str] = {
-    "default":  "Default",
-    "indigo":   "Indigo",
-    "paper":    "Paper",
-    "terminal": "Terminal",
+    "earthy": "Земляная",
+    "peach":  "Персиковая",
+    "dark":   "Тёмная",
+    "carbon": "Карбон",
 }
 
 
 class Theme:
     def __init__(self) -> None:
-        self.palette    = THEMES["default"]
+        self.palette    = THEMES["earthy"]
         self.typography = Typography()
         self.metrics    = Metrics()
         self.log_colors = LOG_COLORS
-        self._current   = "default"
+        self._current   = "earthy"
 
     def set_theme(self, name: str) -> None:
         if name in THEMES:
             self.palette  = THEMES[name]
             self._current = name
-            if name == "terminal":
-                self.typography = Typography(family_ui="Cascadia Code")
-            else:
-                self.typography = Typography()
+            self.typography = Typography()
 
     @property
     def current(self) -> str:
@@ -170,7 +167,7 @@ class Theme:
 
     def apply_ctk_theme(self) -> None:
         import customtkinter as ctk
-        mode = "light" if self._current == "paper" else "dark"
+        mode = "light"
         ctk.set_appearance_mode(mode)
         ctk.set_default_color_theme("dark-blue")
 

@@ -91,9 +91,25 @@ def main() -> None:
     config["_app_dir"] = str(ROOT)   # служебный ключ — путь к корню приложения
     app = MainWindow(manager=manager, config=config, config_path=ROOT / "config.toml")
     if config["zapret"].get("autostart", False):
-        startup_args = config["zapret"].get("args", [])
         log.info("Автозапуск zapret...")
-        app.after(500, lambda: manager.start(startup_args))
+
+        def _autostart():
+            # Берём bat-файл последнего выбранного пресета из dashboard
+            dashboard = app._tabs.get("dashboard")
+            bat_path = None
+            if dashboard and hasattr(dashboard, "_get_current_bat"):
+                bat_path = dashboard._get_current_bat()
+            # Fallback: ищем по last_preset вручную
+            if bat_path is None:
+                from core.bat_parser import list_presets
+                last = config["zapret"].get("last_preset", "")
+                presets = list_presets(ROOT / "zapret")
+                preset = next((p for p in presets if p["name"] == last), None)
+                if preset:
+                    bat_path = preset.get("path")
+            manager.start(bat_path=bat_path)
+
+        app.after(1500, _autostart)
 
     log.info("UI готов, запуск mainloop")
     app.mainloop()

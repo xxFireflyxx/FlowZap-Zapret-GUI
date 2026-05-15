@@ -205,7 +205,19 @@ class ParametersTab(ctk.CTkFrame):
         self._dns_backup_label.grid(row=0, column=1, padx=0, pady=6, sticky="w")
         self._dns_backup_label.bind("<Button-1>", lambda e: self._toggle_dns_dropdown())
 
-        # Кнопка ↻
+        # Стрелка ▼/▲ — сначала (как в пресетах)
+        self._dns_arrow_lbl = ctk.CTkLabel(
+            self._dns_active_row,
+            text="▼",
+            font=("Segoe UI", 10),
+            text_color=p.accent,
+            cursor="hand2",
+            width=20,
+        )
+        self._dns_arrow_lbl.grid(row=0, column=2, padx=(0, 4))
+        self._dns_arrow_lbl.bind("<Button-1>", lambda e: self._toggle_dns_dropdown())
+
+        # Кнопка ↻ — после стрелки
         self._dns_refresh_btn = ctk.CTkButton(
             self._dns_active_row,
             text="↻",
@@ -217,18 +229,7 @@ class ParametersTab(ctk.CTkFrame):
             font=(t.family_ui, t.size_md),
             command=self._ping_active_dns,
         )
-        self._dns_refresh_btn.grid(row=0, column=2, padx=(0, 4))
-
-        # Стрелка ▼/▲
-        self._dns_arrow_lbl = ctk.CTkLabel(
-            self._dns_active_row,
-            text="▾",
-            font=(t.family_ui, t.size_sm),
-            text_color=p.accent,
-            cursor="hand2",
-        )
-        self._dns_arrow_lbl.grid(row=0, column=3, padx=(0, 8))
-        self._dns_arrow_lbl.bind("<Button-1>", lambda e: self._toggle_dns_dropdown())
+        self._dns_refresh_btn.grid(row=0, column=3, padx=(0, 6))
 
         # _dns_popup — CTkToplevel, создаётся в _open_dns_popup()
         self._dns_popup = None
@@ -273,11 +274,11 @@ class ParametersTab(ctk.CTkFrame):
         ctk.CTkButton(
             dns_card,
             text="＋  Добавить",
-            height=30,
+            height=m.button_height,
             fg_color=p.accent, hover_color=p.accent_dim,
-            text_color="#000000",
-            corner_radius=m.corner_radius_sm,
-            font=(t.family_ui, t.size_sm, "bold"),
+            text_color=p.bg_root,
+            corner_radius=m.corner_radius,
+            font=(t.family_ui, t.size_sm),
             command=self._add_dns_pair,
         ).grid(row=3, column=0, sticky="w", padx=m.padding_md, pady=(0, m.padding_md))
 
@@ -322,28 +323,42 @@ class ParametersTab(ctk.CTkFrame):
         ).grid(row=0, column=0, sticky="w", padx=(0, 8))
 
         self._list_file_var = ctk.StringVar(value=LIST_FILES[0][0])
-        self._list_file_menu = ctk.CTkOptionMenu(
-            top_row,
-            variable=self._list_file_var,
-            values=[f for f, _ in LIST_FILES],
-            fg_color=p.bg_input,
-            button_color=p.accent, button_hover_color=p.accent_dim,
-            text_color=p.text_primary,
-            dropdown_fg_color=p.bg_card,
-            dropdown_text_color=p.text_primary,
-            dropdown_hover_color=p.bg_hover,
-            corner_radius=m.corner_radius_sm,
-            height=30,
-            command=self._on_file_select,
+        self._list_file_popup = None
+
+        # Кастомный дропдаун — как DNS и пресеты
+        self._list_file_btn_frame = ctk.CTkFrame(
+            top_row, fg_color=p.bg_input,
+            corner_radius=m.corner_radius_sm, cursor="hand2",
         )
-        self._list_file_menu.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self._list_file_btn_frame.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        self._list_file_btn_frame.grid_columnconfigure(0, weight=1)
+        self._list_file_btn_frame.bind("<Button-1>", lambda e: self._toggle_list_file_popup())
+
+        self._list_file_lbl = ctk.CTkLabel(
+            self._list_file_btn_frame,
+            text=LIST_FILES[0][0],
+            font=(t.family_ui, t.size_sm),
+            text_color=p.text_primary,
+            anchor="w", cursor="hand2",
+        )
+        self._list_file_lbl.grid(row=0, column=0, padx=(10, 4), pady=6, sticky="w")
+        self._list_file_lbl.bind("<Button-1>", lambda e: self._toggle_list_file_popup())
+
+        self._list_file_arrow = ctk.CTkLabel(
+            self._list_file_btn_frame,
+            text="▼", width=20,
+            font=("Segoe UI", 10),
+            text_color=p.accent, cursor="hand2",
+        )
+        self._list_file_arrow.grid(row=0, column=1, padx=(0, 8))
+        self._list_file_arrow.bind("<Button-1>", lambda e: self._toggle_list_file_popup())
 
         ctk.CTkButton(
             top_row, text="📂  Списки",
-            height=30,
+            height=m.button_height,
             fg_color=p.bg_input, hover_color=p.bg_hover,
-            text_color=p.text_secondary, border_width=1, border_color=p.border,
-            corner_radius=m.corner_radius_sm,
+            text_color=p.text_secondary,
+            corner_radius=m.corner_radius,
             font=(t.family_ui, t.size_sm),
             command=self._open_lists_folder,
         ).grid(row=0, column=2, sticky="e")
@@ -377,21 +392,21 @@ class ParametersTab(ctk.CTkFrame):
 
         self._btn_add = ctk.CTkButton(
             actions_row, text="＋  Добавить",
-            height=32,
+            height=m.button_height,
             fg_color=p.accent, hover_color=p.accent_dim,
-            text_color="#000000", corner_radius=m.corner_radius_sm,
-            font=(t.family_ui, t.size_sm, "bold"),
+            text_color=p.bg_root, corner_radius=m.corner_radius,
+            font=(t.family_ui, t.size_sm),
             command=self._add_entries,
         )
         self._btn_add.pack(side="left", padx=(0, 6))
 
         ctk.CTkButton(
             actions_row, text="－  Удалить",
-            height=32,
+            height=m.button_height,
             fg_color=p.bg_input, hover_color=p.bg_hover,
-            text_color=p.error, border_width=1, border_color=p.error,
-            corner_radius=m.corner_radius_sm,
-            font=(t.family_ui, t.size_sm, "bold"),
+            text_color=p.error,
+            corner_radius=m.corner_radius,
+            font=(t.family_ui, t.size_sm),
             command=self._remove_entries,
         ).pack(side="left")
 
@@ -447,7 +462,84 @@ class ParametersTab(ctk.CTkFrame):
     #  Логика списков
     # ──────────────────────────────────────────
 
+    def _toggle_list_file_popup(self) -> None:
+        if self._list_file_popup and self._list_file_popup.winfo_exists():
+            self._close_list_file_popup()
+        else:
+            self._open_list_file_popup()
+
+    def _open_list_file_popup(self) -> None:
+        p = theme.palette
+        t = theme.typography
+        m = theme.metrics
+
+        files = [f for f, _ in LIST_FILES]
+
+        self._list_file_btn_frame.update_idletasks()
+        x = self._list_file_btn_frame.winfo_rootx()
+        y = self._list_file_btn_frame.winfo_rooty() + self._list_file_btn_frame.winfo_height() + 2
+        w = self._list_file_btn_frame.winfo_width()
+
+        row_h = 36
+        popup_h = len(files) * row_h + 12
+
+        popup = ctk.CTkToplevel(self)
+        popup.wm_overrideredirect(True)
+        popup.geometry(f"{w}x{popup_h}+{x}+{y}")
+        popup.configure(fg_color=p.bg_card)
+        popup.lift()
+        popup.focus_force()
+        popup.bind("<FocusOut>", lambda e: self.after(100, self._close_list_file_popup))
+
+        frame = ctk.CTkFrame(popup, fg_color=p.bg_card, corner_radius=0)
+        frame.pack(fill="both", expand=True, padx=2, pady=4)
+        frame.grid_columnconfigure(0, weight=1)
+
+        current = self._list_file_var.get()
+        for i, filename in enumerate(files):
+            is_sel = filename == current
+            row = ctk.CTkFrame(frame,
+                fg_color=p.bg_hover if is_sel else "transparent",
+                corner_radius=m.corner_radius_sm, cursor="hand2")
+            row.grid(row=i, column=0, sticky="ew", padx=2, pady=1)
+            row.grid_columnconfigure(0, weight=1)
+
+            lbl = ctk.CTkLabel(row, text=filename,
+                font=(t.family_ui, t.size_sm),
+                text_color=p.accent if is_sel else p.text_primary,
+                anchor="w", cursor="hand2")
+            lbl.grid(row=0, column=0, sticky="ew", padx=10, pady=6)
+
+            def _pick(fn=filename):
+                self._list_file_var.set(fn)
+                self._list_file_lbl.configure(text=fn)
+                self._on_file_select(fn)
+                self._close_list_file_popup()
+
+            for w_ in (row, lbl):
+                w_.bind("<Button-1>", lambda e, fn=_pick: fn())
+                w_.bind("<Enter>", lambda e, r_=row: r_.configure(fg_color=p.bg_hover))
+                w_.bind("<Leave>", lambda e, r_=row, fn=filename:
+                    r_.configure(fg_color=p.bg_hover if fn == self._list_file_var.get() else "transparent"))
+
+        self._list_file_popup = popup
+        self._list_file_arrow.configure(text="▲")
+
+    def _close_list_file_popup(self) -> None:
+        if self._list_file_popup and self._list_file_popup.winfo_exists():
+            try:
+                self._list_file_popup.destroy()
+            except Exception:
+                pass
+        self._list_file_popup = None
+        try:
+            self._list_file_arrow.configure(text="▼")
+        except Exception:
+            pass
+
     def _on_file_select(self, filename: str) -> None:
+        # Файлы из LIST_FILES имеют явный флаг редактируемости
+        # Для всех остальных — разрешаем редактирование
         allow_add = next((a for f, a in LIST_FILES if f == filename), True)
         if not allow_add:
             self._btn_add.configure(state="disabled")
@@ -679,7 +771,7 @@ class ParametersTab(ctk.CTkFrame):
             _bind()
 
         self._dns_popup = popup
-        self._dns_arrow_lbl.configure(text="▴")
+        self._dns_arrow_lbl.configure(text="▲")
 
     def _close_dns_popup(self) -> None:
         if self._dns_popup and self._dns_popup.winfo_exists():
@@ -689,7 +781,7 @@ class ParametersTab(ctk.CTkFrame):
                 pass
         self._dns_popup = None
         try:
-            self._dns_arrow_lbl.configure(text="▾")
+            self._dns_arrow_lbl.configure(text="▼")
         except Exception:
             pass
 

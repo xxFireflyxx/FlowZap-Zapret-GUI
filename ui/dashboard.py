@@ -16,7 +16,7 @@ from ui.theme import theme
 
 _PING_COLOR = {
     PingStatus.UNKNOWN:  "#4a5568",
-    PingStatus.CHECKING: "#f59e0b",
+    PingStatus.CHECKING: "#60a5fa",  # синий — активная проверка
     PingStatus.OK:       "#22c55e",
     PingStatus.WARN:     "#f59e0b",
     PingStatus.FAIL:     "#ef4444",
@@ -33,13 +33,14 @@ class PresetDropdown(ctk.CTkFrame):
       on_select: callable(name) — коллбэк при выборе
     """
 
-    def __init__(self, parent, on_select=None, fg_color="#1c2128",
+    def __init__(self, parent, on_select=None, on_refresh=None, fg_color="#1c2128",
                  text_color="#e8edf2", height=38, corner_radius=4, **kwargs):
         p = theme.palette
         super().__init__(parent, fg_color="transparent", corner_radius=0)
         self.grid_columnconfigure(0, weight=1)
 
         self._on_select = on_select
+        self._on_refresh = on_refresh
         self._items: list = []           # [(name, PingStatus)]
         self._selected_name: str = ""
         self._selected_status = PingStatus.UNKNOWN
@@ -56,12 +57,13 @@ class PresetDropdown(ctk.CTkFrame):
                                         corner_radius=self._cr, cursor="hand2")
         self._btn_frame.grid(row=0, column=0, sticky="ew")
         self._btn_frame.grid_columnconfigure(1, weight=1)
+        self._btn_frame.grid_columnconfigure(2, weight=0)
         self._btn_frame.bind("<Button-1>", self._toggle_popup)
 
-        self._dot = ctk.CTkLabel(self._btn_frame, text="●", width=16,
-                                  font=("Segoe UI", 11, "bold"),
+        self._dot = ctk.CTkLabel(self._btn_frame, text="●", width=26,
+                                  font=("Segoe UI", 18, "bold"),
                                   text_color=_PING_COLOR[PingStatus.UNKNOWN])
-        self._dot.grid(row=0, column=0, padx=(10, 4), pady=8)
+        self._dot.grid(row=0, column=0, padx=(10, 4), pady=10)
         self._dot.bind("<Button-1>", self._toggle_popup)
 
         self._lbl = ctk.CTkLabel(self._btn_frame, text="— загрузка —",
@@ -70,20 +72,31 @@ class PresetDropdown(ctk.CTkFrame):
         self._lbl.grid(row=0, column=1, sticky="ew", pady=8)
         self._lbl.bind("<Button-1>", self._toggle_popup)
 
-        self._arrow = ctk.CTkLabel(self._btn_frame, text="▾", width=20,
+        # Статус пинга — мелко внутри строки, между текстом и стрелкой
+        self._status_lbl = ctk.CTkLabel(
+            self._btn_frame, text="",
+            font=("Segoe UI", 9),
+            text_color=p.text_muted,
+            anchor="e",
+        )
+        self._status_lbl.grid(row=0, column=2, padx=(4, 2), pady=8, sticky="e")
+        self._status_lbl.bind("<Button-1>", self._toggle_popup)
+
+        self._arrow = ctk.CTkLabel(self._btn_frame, text="▼", width=20,
                                     text_color=p.accent,
-                                    font=("Segoe UI", 13))
-        self._arrow.grid(row=0, column=2, padx=(4, 8), pady=8)
+                                    font=("Segoe UI", 10))
+        self._arrow.grid(row=0, column=3, padx=(0, 4), pady=8)
         self._arrow.bind("<Button-1>", self._toggle_popup)
 
-        # Фиксированная строка статуса — всегда в layout, текст меняется
-        self._status_lbl = ctk.CTkLabel(
-            self, text=" ",
-            font=("Segoe UI", 10),
-            text_color=p.text_muted,
-            anchor="w",
+        # Кнопка обновления — внутри строки, крайняя справа
+        self._refresh_btn = ctk.CTkButton(
+            self._btn_frame, text="↻", width=28, height=28,
+            fg_color="transparent", hover_color=p.bg_hover,
+            text_color=p.text_secondary, corner_radius=self._cr,
+            font=("Segoe UI", 14),
+            command=lambda: self._on_refresh() if self._on_refresh else None,
         )
-        self._status_lbl.grid(row=1, column=0, sticky="w", padx=4, pady=(1, 0))
+        self._refresh_btn.grid(row=0, column=4, padx=(0, 6), pady=4)
 
     # ── Публичный API ─────────────────────
 
@@ -96,14 +109,44 @@ class PresetDropdown(ctk.CTkFrame):
         self._selected_status = status
         self._dot.configure(text_color=_PING_COLOR.get(status, "#4a5568"))
         self._lbl.configure(text=name or "— нет пресетов —")
+        # Пульсация для активной проверки
+        if status == PingStatus.CHECKING:
+            self._start_pulse()
+        else:
+            self._stop_pulse()
+
+    def _start_pulse(self) -> None:
+        if getattr(self, "_pulsing", False):
+            return
+        self._pulsing = True
+        self._pulse_step = 0
+        self._pulse()
+
+    def _stop_pulse(self) -> None:
+        self._pulsing = False
+
+    def _pulse(self) -> None:
+        if not getattr(self, "_pulsing", False):
+            return
+        import math
+        self._pulse_step = (self._pulse_step + 0.15) % (2 * math.pi)
+        alpha = 0.4 + 0.6 * (0.5 + 0.5 * math.sin(self._pulse_step))
+        r = int(0x60 * alpha + 0x1a * (1 - alpha))
+        g = int(0xa5 * alpha + 0x1a * (1 - alpha))
+        b = int(0xfa * alpha + 0x1f * (1 - alpha))
+        try:
+            self._dot.configure(text_color=f"#{r:02x}{g:02x}{b:02x}")
+            self.after(60, self._pulse)
+        except Exception:
+            self._pulsing = False
 
     def get_selected_name(self) -> str:
         return self._selected_name
 
     def set_status_text(self, text: str) -> None:
-        """Показать мелкий статус под кнопкой (например 'проверка пресетов…')."""
+        """Показать мелкий статус внутри строки (например 'обновление…')."""
         try:
-            self._status_lbl.configure(text=f"⏳ {text}")
+            self._status_lbl.configure(text=text)
         except Exception:
             pass
 
@@ -154,10 +197,29 @@ class PresetDropdown(ctk.CTkFrame):
             row.grid(row=i, column=0, sticky="ew", padx=2, pady=1)
             row.grid_columnconfigure(1, weight=1)
 
-            dot = ctk.CTkLabel(row, text="●", width=16,
-                                font=("Segoe UI", 11, "bold"),
+            dot = ctk.CTkLabel(row, text="●", width=22,
+                                font=("Segoe UI", 16, "bold"),
                                 text_color=_PING_COLOR.get(status, "#4a5568"))
             dot.grid(row=0, column=0, padx=(8, 4), pady=4)
+
+            # Пульсация для проверяемого пресета
+            if status == PingStatus.CHECKING:
+                import math as _math
+                _phase = [0.0]
+                def _pulse_dot(d=dot, ph=_phase):
+                    if not d.winfo_exists():
+                        return
+                    ph[0] = (ph[0] + 0.15) % (2 * _math.pi)
+                    a = 0.4 + 0.6 * (0.5 + 0.5 * _math.sin(ph[0]))
+                    r_ = int(0x60 * a + 0x1a * (1 - a))
+                    g_ = int(0xa5 * a + 0x1a * (1 - a))
+                    b_ = int(0xfa * a + 0x1f * (1 - a))
+                    try:
+                        d.configure(text_color=f"#{r_:02x}{g_:02x}{b_:02x}")
+                        dot.after(60, _pulse_dot)
+                    except Exception:
+                        pass
+                dot.after(60, _pulse_dot)
 
             lbl = ctk.CTkLabel(row, text=name, text_color=p.text_primary,
                                 anchor="w", font=("Segoe UI", 12))
@@ -177,7 +239,7 @@ class PresetDropdown(ctk.CTkFrame):
                     r_.configure(fg_color=p.bg_hover if n_ == self._selected_name else "transparent"))
 
         self._popup = popup
-        self._arrow.configure(text="▴")
+        self._arrow.configure(text="▲")
 
     def _close_popup(self) -> None:
         if self._popup and self._popup.winfo_exists():
@@ -187,7 +249,7 @@ class PresetDropdown(ctk.CTkFrame):
                 pass
         self._popup = None
         try:
-            self._arrow.configure(text="▾")
+            self._arrow.configure(text="▼")
         except Exception:
             pass
 
@@ -274,42 +336,36 @@ class DashboardTab(ctk.CTkFrame):
         self._preset_menu = PresetDropdown(
             pc,
             on_select=self._on_preset_select,
+            on_refresh=self._on_refresh_presets,
             fg_color=p.bg_input,
             text_color=p.text_primary,
             height=m.button_height,
             corner_radius=m.corner_radius_sm,
         )
-        self._preset_menu.grid(row=0, column=1, padx=(0, 4),
-                               pady=(m.padding_md, 4), sticky="ew")
+        self._preset_menu.grid(row=0, column=1, padx=(0, m.padding_md),
+                               pady=(m.padding_md, 6), sticky="ew")
 
-        self._btn_refresh = ctk.CTkButton(
-            pc, text="↻", width=m.button_height, height=m.button_height,
-            fg_color=p.bg_input, hover_color=p.bg_hover,
-            text_color=p.text_secondary, corner_radius=m.corner_radius_sm,
-            command=self._on_refresh_presets, font=(t.family_ui, t.size_lg))
-        self._btn_refresh.grid(row=0, column=2, padx=(0, m.padding_md),
-                               pady=(m.padding_md, 4))
+        # Строка статуса — фиксированная высота, текст появляется при обновлении
+        self._ping_status_lbl = ctk.CTkLabel(
+            pc, text="",
+            font=(t.family_ui, t.size_xs),
+            text_color=p.text_muted,
+            anchor="w",
+            height=18,
+        )
+        self._ping_status_lbl.grid(row=1, column=0, columnspan=2,
+                                   padx=m.padding_md, pady=(2, 8), sticky="w")
 
-        self._preset_desc = ctk.CTkLabel(
-            pc, text="", font=(t.family_ui, t.size_xs),
-            text_color=p.text_muted, anchor="w")
-        # Описание пресета скрыто
-        # self._preset_desc.grid(row=1, column=0, columnspan=3,
-        #                        padx=m.padding_md, pady=(0, 4), sticky="w")
-
-        self._args_label = ctk.CTkLabel(
-            pc, text="", font=(t.family_ui, t.size_xs),
-            text_color=p.text_muted, anchor="w", wraplength=580, justify="left")
-        # Аргументы скрыты — слишком много текста на главном экране
-
-        self._auto_var = ctk.BooleanVar(value=True)
+        auto_val = self._config.get("ui", {}).get("auto_restart_preset", True)
+        self._auto_var = ctk.BooleanVar(value=auto_val)
+        self._auto_var.trace_add("write", self._on_auto_restart_changed)
         ctk.CTkSwitch(
             pc, text="Авто-рестарт при смене пресета",
             variable=self._auto_var,
             progress_color=p.accent, button_color=p.text_primary,
             font=(t.family_ui, t.size_sm), text_color=p.text_muted,
-        ).grid(row=3, column=0, columnspan=3,
-               padx=m.padding_md, pady=(0, m.padding_md), sticky="w")
+        ).grid(row=2, column=0, columnspan=2,
+               padx=m.padding_md, pady=(4, m.padding_md + 4), sticky="w")
 
         # ── Кнопки управления ─────────────────────
         bf = ctk.CTkFrame(self, fg_color="transparent")
@@ -391,14 +447,21 @@ class DashboardTab(ctk.CTkFrame):
             self._run_auto_tests()
             return
         age_hours = (time.time() - latest.stat().st_mtime) / 3600
-        if age_hours > 24:
+        if age_hours > 168:  # раз в неделю
             self._run_auto_tests()
 
     def _run_auto_tests(self) -> None:
         """Запустить тесты в фоне, показать статус в дропдауне."""
         if self._ping_mgr.is_testing:
             return
-        self._preset_menu.set_status_text("обновление…")
+        if self._dns_enabled:
+            self._ping_status_lbl.configure(
+                text="⚠ Отключите DNS для точной проверки",
+                text_color=theme.palette.error)
+            return
+        self._ping_status_lbl.configure(
+            text="обновление…",
+            text_color=theme.palette.text_muted)
         self._ping_mgr.run_tests()
 
     def _refresh_menu_values(self) -> None:
@@ -410,14 +473,21 @@ class DashboardTab(ctk.CTkFrame):
             self._preset_menu.set_selected(name, self._ping_mgr.get_status(name))
 
     def _on_refresh_presets(self) -> None:
-        self._btn_refresh.configure(state="disabled", text="…")
-        self._preset_menu.set_status_text("обновление…")
+        # Кнопка теперь внутри PresetDropdown._refresh_btn
+        try:
+            self._preset_menu._refresh_btn.configure(state="disabled", text="…")
+        except Exception:
+            pass
+        self._ping_status_lbl.configure(text="обновление…")
         self.after(50, self._do_refresh)
 
     def _do_refresh(self) -> None:
         self._load_presets()
         self._load_cache_silent()
-        self._btn_refresh.configure(state="normal", text="↻")
+        try:
+            self._preset_menu._refresh_btn.configure(state="normal", text="↻")
+        except Exception:
+            pass
         self._run_auto_tests()
 
     # ──────────────────────────────────────────────
@@ -432,8 +502,8 @@ class DashboardTab(ctk.CTkFrame):
             args_str = ' '.join(preset['args'])
             if len(args_str) > 130:
                 args_str = args_str[:127] + '…'
-            self._args_label.configure(text=args_str or '(нет аргументов)')
-            self._preset_desc.configure(text=preset.get('desc', ''))
+            # _args_label скрыт
+            # _preset_desc скрыт
             # Сохраняем выбор в конфиг
             if "zapret" not in self._config:
                 self._config["zapret"] = {}
@@ -470,8 +540,19 @@ class DashboardTab(ctk.CTkFrame):
         if preset_name == self._preset_menu.get_selected_name():
             self._preset_menu.set_selected(preset_name, status)
 
+    def _on_auto_restart_changed(self, *_) -> None:
+        """Сохранить состояние авто-рестарта в конфиг."""
+        if "ui" not in self._config:
+            self._config["ui"] = {}
+        self._config["ui"]["auto_restart_preset"] = self._auto_var.get()
+        if self._save_config_fn:
+            self._save_config_fn()
+
     def _on_tests_done(self, success: bool, message: str) -> None:
-        self.after(0, self._preset_menu.clear_status_text)
+        def _clear():
+            if not self._dns_enabled:
+                self._ping_status_lbl.configure(text="")
+        self.after(0, _clear)
 
     # ──────────────────────────────────────────────
     #  Управление процессом
@@ -724,3 +805,5 @@ class DashboardTab(ctk.CTkFrame):
             self._btn_dns.configure(**self._btn_style_on())
         else:
             self._btn_dns.configure(**self._btn_style_off())
+            # DNS выключен — убираем предупреждение
+            self._ping_status_lbl.configure(text="")

@@ -67,13 +67,15 @@ class NavButton(ctk.CTkButton):
         self._active = active
         if active:
             self.configure(
-                fg_color=p.bg_hover,
-                text_color=p.accent,
+                fg_color=p.accent,
+                hover_color=p.accent,  # не менять цвет при наведении
+                text_color=p.bg_root,
                 font=(t.family_ui, t.size_md, "bold"),
             )
         else:
             self.configure(
                 fg_color="transparent",
+                hover_color=p.bg_hover,
                 text_color=p.text_secondary,
                 font=(t.family_ui, t.size_md),
             )
@@ -378,7 +380,6 @@ class MainWindow(ctk.CTk):
         nav_items = [
             ("dashboard",  "Главная",    NAV_ICONS["dashboard"]),
             ("parameters", "Параметры",  NAV_ICONS["parameters"]),
-            ("logs",       "Логи",       NAV_ICONS["logs"]),
             ("updates",    "Обновления", NAV_ICONS["updates"]),
             ("settings",   "Настройки",  NAV_ICONS["settings"]),
         ]

@@ -93,7 +93,7 @@ class UpdatesTab(ctk.CTkFrame):
                      font=(t.family_ui, t.size_sm),
                      text_color=p.text_secondary).pack(side="left", padx=(0, 6))
         ctk.CTkLabel(ver_row, text=f"v{GUI_VERSION}",
-                     font=(t.family_ui, t.size_sm, "bold"),
+                     font=(t.family_ui, t.size_sm),
                      text_color=p.text_primary).pack(side="left")
 
         self._gui_status = ctk.CTkLabel(
@@ -109,7 +109,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_gui_check = ctk.CTkButton(
             btn_row, text="Проверить",
             fg_color=p.bg_input, hover_color=p.bg_hover,
-            text_color="#ffffff", height=m.button_height,
+            text_color=p.text_primary, height=m.button_height,
             corner_radius=m.corner_radius,
             command=self._check_gui,
         )
@@ -118,7 +118,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_gui_update = ctk.CTkButton(
             btn_row, text="Обновить",
             fg_color=p.accent, hover_color=p.accent_dim,
-            text_color="#000000", height=m.button_height,
+            text_color=p.bg_root, height=m.button_height,
             corner_radius=m.corner_radius,
             state="disabled",
             command=self._update_gui,
@@ -157,7 +157,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._core_installed_lbl = ctk.CTkLabel(
             inst_row,
             text=installed if installed else "не установлен",
-            font=(t.family_ui, t.size_sm, "bold"),
+            font=(t.family_ui, t.size_sm),
             text_color=p.text_primary)
         self._core_installed_lbl.pack(side="left")
 
@@ -177,7 +177,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_core_check = ctk.CTkButton(
             btn_row, text="Проверить",
             fg_color=p.bg_input, hover_color=p.bg_hover,
-            text_color="#ffffff", height=m.button_height,
+            text_color=p.text_primary, height=m.button_height,
             corner_radius=m.corner_radius,
             command=self._check_core,
         )
@@ -186,7 +186,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_core_update = ctk.CTkButton(
             btn_row, text="Обновить",
             fg_color=p.accent, hover_color=p.accent_dim,
-            text_color="#000000", height=m.button_height,
+            text_color=p.bg_root, height=m.button_height,
             corner_radius=m.corner_radius,
             state="disabled",
             command=self._update_core,
@@ -196,6 +196,34 @@ class UpdatesTab(ctk.CTkFrame):
     # ──────────────────────────────────────────────
     #  GUI обновление
     # ──────────────────────────────────────────────
+
+    def _enable_gui_update(self, enable: bool) -> None:
+        p = theme.palette
+        self._gui_update_allowed = enable
+        if enable:
+            self._btn_gui_update.configure(
+                state="normal",
+                fg_color=p.accent, hover_color=p.accent_dim,
+                text_color=p.bg_root)
+        else:
+            self._btn_gui_update.configure(
+                state="disabled",
+                fg_color=p.bg_hover, hover_color=p.bg_hover,
+                text_color=p.text_secondary)
+
+    def _enable_core_update(self, enable: bool) -> None:
+        p = theme.palette
+        self._core_update_allowed = enable
+        if enable:
+            self._btn_core_update.configure(
+                state="normal",
+                fg_color=p.accent, hover_color=p.accent_dim,
+                text_color=p.bg_root)
+        else:
+            self._btn_core_update.configure(
+                state="disabled",
+                fg_color=p.bg_hover, hover_color=p.bg_hover,
+                text_color=p.text_secondary)
 
     def _check_gui(self) -> None:
         self._btn_gui_check.configure(state="disabled", text="Проверка…")
@@ -224,7 +252,7 @@ class UpdatesTab(ctk.CTkFrame):
                 self._gui_status.configure(
                     text=f"Доступна новая версия: {tag}",
                     text_color=p.success)
-                self._btn_gui_update.configure(state="normal")
+                self._enable_gui_update(True)
             else:
                 self._gui_status.configure(
                     text=f"Версия {tag} есть, но файл релиза ещё не добавлен.",
@@ -235,7 +263,7 @@ class UpdatesTab(ctk.CTkFrame):
                 text_color=p.success)
 
     def _update_gui(self) -> None:
-        self._btn_gui_update.configure(state="disabled")
+        self._enable_gui_update(False)
         self._btn_gui_check.configure(state="disabled")
         download_and_install_exe(
             install_dir=self._app_dir,
@@ -250,7 +278,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._gui_status.configure(
             text=msg, text_color=p.success if success else p.error)
         if not success:
-            self._btn_gui_update.configure(state="normal")
+            self._enable_gui_update(True)
 
     # ──────────────────────────────────────────────
     #  Core обновление
@@ -260,7 +288,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_core_check.configure(state="disabled", text="Проверяю…")
         self._core_status.configure(text="Запрос к GitHub…",
                                     text_color=theme.palette.text_muted)
-        self._btn_core_update.configure(state="disabled")
+        self._enable_core_update(False)
 
         def _worker():
             release = get_latest_release(CORE_REPO)
@@ -291,9 +319,11 @@ class UpdatesTab(ctk.CTkFrame):
                 text=f"Доступно обновление: {tag}" +
                      (f" (установлено: {installed})" if installed else ""),
                 text_color=p.warning)
-            self._btn_core_update.configure(state="normal")
+            self._enable_core_update(True)
 
     def _update_core(self) -> None:
+        if not self._core_update_allowed:
+            return
         if self._manager and self._manager.is_running:
             self._core_status.configure(
                 text="⚠ Остановите zapret перед обновлением Core",
@@ -327,10 +357,13 @@ class UpdatesTab(ctk.CTkFrame):
                 self._on_core_updated()
         else:
             self._core_status.configure(text=f"✗ {message}", text_color=p.error)
-            self._btn_core_update.configure(state="normal")
+            self._enable_core_update(True)
 
     def on_activate(self) -> None:
-        """Обновить отображение версии Core при переходе на вкладку."""
+        """Автопроверка обновлений при переходе на вкладку."""
         installed = get_installed_core_version(self._app_dir / "zapret")
         self._core_installed_lbl.configure(
             text=installed if installed else "не установлен")
+        # Автоматически запускаем проверку обоих блоков
+        self._check_gui()
+        self._check_core()
