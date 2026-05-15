@@ -27,9 +27,10 @@
 - 🌐 Управление DNS-серверами (основной + запасные) — по умолчанию используется [xbox-dns.ru](https://xbox-dns.ru), можно заменить на свои
 - 📋 Выбор пресета из списка с цветным индикатором пинга (🟢 🟡 🔴)
 - 💾 Запоминает выбранный пресет между запусками
-- 🎨 Несколько тем оформления интерфейса
-- 🔄 Обновление zapret (Core) прямо из приложения — во вкладке Настройки
-- 🔔 Обновление FlowZap — во вкладке Обновления
+- 🎨 Четыре темы оформления на выбор — тёмные и светлые варианты
+- 🚀 Автозапуск FlowZap вместе с Windows — настраивается в один клик
+- ⚡ Автозапуск zapret при старте приложения
+- 🔄 Обновление zapret (Core) и FlowZap прямо из вкладки **Обновления**
 - 🖥️ Не требует навыков работы с консолью
 
 ---
@@ -42,7 +43,7 @@
 2. Распакуй архив
 3. Запусти `FlowZap.exe` от имени администратора
 4. Если у вас уже есть папка `zapret/` — просто положите её рядом с `FlowZap.exe`
-5. Если папки нет — перейди во вкладку **Настройки** → раздел **Версии и обновления** → нажми **Проверить обновления** → нажми **Обновить Core** — zapret скачается автоматически
+5. Если папки нет — перейди во вкладку **Обновления** → нажми **Проверить** в разделе Core → нажми **Обновить** — zapret скачается автоматически
 6. Готово — можно запускать обход блокировок
 
 ### Вариант 2 — из исходников
@@ -78,7 +79,7 @@
 3. Чтобы удалить домен — выбери его в списке и нажми **Удалить**
 
 ### Обновление zapret
-Вкладка **Настройки** → раздел **Версии и обновления** → **Проверить обновления** → **Обновить Core**
+Вкладка **Обновления** → **Проверить** в разделе Core → **Обновить**
 
 ### Обновление FlowZap
 Вкладка **Обновления** → **Проверить** → **Обновить**
@@ -137,9 +138,10 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 - 🌐 DNS server management (primary + fallback) — [xbox-dns.ru](https://xbox-dns.ru) by default, customizable
 - 📋 Preset selector with color-coded ping indicator (🟢 🟡 🔴)
 - 💾 Remembers selected preset between sessions
-- 🎨 Multiple UI themes
-- 🔄 Update zapret (Core) directly from the app — in the Settings tab
-- 🔔 Update FlowZap — in the Updates tab
+- 🎨 Four UI themes — dark and light variants
+- 🚀 Launch FlowZap with Windows — configurable in one click
+- ⚡ Auto-start zapret when the app launches
+- 🔄 Update zapret (Core) and FlowZap directly from the **Updates** tab
 - 🖥️ No command line skills needed
 
 ---
@@ -152,7 +154,7 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 2. Extract the archive
 3. Run `FlowZap.exe` as administrator
 4. If you already have a `zapret/` folder — place it next to `FlowZap.exe`
-5. If you don't have it — go to the **Settings** tab → **Versions and Updates** section → click **Check for updates** → click **Update Core** — zapret will be downloaded automatically
+5. If you don't have it — go to the **Updates** tab → click **Check** in the Core section → click **Update** — zapret will be downloaded automatically
 6. Done — you can now start bypassing blocks
 
 ### Option 2 — from source
@@ -165,7 +167,7 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 
 ---
 
-markdown## Usage
+## Usage
 
 1. Open the application
 2. In the main window, select the desired preset from the list
@@ -188,7 +190,7 @@ markdown## Usage
 3. To remove a domain — select it in the list and click **Delete**
 
 ### Updating zapret
-**Settings** tab → **Versions and Updates** section → **Check for updates** → **Update Core**
+**Updates** tab → **Check** in the Core section → **Update**
 
 ### Updating FlowZap
 **Updates** tab → **Check** → **Update**
