@@ -356,16 +356,8 @@ class DashboardTab(ctk.CTkFrame):
         self._ping_status_lbl.grid(row=1, column=0, columnspan=2,
                                    padx=m.padding_md, pady=(2, 8), sticky="w")
 
-        auto_val = self._config.get("ui", {}).get("auto_restart_preset", True)
-        self._auto_var = ctk.BooleanVar(value=auto_val)
-        self._auto_var.trace_add("write", self._on_auto_restart_changed)
-        ctk.CTkSwitch(
-            pc, text="Авто-рестарт при смене пресета",
-            variable=self._auto_var,
-            progress_color=p.accent, button_color=p.text_primary,
-            font=(t.family_ui, t.size_sm), text_color=p.text_muted,
-        ).grid(row=2, column=0, columnspan=2,
-               padx=m.padding_md, pady=(4, m.padding_md + 4), sticky="w")
+        # Авто-рестарт теперь определяется автоматически — если zapret запущен
+        self._auto_var = ctk.BooleanVar(value=True)
 
         # ── Кнопки управления ─────────────────────
         bf = ctk.CTkFrame(self, fg_color="transparent")
@@ -513,12 +505,10 @@ class DashboardTab(ctk.CTkFrame):
 
         self._update_ping_indicator(name)
 
-        if auto_start and self._auto_var.get() and preset:
+        # Авто-рестарт только если zapret уже запущен
+        if auto_start and preset and self.manager.is_running:
             bat = preset.get('path')
-            if self.manager.is_running:
-                self.manager.restart(bat_path=bat)
-            else:
-                self.manager.start(bat_path=bat)
+            self.manager.restart(bat_path=bat)
 
     def _update_ping_indicator(self, preset_name: str) -> None:
         pass
@@ -539,14 +529,6 @@ class DashboardTab(ctk.CTkFrame):
         # Если это выбранный пресет — обновить точку цвета в заголовке
         if preset_name == self._preset_menu.get_selected_name():
             self._preset_menu.set_selected(preset_name, status)
-
-    def _on_auto_restart_changed(self, *_) -> None:
-        """Сохранить состояние авто-рестарта в конфиг."""
-        if "ui" not in self._config:
-            self._config["ui"] = {}
-        self._config["ui"]["auto_restart_preset"] = self._auto_var.get()
-        if self._save_config_fn:
-            self._save_config_fn()
 
     def _on_tests_done(self, success: bool, message: str) -> None:
         def _clear():

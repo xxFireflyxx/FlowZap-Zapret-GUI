@@ -284,42 +284,59 @@ class SettingsTab(ctk.CTkFrame):
         return f'"{sys.executable}" "{script}"'
 
     def _get_win_autostart(self) -> bool:
-        """Проверить стоит ли FlowZap в автозапуске реестра."""
+        """Проверить есть ли задача FlowZap в планировщике задач."""
         try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run") as key:
-                winreg.QueryValueEx(key, REG_NAME)
-                return True
+            import subprocess
+            result = subprocess.run(
+                ["schtasks", "/query", "/tn", "FlowZap"],
+                capture_output=True, timeout=5,
+            )
+            return result.returncode == 0
         except Exception:
             return False
 
     def _on_win_autostart_change(self) -> None:
+        import subprocess
         enable = self._win_autostart_var.get()
         try:
-            import winreg
-            with winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                0, winreg.KEY_SET_VALUE,
-            ) as key:
-                if enable:
-                    winreg.SetValueEx(key, REG_NAME, 0, winreg.REG_SZ, self._get_exe_path())
+            if enable:
+                exe = self._get_exe_path()
+                # Создать задачу с правами администратора через планировщик
+                cmd = [
+                    "schtasks", "/create", "/tn", "FlowZap",
+                    "/tr", exe,
+                    "/sc", "ONLOGON",
+                    "/rl", "HIGHEST",   # запускать с наивысшими правами
+                    "/f",               # перезаписать если уже есть
+                ]
+                result = subprocess.run(cmd, capture_output=True,
+                                        text=True, timeout=10,
+                                        encoding="cp866", errors="replace")
+                if result.returncode == 0:
                     self._win_autostart_status.configure(
-                        text="✓ FlowZap добавлен в автозапуск",
+                        text="✓ FlowZap добавлен в автозапуск (с правами администратора)",
                         text_color=theme.palette.success,
                     )
                 else:
-                    try:
-                        winreg.DeleteValue(key, REG_NAME)
-                    except FileNotFoundError:
-                        pass
+                    raise RuntimeError(result.stdout.strip() or result.stderr.strip())
+            else:
+                result = subprocess.run(
+                    ["schtasks", "/delete", "/tn", "FlowZap", "/f"],
+                    capture_output=True, text=True, timeout=10,
+                    encoding="cp866", errors="replace",
+                )
+                if result.returncode == 0:
                     self._win_autostart_status.configure(
                         text="Убран из автозапуска",
                         text_color=theme.palette.text_muted,
                     )
-            self.after(3000, lambda: self._win_autostart_status.configure(text=""))
+                else:
+                    raise RuntimeError(result.stdout.strip() or result.stderr.strip())
+
+            self.after(4000, lambda: self._win_autostart_status.configure(text=""))
+
         except Exception as e:
-            self._win_autostart_var.set(not enable)  # откатить
+            self._win_autostart_var.set(not enable)
             self._win_autostart_status.configure(
                 text=f"Ошибка: {e}",
                 text_color=theme.palette.error,
