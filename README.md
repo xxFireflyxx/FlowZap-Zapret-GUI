@@ -14,6 +14,13 @@
 
 # FlowZap
 
+[![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/total)](https://github.com/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/releases)
+[![Version](https://img.shields.io/github/v/release/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy)](https://github.com/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/releases)
+![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![License](https://img.shields.io/github/license/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy)
+
+⭐ Если приложение помогло — поставь звезду, это мотивирует развивать проект!
+
 **RU** | [EN](#english)
 
 Графический интерфейс для управления [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) на Windows.  
@@ -215,5 +222,4 @@ MIT License — free to use, attribution appreciated.
 
 ---
 
-![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/total)
 

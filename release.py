@@ -155,10 +155,12 @@ def pack_zip(version: str, dist_dir: Path, out_dir: Path) -> Path:
     print(f"\n  Упаковка в {zip_name}...")
     ensure_config(dist_dir)
 
+    from pathlib import Path as _Path
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for file in dist_dir.rglob("*"):
             if file.is_file():
-                arcname = file.relative_to(dist_dir)
+                # Кладём файлы в папку FlowZap внутри архива
+                arcname = _Path("FlowZap") / file.relative_to(dist_dir)
                 zf.write(file, arcname)
                 print(f"    + {arcname}")
 
@@ -176,35 +178,43 @@ def pack_rar(version: str, dist_dir: Path, out_dir: Path, winrar: Path) -> Path 
     ensure_config(dist_dir)
 
     exe_name = winrar.name.lower()
-    if exe_name == "rar.exe":
-        cmd = [
-            str(winrar), "a",
-            "-r", "-m5", "-ep1",
-            str(rar_path),
-            str(dist_dir / "*"),
-        ]
-    else:
-        cmd = [
-            str(winrar), "a",
-            "-r", "-m5", "-ep1", "-ibck",
-            str(rar_path),
-            str(dist_dir / "*"),
-        ]
+    # Создаём временную папку FlowZap чтобы в архиве была нужная структура
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as tmp:
+        flowzap_dir = Path(tmp) / "FlowZap"
+        shutil.copytree(dist_dir, flowzap_dir)
 
-    try:
-        result = subprocess.run(cmd, cwd=PROJECT_ROOT, capture_output=True)
-        if result.returncode not in (0, 1):
-            print(f"  [ERROR] WinRAR завершился с кодом {result.returncode}")
-            print(f"  {result.stderr.decode(errors='replace')}")
+        if exe_name == "rar.exe":
+            cmd = [
+                str(winrar), "a",
+                "-r", "-m5",
+                str(rar_path),
+                str(Path(tmp) / "*"),
+            ]
+        else:
+            cmd = [
+                str(winrar), "a",
+                "-r", "-m5", "-ibck",
+                str(rar_path),
+                str(Path(tmp) / "*"),
+            ]
+
+        try:
+            result = subprocess.run(cmd, cwd=tmp, capture_output=True)
+            if result.returncode not in (0, 1):
+                print(f"  [ERROR] WinRAR завершился с кодом {result.returncode}")
+                print(f"  {result.stderr.decode(errors='replace')}")
+                return None
+
+            size_mb = rar_path.stat().st_size / 1024 / 1024
+            print(f"  [OK] RAR создан: {rar_path} ({size_mb:.1f} МБ)")
+            return rar_path
+
+        except Exception as e:
+            print(f"  [ERROR] Ошибка создания RAR: {e}")
             return None
 
-        size_mb = rar_path.stat().st_size / 1024 / 1024
-        print(f"  [OK] RAR создан: {rar_path} ({size_mb:.1f} МБ)")
-        return rar_path
 
-    except Exception as e:
-        print(f"  [ERROR] Ошибка создания RAR: {e}")
-        return None
 
 
 def clean_build() -> None:
