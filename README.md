@@ -212,3 +212,8 @@ Developed by [xxFireflyxx](https://github.com/xxFireflyxx)
 ## License
 
 MIT License — free to use, attribution appreciated.
+
+---
+
+![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/total)
+
