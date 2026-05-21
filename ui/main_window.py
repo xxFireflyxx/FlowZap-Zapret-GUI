@@ -68,10 +68,11 @@ class NavButton(ctk.CTkButton):
         if active:
             self.configure(
                 fg_color=p.accent,
-                hover_color=p.accent,  # не менять цвет при наведении
+                hover_color=p.accent,
                 text_color=p.bg_root,
                 font=(t.family_ui, t.size_md, "bold"),
             )
+            dot_bg = p.accent
         else:
             self.configure(
                 fg_color="transparent",
@@ -79,33 +80,66 @@ class NavButton(ctk.CTkButton):
                 text_color=p.text_secondary,
                 font=(t.family_ui, t.size_md),
             )
+            dot_bg = p.bg_sidebar
+        # Обновляем фон точки если она есть
+        if hasattr(self, "_dot_label"):
+            try:
+                self._dot_label.configure(bg=dot_bg)
+            except Exception:
+                pass
 
     def show_dot(self) -> None:
         """Показать пульсирующую оранжевую точку рядом с кнопкой."""
-        if hasattr(self, "_dot_canvas"):
+        if hasattr(self, "_dot_label"):
             return
-        dot = tk.Canvas(self, width=8, height=8, bd=0, highlightthickness=0,
-                        bg=theme.palette.bg_sidebar, cursor="hand2")
-        dot.place(relx=1.0, rely=0.5, x=-14, anchor="center")
-        dot.create_oval(1, 1, 7, 7, fill="#f97316", outline="")
-        self._dot_canvas = dot
+        import tkinter as tk
+        p = theme.palette
+        dot = tk.Label(
+            self,
+            text="●",
+            font=(theme.typography.family_ui, 12),
+            fg="#f97316",
+            bg=p.accent if self._active else p.bg_sidebar,
+            bd=0,
+            highlightthickness=0,
+        )
+        dot.place(relx=1.0, rely=0.5, x=-16, anchor="center")
+        self._dot_label = dot
         self._dot_phase = 0
+
+        # Следим за hover на кнопке и точке
+        def _on_enter(e):
+            if hasattr(self, "_dot_label"):
+                bg = p.accent if self._active else p.bg_hover
+                self._dot_label.configure(bg=bg)
+
+        def _on_leave(e):
+            if hasattr(self, "_dot_label"):
+                bg = p.accent if self._active else p.bg_sidebar
+                self._dot_label.configure(bg=bg)
+
+        self.bind("<Enter>", _on_enter, add="+")
+        self.bind("<Leave>", _on_leave, add="+")
+        dot.bind("<Enter>", _on_enter)
+        dot.bind("<Leave>", _on_leave)
+
         self._animate_dot()
 
     def hide_dot(self) -> None:
         """Скрыть точку обновления."""
-        if hasattr(self, "_dot_canvas"):
+        if hasattr(self, "_dot_label"):
             try:
-                self._dot_canvas.destroy()
+                self._dot_label.destroy()
             except Exception:
                 pass
-            del self._dot_canvas
+            del self._dot_label
 
     def _animate_dot(self) -> None:
-        if not hasattr(self, "_dot_canvas"):
+        if not hasattr(self, "_dot_label"):
             return
         try:
-            self._dot_canvas.winfo_exists()
+            if not self._dot_label.winfo_exists():
+                return
         except Exception:
             return
         import math
@@ -116,7 +150,7 @@ class NavButton(ctk.CTkButton):
         b = int(0x16 * alpha + 0x1a * (1 - alpha))
         color = f"#{r:02x}{g:02x}{b:02x}"
         try:
-            self._dot_canvas.itemconfig(1, fill=color)
+            self._dot_label.configure(fg=color)
             self.after(50, self._animate_dot)
         except Exception:
             pass
@@ -184,6 +218,23 @@ class MainWindow(ctk.CTk):
         self.minsize(800, 520)
         self.configure(fg_color=p.bg_root)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Иконка окна и таскбара
+        import sys
+        _icon_ico = Path(__file__).parent.parent / "assets" / "icon.ico"
+        if _icon_ico.exists():
+            try:
+                self.wm_iconbitmap(str(_icon_ico))
+            except Exception:
+                pass
+            try:
+                from PIL import Image, ImageTk
+                _img = Image.open(str(_icon_ico))
+                _photo = ImageTk.PhotoImage(_img)
+                self.wm_iconphoto(True, _photo)
+                self._icon_photo = _photo  # держим ссылку чтобы GC не удалил
+            except Exception:
+                pass
 
         self.grid_columnconfigure(0, weight=0, minsize=m.sidebar_width)
         self.grid_columnconfigure(1, weight=1)
@@ -508,9 +559,9 @@ class MainWindow(ctk.CTk):
         if hasattr(dashboard, "_load_presets"):
             self.after(0, dashboard._load_presets)
 
-        # Запускаем тесты пинга с задержкой чтобы пресеты успели загрузиться
+        # Запускаем тесты пинга с задержкой — WinDivert должен успеть выгрузиться
         if hasattr(dashboard, "_ping_mgr"):
-            self.after(500, dashboard._ping_mgr.run_tests)
+            self.after(8000, dashboard._ping_mgr.run_tests)
 
     def _on_state_change(self, state: ServiceState) -> None:
         self.after(0, self._status_badge.update_state, state)
@@ -546,6 +597,22 @@ class MainWindow(ctk.CTk):
         )
         from pathlib import Path
 
+        def _ver(v: str) -> tuple:
+            import re as _re
+            try:
+                parts = v.lstrip("v").split(".")
+                result = []
+                for p in parts:
+                    # Разбиваем "8c" → (8, "c"), "9" → (9, "")
+                    m = _re.match(r"(\d+)([a-zA-Z]*)", p)
+                    if m:
+                        result.append((int(m.group(1)), m.group(2)))
+                    else:
+                        result.append((0, ""))
+                return tuple(result)
+            except Exception:
+                return ((0, ""),)
+
         has_app_update = False
         has_core_update = False
 
@@ -555,7 +622,7 @@ class MainWindow(ctk.CTk):
             if rel:
                 latest_tag = rel.get("tag_name", "").lstrip("v")
                 current = GUI_VERSION.lstrip("v")
-                if latest_tag and latest_tag != current:
+                if latest_tag and _ver(latest_tag) > _ver(current):
                     has_app_update = True
         except Exception:
             pass
@@ -573,12 +640,17 @@ class MainWindow(ctk.CTk):
                     "presets_dir", "zapret"
                 )
                 installed = (get_installed_core_version(zapret_dir) or "").lstrip("v")
-                if latest_core and latest_core != installed:
+                # Если Core не установлен или версия устарела — показываем точку
+                if latest_core and (not installed or _ver(latest_core) > _ver(installed)):
                     has_core_update = True
         except Exception:
             pass
 
         # ── Обновить точки в UI (только в main thread) ───────────────────────
+        import logging as _log
+        _log.getLogger(__name__).info(
+            f"Проверка обновлений: has_app={has_app_update}, has_core={has_core_update}"
+        )
         self.after(0, lambda: self._apply_update_dots(has_app_update, has_core_update))
 
     def _apply_update_dots(self, has_app: bool, has_core: bool) -> None:

@@ -179,6 +179,10 @@ class ServiceManager:
                             if candidate2.exists():
                                 val = str(candidate2)
                                 break
+                        # Оборачиваем в кавычки если путь содержит пробелы или кириллицу
+                        needs_quotes = any(c in val for c in (' ', '\t')) or any(ord(c) > 127 for c in val)
+                        if needs_quotes and not val.startswith('"'):
+                            val = f'"{val}"'
                         resolved_args.append(f"{key}={val}")
                     else:
                         resolved_args.append(arg)

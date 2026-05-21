@@ -115,25 +115,40 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
     # Убираем "pause", "exit", echo и подобные хвосты
     args_raw = re.sub(r'(?i)\b(pause|exit|echo[^\n]*).*', '', args_raw)
 
-    # Разбиваем на токены с учётом кавычек
+    # Заменяем обратные слеши в путях на прямые перед shlex
+    # чтобы избежать интерпретации \ как escape в posix режиме
+    # Делаем это только внутри кавычек
     import shlex
+
+    # Используем posix=False чтобы сохранить кавычки
     try:
         args = shlex.split(args_raw, posix=False)
     except ValueError:
         args = args_raw.split()
 
-    # Убираем кавычки, оставляем только --аргументы
-    # Ранняя остановка: первый токен не начинающийся с -- завершает список
+    # Оставляем только --аргументы
     cleaned = []
     for a in args:
-        a_clean = a.replace('"', '').replace("'", '').strip()
-        if not a_clean:
+        a = a.strip()
+        # Убираем внешние кавычки со всего токена
+        if (a.startswith('"') and a.endswith('"')) or \
+           (a.startswith("'") and a.endswith("'")):
+            a = a[1:-1]
+        if not a:
             continue
-        if a_clean.startswith('--'):
-            cleaned.append(a_clean)
+        if a.startswith('--'):
+            # Убираем кавычки из значения после = если есть
+            if '=' in a:
+                key, _, val = a.partition('=')
+                val = val.strip('"').strip("'")
+                a = f"{key}={val}"
+            cleaned.append(a)
         elif cleaned:
-            break  # хвост файла — стоп
+            continue
 
+    import logging
+    _log = logging.getLogger(__name__)
+    _log.debug(f"parse_bat {bat_path.name}: {len(cleaned)} args: {cleaned[:5]}...")
     return cleaned if cleaned else None
 
 

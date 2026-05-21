@@ -10,8 +10,15 @@ import traceback
 import tomllib
 from pathlib import Path
 
-# При запуске из exe (PyInstaller onedir) используем папку с exe, иначе папку со скриптом
-ROOT = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+# Определяем ROOT — папка где лежит exe или скрипт
+# PyInstaller onefile: sys.executable — это сам exe, его parent и есть нужная папка
+# PyInstaller onedir:  sys.executable — это exe внутри папки дистрибутива
+# Dev режим:          __file__ — это main.py
+if getattr(sys, "frozen", False):
+    # Собранный exe — берём папку самого exe файла
+    ROOT = Path(sys.executable).parent
+else:
+    ROOT = Path(__file__).parent
 
 # ─────────────────────────────────────────────
 #  Аварийный лог — пишем ДО настройки логгера
@@ -52,7 +59,7 @@ def load_config(config_path: Path) -> dict:
             "args": [],
             "autostart": False,
         },
-        "ui":      {"theme": "dark", "remember_tab": True},
+        "ui":      {"theme": "earthy", "remember_tab": True},
         "updater": {"repo": "Flowseal/zapret-discord-youtube", "check_on_start": True},
         "dns":     {"servers": ["111.88.98.50", "111.88.96.51"]},
     }
@@ -80,7 +87,15 @@ def main() -> None:
     log.debug(f"Конфиг: {config}")
 
     from ui.theme import theme
+    theme.set_theme(config.get("ui", {}).get("theme", "earthy"))
     theme.apply_ctk_theme()
+
+    # GitHub токен для увеличения лимита запросов (опционально)
+    from core.updater import set_github_token
+    gh_token = config.get("github", {}).get("token", "")
+    if gh_token:
+        set_github_token(gh_token)
+        log.info("GitHub токен установлен")
 
     from core.manager import ZapretManager
     _exe_raw = Path(config["zapret"]["exe_path"])

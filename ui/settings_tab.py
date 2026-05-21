@@ -126,7 +126,7 @@ class SettingsTab(ctk.CTkFrame):
         self.manager = manager
         self._config = config or {}
         self._on_dns_changed = on_dns_changed
-        self._app_dir = Path(__file__).parent.parent
+        self._app_dir = Path(self._config.get("_app_dir", Path(__file__).parent.parent))
         self._build()
 
     def _build(self) -> None:
