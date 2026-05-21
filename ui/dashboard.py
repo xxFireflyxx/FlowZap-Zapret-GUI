@@ -443,13 +443,33 @@ class DashboardTab(ctk.CTkFrame):
             self._run_auto_tests()
 
     def _run_auto_tests(self) -> None:
-        """Запустить тесты в фоне, показать статус в дропдауне."""
+        """Запустить тесты в фоне. Если zapret запущен — сначала останавливаем."""
         if self._ping_mgr.is_testing:
             return
         if self._dns_enabled:
             self._ping_status_lbl.configure(
                 text="⚠ Отключите DNS для точной проверки",
-                text_color=theme.palette.error)
+                text_color=theme.palette.warning)
+            return
+        if self.manager.is_running:
+            # Останавливаем zapret и ждём выгрузки WinDivert перед тестами
+            self._ping_status_lbl.configure(
+                text="Останавливаем zapret перед проверкой…",
+                text_color=theme.palette.text_muted)
+            self.manager.stop()
+            # Обновляем кнопку — показываем неактивное состояние
+            self._update_buttons()
+            # Ждём 4 сек чтобы WinDivert выгрузился, потом запускаем тесты
+            self.after(4000, self._start_tests_after_stop)
+            return
+        self._ping_status_lbl.configure(
+            text="обновление…",
+            text_color=theme.palette.text_muted)
+        self._ping_mgr.run_tests()
+
+    def _start_tests_after_stop(self) -> None:
+        """Запустить тесты после остановки zapret."""
+        if self._ping_mgr.is_testing:
             return
         self._ping_status_lbl.configure(
             text="обновление…",
@@ -597,7 +617,8 @@ class DashboardTab(ctk.CTkFrame):
 
     def _game_filter_flag_path(self):
         from pathlib import Path
-        return Path(__file__).parent.parent / "zapret" / "utils" / "game_filter.enabled"
+        _app_dir = Path(self._config.get("_app_dir", "")) or Path(__file__).parent.parent
+        return _app_dir / "zapret" / "utils" / "game_filter.enabled"
 
     def _load_game_filter_state(self) -> None:
         """Загрузить текущее состояние game filter из файла."""

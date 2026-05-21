@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.3.1"
+GUI_VERSION = "0.3.2"
 FLOWZAP_REPO = "xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy"
 
 
@@ -321,7 +321,49 @@ def download_and_install_core(
 
                 (zapret_dir / "version.txt").write_text(tag, encoding="utf-8")
 
+            # Создаём пустые пользовательские файлы —
+            # winws.exe падает если файл указан в аргументах но не существует
+            _lists_dir = zapret_dir / "lists"
+            _lists_dir.mkdir(parents=True, exist_ok=True)
+            for _uf in [
+                "list-general-user.txt",
+                "list-exclude-user.txt",
+                "list-exclude.txt",
+                "ipset-exclude-user.txt",
+                "ipset-exclude.txt",
+            ]:
+                _fp = _lists_dir / _uf
+                if not _fp.exists():
+                    try:
+                        _fp.touch()
+                        logger.info(f"Создан пустой файл: {_uf}")
+                    except Exception as _e:
+                        logger.warning(f"Не удалось создать {_uf}: {_e}")
+
             _log(f"✓ zapret обновлён до {tag}.")
+
+            # Прогрев WinDivert — первый запуск после установки требует
+            # загрузки драйвера в ядро, иначе первый тест пресетов упадёт
+            try:
+                import subprocess, time
+                winws = zapret_dir / "bin" / "winws.exe"
+                if winws.exists():
+                    _log("Инициализация WinDivert...")
+                    proc = subprocess.Popen(
+                        [str(winws), "--wf-tcp=80"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        creationflags=0x08000000,
+                    )
+                    time.sleep(3)
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        proc.kill()
+                    _log("WinDivert инициализирован")
+            except Exception as e:
+                logger.debug(f"Прогрев WinDivert: {e}")
+
             if on_done:
                 on_done(True, f"zapret обновлён до {tag}")
 

@@ -40,7 +40,9 @@ class UpdatesTab(ctk.CTkFrame):
         self._config = config or {}
         self._manager = manager
         self._on_core_updated = on_core_updated
-        self._app_dir = Path(__file__).parent.parent
+        # При запуске из exe Path(__file__) указывает на _internal — берём из конфига
+        _cfg_app_dir = (config or {}).get("_app_dir")
+        self._app_dir = Path(_cfg_app_dir) if _cfg_app_dir else Path(__file__).parent.parent
         self._latest_gui_release = None
         self._build()
 
@@ -279,6 +281,11 @@ class UpdatesTab(ctk.CTkFrame):
             text=msg, text_color=p.success if success else p.error)
         if not success:
             self._enable_gui_update(True)
+        else:
+            # Перезапускаем проверку — точка погаснет если всё актуально
+            root = self.winfo_toplevel()
+            if hasattr(root, "_check_updates_bg"):
+                self.after(2000, root._check_updates_bg)
 
     # ──────────────────────────────────────────────
     #  Core обновление
@@ -301,10 +308,17 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_core_check.configure(state="normal", text="Проверить")
 
         if not release:
-            self._core_status.configure(
-                text="Не удалось получить информацию. Проверьте интернет.",
-                text_color=p.error)
-            # core_latest_lbl скрыт
+            installed = get_installed_core_version(self._app_dir / "zapret")
+            if not installed:
+                # Core не установлен и нет интернета — всё равно даём возможность попробовать
+                self._core_status.configure(
+                    text="Нет подключения. Проверьте интернет и нажмите «Проверить».",
+                    text_color=p.warning)
+                self._enable_core_update(True)
+            else:
+                self._core_status.configure(
+                    text="Не удалось получить информацию. Проверьте интернет.",
+                    text_color=p.error)
             return
 
         tag = release.get("tag_name", "?")
@@ -355,6 +369,10 @@ class UpdatesTab(ctk.CTkFrame):
                 self._core_installed_lbl.configure(text=installed)
             if self._on_core_updated:
                 self._on_core_updated()
+            # Перезапускаем проверку — точка погаснет если всё актуально
+            root = self.winfo_toplevel()
+            if hasattr(root, "_check_updates_bg"):
+                self.after(2000, root._check_updates_bg)
         else:
             self._core_status.configure(text=f"✗ {message}", text_color=p.error)
             self._enable_core_update(True)

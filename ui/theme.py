@@ -153,10 +153,11 @@ class Theme:
         self._current   = "earthy"
 
     def set_theme(self, name: str) -> None:
-        if name in THEMES:
-            self.palette  = THEMES[name]
-            self._current = name
-            self.typography = Typography()
+        if name not in THEMES:
+            name = next(iter(THEMES))  # fallback на первую доступную
+        self.palette  = THEMES[name]
+        self._current = name
+        self.typography = Typography()
 
     @property
     def current(self) -> str:

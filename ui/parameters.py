@@ -112,7 +112,8 @@ class ParametersTab(ctk.CTkFrame):
         self.manager = manager
         self._config = config or {}
         self._dns_entries: list = []
-        self._lists_dir: Path = Path(__file__).parent.parent / "zapret" / "lists"
+        _app_dir = Path(self._config.get("_app_dir", "")) or Path(__file__).parent.parent
+        self._lists_dir: Path = _app_dir / "zapret" / "lists"
         self._live_search_after = None
         self._on_dns_changed = on_dns_changed  # сохраняем ДО _build()
         self._build()

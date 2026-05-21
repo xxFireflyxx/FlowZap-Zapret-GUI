@@ -386,7 +386,7 @@ class PresetPingManager:
                     # Параллельные проверки с retry
                     best_http_ok = best_http_err = best_ping_ok = best_ping_fail = 0
                     needed_retry = False
-                    max_attempts = 2
+                    max_attempts = 1
                     for attempt in range(max_attempts):
                         if self._stop_event.is_set():
                             break
@@ -456,6 +456,19 @@ class PresetPingManager:
         поэтому дополнительный UAC не нужен).
         """
         import time as _t
+
+        # Включаем TCP timestamps — необходимо для корректной работы WinDivert
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["netsh", "interface", "tcp", "set", "global", "timestamps=enabled"],
+                    capture_output=True,
+                    creationflags=0x08000000,
+                    timeout=5,
+                )
+            except Exception:
+                pass
+
         try:
             cmd = [str(self._winws_exe)] + args
             logger.debug(f"winws cmd ({len(cmd)} args): {cmd[0]} {' '.join(cmd[1:3])}...")
@@ -475,8 +488,8 @@ class PresetPingManager:
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 startupinfo=si,
             )
-            # Даём 1 сек и проверяем не упал ли сразу
-            _t.sleep(1)
+            # Даём 3 сек и проверяем не упал ли сразу
+            _t.sleep(3)
             if proc.poll() is not None:
                 stdout = proc.stdout.read().decode("utf-8", errors="replace").strip()
                 stderr = proc.stderr.read().decode("utf-8", errors="replace").strip()
