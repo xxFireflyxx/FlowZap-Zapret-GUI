@@ -5,10 +5,9 @@
 
 ## Безопасность
 
-[![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/426e2d3eb4cc289b5ac99ddaaa0c86bd37879d891915454d70dd2a2f1093884f/detection)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/cc1f920dc655e70fbc5f3924b597f28a281286e400185dc74b9b0befb98661f7/detection)
 
-- 🔒 [Проверка ZIP архива на VirusTotal](https://www.virustotal.com/gui/file/426e2d3eb4cc289b5ac99ddaaa0c86bd37879d891915454d70dd2a2f1093884f/detection)
-- 🔒 [Проверка FlowZap.exe на VirusTotal](https://www.virustotal.com/gui/file/45b7543c81de92224f3934d0218f5d9b36be0be8102f1c42214123a1410f672e/detection)
+- 🔒 [Проверка Exe файла на VirusTotal](https://www.virustotal.com/gui/file/cc1f920dc655e70fbc5f3924b597f28a281286e400185dc74b9b0befb98661f7/detection)
 - 📖 Исходный код полностью открыт — вы можете проверить его самостоятельно
 
 
