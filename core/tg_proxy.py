@@ -8,7 +8,6 @@ Exe лежит в: <app_root>/tgproxy/TgWsProxy_windows.exe
 import logging
 import subprocess
 import threading
-import time
 import os
 from pathlib import Path
 from typing import Optional, Callable
@@ -23,7 +22,6 @@ PROXY_HOST     = "127.0.0.1"
 
 def _find_secret(proxy_dir: Path) -> Optional[str]:
     """Найти secret из конфига tg-ws-proxy."""
-    # tg-ws-proxy хранит конфиг в config.json рядом с exe
     for cfg_name in ("config.json", "tgwsproxy.json", "config.toml"):
         cfg = proxy_dir / cfg_name
         if cfg.exists():
@@ -59,7 +57,6 @@ class TgProxyManager:
 
     @property
     def is_available(self) -> bool:
-        """Проверить что exe существует."""
         return self._exe.exists()
 
     @property
@@ -69,7 +66,6 @@ class TgProxyManager:
         return self._proc.poll() is None
 
     def start(self) -> bool:
-        """Запустить tg-ws-proxy. Вернуть True если успешно."""
         with self._lock:
             if self.is_running:
                 return True
@@ -80,7 +76,7 @@ class TgProxyManager:
                 self._proc = subprocess.Popen(
                     [str(self._exe)],
                     cwd=str(self._dir),
-                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
                 self._enabled = True
                 logger.info(f"TgWsProxy запущен (PID {self._proc.pid})")
@@ -92,25 +88,38 @@ class TgProxyManager:
                 return False
 
     def stop(self) -> None:
-        """Остановить tg-ws-proxy."""
         with self._lock:
             if self._proc and self.is_running:
+                pid = self._proc.pid
                 try:
                     self._proc.terminate()
-                    self._proc.wait(timeout=5)
-                except Exception:
+                    self._proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
                     try:
                         self._proc.kill()
+                        self._proc.wait(timeout=2)
                     except Exception:
                         pass
-                logger.info("TgWsProxy остановлен")
+                except Exception:
+                    pass
+                # Гарантированно убиваем через taskkill (на случай если процесс завис)
+                if os.name == "nt":
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/IM", PROXY_EXE_NAME],
+                            capture_output=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                            timeout=3,
+                        )
+                    except Exception:
+                        pass
+                logger.info(f"TgWsProxy остановлен (PID {pid})")
             self._proc    = None
             self._enabled = False
             if self._on_state:
                 self._on_state(False)
 
     def toggle(self) -> bool:
-        """Переключить состояние. Вернуть новое состояние."""
         if self.is_running:
             self.stop()
             return False
@@ -118,7 +127,6 @@ class TgProxyManager:
             return self.start()
 
     def open_in_telegram(self) -> None:
-        """Открыть tg://proxy ссылку в Telegram."""
         import webbrowser
         secret = _find_secret(self._dir)
         link = build_tg_link(secret)
@@ -126,6 +134,5 @@ class TgProxyManager:
         webbrowser.open(link)
 
     def copy_link(self) -> str:
-        """Вернуть ссылку для копирования."""
         secret = _find_secret(self._dir)
         return build_tg_link(secret)

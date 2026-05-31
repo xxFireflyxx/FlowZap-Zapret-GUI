@@ -272,7 +272,14 @@ class DashboardTab(ctk.CTkFrame):
         self._presets: list = []
         self._selected_preset: Optional[dict] = None
 
-        _app_dir = Path(self._config.get("_app_dir", "")) or Path(__file__).parent.parent
+        import sys as _sys
+        _app_dir_str = self._config.get("_app_dir", "")
+        if _app_dir_str:
+            _app_dir = Path(_app_dir_str)
+        elif getattr(_sys, "frozen", False):
+            _app_dir = Path(_sys.executable).parent
+        else:
+            _app_dir = Path(__file__).parent.parent
         zapret_dir = _app_dir / "zapret"
         self._ping_mgr = PresetPingManager(
             zapret_dir=zapret_dir,
@@ -285,6 +292,8 @@ class DashboardTab(ctk.CTkFrame):
             app_root=_app_dir,
             on_state_change=self._on_tg_proxy_state,
         )
+        import logging as _lg
+        _lg.getLogger(__name__).debug(f"TgProxy exe path: {self._tg_proxy._exe}, exists={self._tg_proxy.is_available}")
 
         self._build()
 
@@ -677,9 +686,10 @@ class DashboardTab(ctk.CTkFrame):
     def _update_tg_btn(self) -> None:
         available = self._tg_proxy.is_available
         if not available:
+            # Кнопка активна всегда — при нажатии покажем сообщение о скачивании
             self._btn_tg.configure(
+                state="normal",
                 text="TG Proxy",
-                state="disabled",
                 **self._btn_style_off(),
             )
             return
@@ -693,18 +703,19 @@ class DashboardTab(ctk.CTkFrame):
             import tkinter.messagebox as mb
             mb.showwarning(
                 "FlowZap — TG Proxy",
-                "Файл TgWsProxy_windows.exe не найден.\n\n"
-                "Скачайте его с github.com/Flowseal/tg-ws-proxy\n"
-                "и положите в папку tgproxy/ рядом с FlowZap.exe"
+                "TG Proxy не установлен."
             )
             return
-        self._tg_proxy.toggle()
+        # Запускаем в фоновом потоке чтобы не блокировать UI
+        import threading
+        threading.Thread(
+            target=self._tg_proxy.toggle,
+            daemon=True,
+            name="tg-proxy-toggle"
+        ).start()
 
     def _on_tg_proxy_state(self, running: bool) -> None:
         self.after(0, self._update_tg_btn)
-        if running:
-            # Автоматически открыть в Telegram
-            self.after(1500, self._tg_proxy.open_in_telegram)
 
     #  DNS-кнопка
     # ──────────────────────────────────────────────

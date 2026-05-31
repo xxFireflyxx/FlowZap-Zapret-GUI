@@ -11,8 +11,9 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.4.0"
-FLOWZAP_REPO = "xxFireflyxx/FlowZap-Zapret-GUI"
+GUI_VERSION = "0.4.1"
+FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
+FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
 
 _github_token: Optional[str] = None
@@ -37,6 +38,36 @@ class RateLimitError(Exception):
     pass
 
 
+def _get_from_gitlab() -> Optional[dict]:
+    """GitLab fallback - возвращает данные в GitHub-совместимом формате."""
+    try:
+        import urllib.request, json
+        url = f"https://gitlab.com/api/v4/projects/{FLOWZAP_GITLAB_ID}/releases"
+        req = urllib.request.Request(url, headers={"User-Agent": "FlowZap/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            releases = json.load(r)
+        if not releases:
+            return None
+        rel = releases[0]
+        assets = []
+        for link in rel.get("assets", {}).get("links", []):
+            assets.append({
+                "name": link.get("name", ""),
+                "browser_download_url": link.get("url", ""),
+                "size": 0,
+            })
+        logger.info(f"GitLab fallback: {rel.get('tag_name')}")
+        return {
+            "tag_name": rel.get("tag_name", ""),
+            "name":     rel.get("name", ""),
+            "assets":   assets,
+            "_source":  "gitlab",
+        }
+    except Exception as e:
+        logger.error(f"GitLab fallback error: {e}")
+        return None
+
+
 def get_latest_release(repo: str = FLOWZAP_REPO) -> Optional[dict]:
     try:
         import urllib.request, json
@@ -48,19 +79,15 @@ def get_latest_release(repo: str = FLOWZAP_REPO) -> Optional[dict]:
     except Exception as e:
         # Проверяем превышение лимита
         err_str = str(e).lower()
-        if "403" in err_str or "rate limit" in err_str:
-            try:
-                # Пробуем прочитать тело ответа
-                import json as _json
-                body = e.read().decode("utf-8") if hasattr(e, "read") else ""
-                if "rate limit" in body.lower():
-                    raise RateLimitError("Превышен лимит запросов к GitHub. Повторите через час.")
-            except RateLimitError:
-                raise
-            except Exception:
-                pass
-            raise RateLimitError("Превышен лимит запросов к GitHub. Повторите через час.")
+        if "403" in err_str or "rate limit" in err_str or "404" in err_str:
+            if repo == FLOWZAP_REPO:
+                reason = "rate limit" if ("403" in err_str or "rate limit" in err_str) else "404"
+                logger.warning(f"GitHub {reason} - switching to GitLab fallback")
+                return _get_from_gitlab()
         logger.error(f"Ошибка проверки обновлений: {e}")
+        if repo == FLOWZAP_REPO:
+            logger.info("Trying GitLab fallback after error...")
+            return _get_from_gitlab()
         return None
 
 
