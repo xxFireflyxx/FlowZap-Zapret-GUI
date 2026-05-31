@@ -46,6 +46,8 @@ class PresetDropdown(ctk.CTkFrame):
         self._selected_name: str = ""
         self._selected_status = PingStatus.UNKNOWN
         self._popup = None
+        self._popup_dots: dict = {}  # name -> dot CTkLabel для обновления в реалтайме
+        self._popup_stop: dict = {}   # name -> [bool] флаг остановки пульсации
 
         self._fg   = fg_color
         self._tc   = text_color
@@ -202,13 +204,16 @@ class PresetDropdown(ctk.CTkFrame):
                                 font=("Segoe UI", 16, "bold"),
                                 text_color=_PING_COLOR.get(status, "#4a5568"))
             dot.grid(row=0, column=0, padx=(8, 4), pady=4)
+            self._popup_dots[name] = dot
 
             # Пульсация для проверяемого пресета
             if status == PingStatus.CHECKING:
                 import math as _math
                 _phase = [0.0]
-                def _pulse_dot(d=dot, ph=_phase):
-                    if not d.winfo_exists():
+                stop_flag = [False]
+                self._popup_stop[name] = stop_flag
+                def _pulse_dot(d=dot, ph=_phase, sf=stop_flag):
+                    if sf[0] or not d.winfo_exists():
                         return
                     ph[0] = (ph[0] + 0.15) % (2 * _math.pi)
                     a = 0.4 + 0.6 * (0.5 + 0.5 * _math.sin(ph[0]))
@@ -221,6 +226,9 @@ class PresetDropdown(ctk.CTkFrame):
                     except Exception:
                         pass
                 dot.after(60, _pulse_dot)
+            else:
+                # Сбросить флаг остановки если статус не CHECKING
+                self._popup_stop[name] = [True]
 
             lbl = ctk.CTkLabel(row, text=name, text_color=p.text_primary,
                                 anchor="w", font=("Segoe UI", 12))
@@ -249,10 +257,18 @@ class PresetDropdown(ctk.CTkFrame):
             except Exception:
                 pass
         self._popup = None
+        self._popup_dots.clear()
         try:
             self._arrow.configure(text="▼")
         except Exception:
             pass
+
+    def get_status_for(self, name: str):
+        """Вернуть текущий статус пресета из _items."""
+        for n, s in self._items:
+            if n == name:
+                return s
+        return PingStatus.UNKNOWN
 
     def _select_item(self, name: str, status) -> None:
         self.set_selected(name, status)
@@ -578,6 +594,40 @@ class DashboardTab(ctk.CTkFrame):
         # Если это выбранный пресет — обновить точку цвета в заголовке
         if preset_name == self._preset_menu.get_selected_name():
             self._preset_menu.set_selected(preset_name, status)
+        # Обновляем точку в открытом попапе в реалтайме
+        dot = self._preset_menu._popup_dots.get(preset_name)
+        if dot:
+            try:
+                color = _PING_COLOR.get(status, "#4a5568")
+                dot.configure(text_color=color)
+                # Если статус CHECKING — запускаем пульсацию
+                if status == PingStatus.CHECKING:
+                    import math as _math
+                    _phase = [0.0]
+                    stop_flag = [False]
+                    self._preset_menu._popup_stop[preset_name] = stop_flag
+                    def _pulse(d=dot, ph=_phase, sf=stop_flag):
+                        if sf[0] or not d.winfo_exists():
+                            return
+                        ph[0] = (ph[0] + 0.15) % (2 * _math.pi)
+                        a = 0.4 + 0.6 * (0.5 + 0.5 * _math.sin(ph[0]))
+                        r_ = int(0x60 * a + 0x1a * (1 - a))
+                        g_ = int(0xa5 * a + 0x1a * (1 - a))
+                        b_ = int(0xfa * a + 0x1f * (1 - a))
+                        try:
+                            d.configure(text_color=f"#{r_:02x}{g_:02x}{b_:02x}")
+                            d.after(60, _pulse)
+                        except Exception:
+                            pass
+                    dot.after(60, _pulse)
+                else:
+                    # Остановить старую пульсацию через флаг
+                    old_flag = self._preset_menu._popup_stop.get(preset_name)
+                    if old_flag:
+                        old_flag[0] = True
+                    dot.configure(text_color=color)
+            except Exception:
+                pass
 
     def _on_tests_done(self, success: bool, message: str) -> None:
         def _clear():

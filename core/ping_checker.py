@@ -73,7 +73,10 @@ def _classify(ok: int, err: int, fail: int, needed_retry: bool = False) -> PingS
     """
     has_errors = err > 0 or fail > 0
     if not has_errors:
-        # Нет ошибок — если была повторная попытка то WARN, иначе OK
+        if ok == 0:
+            # HTTP OK=0 и ERR=0 — непонятно работает ли пресет, ставим WARN
+            return PingStatus.WARN
+        # Есть успешные проверки без ошибок
         return PingStatus.WARN if needed_retry else PingStatus.OK
     # Есть ошибки
     if ok > 0 and err < ok and fail == 0:
