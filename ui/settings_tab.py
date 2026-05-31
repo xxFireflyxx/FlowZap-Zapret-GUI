@@ -183,6 +183,17 @@ class SettingsTab(ctk.CTkFrame):
         )
         self._win_autostart_status.pack(anchor="w", padx=m.padding_md, pady=(0, 4))
 
+        # Трей
+        self._tray_var = ctk.BooleanVar(
+            value=self._config.get("ui", {}).get("tray_enabled", True))
+        ctk.CTkSwitch(
+            auto_card, text="Сворачивать в трей при закрытии окна",
+            variable=self._tray_var,
+            progress_color=p.accent, button_color=p.text_primary,
+            font=(t.family_ui, t.size_md), text_color=p.text_primary,
+            command=self._on_tray_change,
+        ).pack(anchor="w", padx=m.padding_md, pady=(0, m.padding_md))
+
         # ── Стиль статус-бара ─────────────────────
         style_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
         style_card.grid(row=2, column=0, sticky="ew", padx=m.padding_lg,
@@ -350,6 +361,17 @@ class SettingsTab(ctk.CTkFrame):
             subprocess.Popen(["explorer", str(logs_dir)])
         else:
             subprocess.Popen(["xdg-open", str(logs_dir)])
+
+    def _on_tray_change(self) -> None:
+        enabled = self._tray_var.get()
+        if "ui" not in self._config:
+            self._config["ui"] = {}
+        self._config["ui"]["tray_enabled"] = enabled
+        root = self.winfo_toplevel()
+        if hasattr(root, "set_tray_enabled"):
+            root.set_tray_enabled(enabled)
+        if hasattr(root, "save_config"):
+            root.save_config()
 
     def _on_autostart_change(self) -> None:
         if "zapret" not in self._config:

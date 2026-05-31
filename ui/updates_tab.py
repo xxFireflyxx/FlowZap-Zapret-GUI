@@ -13,7 +13,7 @@ from core.updater import (
     GUI_VERSION, FLOWZAP_REPO,
     get_latest_release, find_exe_asset,
     get_installed_core_version, download_and_install_core,
-    download_and_install_exe,
+    download_and_install_exe, RateLimitError,
 )
 
 
@@ -24,7 +24,9 @@ def _version_tuple(v: str) -> tuple:
         return (0,)
 
 
-CORE_REPO = "Flowseal/zapret-discord-youtube"
+CORE_REPO     = "Flowseal/zapret-discord-youtube"
+TGPROXY_REPO  = "Flowseal/tg-ws-proxy"
+TGPROXY_EXE   = "TgWsProxy_windows.exe"
 
 
 class UpdatesTab(ctk.CTkFrame):
@@ -65,6 +67,9 @@ class UpdatesTab(ctk.CTkFrame):
 
         # ── Блок 2: Core (zapret) ─────────────────
         self._build_core_block(row=2)
+
+        # ── Блок 3: TG WS Proxy ───────────────────
+        self._build_tg_proxy_block(row=3)
 
     # ──────────────────────────────────────────────
     #  Блок FlowZap GUI
@@ -231,8 +236,17 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_gui_check.configure(state="disabled", text="Проверка…")
         self._gui_status.configure(text="Проверка обновлений…",
                                    text_color=theme.palette.text_secondary)
-        threading.Thread(target=lambda: self.after(
-            0, self._apply_gui_check, get_latest_release()), daemon=True).start()
+        def _worker():
+            try:
+                release = get_latest_release()
+                self.after(0, self._apply_gui_check, release)
+            except RateLimitError as e:
+                _msg = str(e)
+                self.after(0, lambda m=_msg: (
+                    self._btn_gui_check.configure(state="normal", text="Проверить"),
+                    self._gui_status.configure(text=m, text_color=theme.palette.warning)
+                ))
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _apply_gui_check(self, release) -> None:
         p = theme.palette
@@ -298,8 +312,15 @@ class UpdatesTab(ctk.CTkFrame):
         self._enable_core_update(False)
 
         def _worker():
-            release = get_latest_release(CORE_REPO)
-            self.after(0, self._apply_core_check, release)
+            try:
+                release = get_latest_release(CORE_REPO)
+                self.after(0, self._apply_core_check, release)
+            except RateLimitError as e:
+                _msg = str(e)
+                self.after(0, lambda m=_msg: (
+                    self._btn_core_check.configure(state="normal", text="Проверить"),
+                    self._core_status.configure(text=m, text_color=theme.palette.warning)
+                ))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -376,6 +397,191 @@ class UpdatesTab(ctk.CTkFrame):
         else:
             self._core_status.configure(text=f"✗ {message}", text_color=p.error)
             self._enable_core_update(True)
+
+
+    # ──────────────────────────────────────────────
+    #  Блок TG Proxy
+    # ──────────────────────────────────────────────
+
+    def _build_tg_proxy_block(self, row: int) -> None:
+        p = theme.palette
+        t = theme.typography
+        m = theme.metrics
+
+        card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        card.grid(row=row, column=0, sticky="ew", padx=m.padding_lg,
+                  pady=(0, m.padding_md))
+        card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(card, text="TG WS Proxy",
+                     font=(t.family_ui, t.size_md, "bold"),
+                     text_color=p.text_primary).grid(
+            row=0, column=0, sticky="w", padx=m.padding_md,
+            pady=(m.padding_md, 4))
+
+        inst_row = ctk.CTkFrame(card, fg_color="transparent")
+        inst_row.grid(row=1, column=0, sticky="w", padx=m.padding_md, pady=(0, 2))
+        ctk.CTkLabel(inst_row, text="Версия:",
+                     font=(t.family_ui, t.size_sm),
+                     text_color=p.text_secondary).pack(side="left", padx=(0, 6))
+
+        tgproxy_dir = self._app_dir / "tgproxy"
+        installed = self._get_tgproxy_version(tgproxy_dir)
+        self._tgproxy_installed_lbl = ctk.CTkLabel(
+            inst_row,
+            text=installed if installed else "не установлен",
+            font=(t.family_ui, t.size_sm),
+            text_color=p.text_primary)
+        self._tgproxy_installed_lbl.pack(side="left")
+
+        self._tgproxy_status = ctk.CTkLabel(
+            card, text="",
+            font=(t.family_ui, t.size_xs), text_color=p.text_muted,
+            anchor="w", wraplength=450)
+        self._tgproxy_status.grid(row=2, column=0,
+                                   padx=m.padding_md, pady=(0, 8), sticky="ew")
+
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.grid(row=3, column=0,
+                     padx=m.padding_md, pady=(0, m.padding_md), sticky="w")
+
+        self._btn_tgproxy_check = ctk.CTkButton(
+            btn_row, text="Проверить",
+            fg_color=p.bg_input, hover_color=p.bg_hover,
+            text_color=p.text_primary, height=m.button_height,
+            corner_radius=m.corner_radius,
+            command=self._check_tgproxy,
+        )
+        self._btn_tgproxy_check.pack(side="left", padx=(0, 8))
+
+        # Кнопка активна сразу если не установлен, иначе ждёт проверки
+        tgproxy_exe = tgproxy_dir / TGPROXY_EXE
+        initial_state = "normal" if not tgproxy_exe.exists() else "disabled"
+        self._btn_tgproxy_update = ctk.CTkButton(
+            btn_row, text="Обновить",
+            fg_color=p.accent, hover_color=p.accent_dim,
+            text_color=p.bg_root, height=m.button_height,
+            corner_radius=m.corner_radius,
+            state=initial_state,
+            command=self._update_tgproxy,
+        )
+        self._btn_tgproxy_update.pack(side="left")
+
+    def _get_tgproxy_version(self, tgproxy_dir) -> str:
+        """Получить версию установленного TgWsProxy из version.txt."""
+        ver_file = tgproxy_dir / "version.txt"
+        if ver_file.exists():
+            try:
+                return ver_file.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+        exe = tgproxy_dir / TGPROXY_EXE
+        if exe.exists():
+            return "установлен"
+        return ""
+
+    def _check_tgproxy(self) -> None:
+        self._btn_tgproxy_check.configure(state="disabled", text="Проверяю…")
+        self._tgproxy_status.configure(text="Запрос к GitHub…",
+                                        text_color=theme.palette.text_muted)
+        self._btn_tgproxy_update.configure(state="disabled")
+
+        def _worker():
+            release = get_latest_release(TGPROXY_REPO)
+            self.after(0, self._apply_tgproxy_check, release)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_tgproxy_check(self, release) -> None:
+        p = theme.palette
+        self._btn_tgproxy_check.configure(state="normal", text="Проверить")
+
+        if not release:
+            self._tgproxy_status.configure(
+                text="Не удалось получить информацию. Проверьте интернет.",
+                text_color=p.error)
+            return
+
+        tag = release.get("tag_name", "?")
+        tgproxy_dir = self._app_dir / "tgproxy"
+        installed = self._get_tgproxy_version(tgproxy_dir)
+
+        if installed and installed == tag:
+            self._tgproxy_status.configure(
+                text=f"✓ TG Proxy актуален ({tag})", text_color=p.success)
+        else:
+            label = "Обновить" if installed else "Установить"
+            self._btn_tgproxy_update.configure(state="normal")
+            self._tgproxy_status.configure(
+                text=f"Доступна версия: {tag}" +
+                     (f" (установлена: {installed})" if installed else " (не установлен)"),
+                text_color=p.warning)
+
+    def _update_tgproxy(self) -> None:
+        self._btn_tgproxy_update.configure(state="disabled", text="Скачиваю…")
+        self._btn_tgproxy_check.configure(state="disabled")
+        self._tgproxy_status.configure(text="Начинаем загрузку…",
+                                        text_color=theme.palette.text_muted)
+
+        def _worker():
+            try:
+                import urllib.request, json
+                release = get_latest_release(TGPROXY_REPO)
+                if not release:
+                    raise ValueError("Не удалось получить информацию о релизе")
+
+                tag = release.get("tag_name", "?")
+                # Ищем TgWsProxy_windows.exe в assets
+                asset = None
+                for a in release.get("assets", []):
+                    if a.get("name", "").lower() == TGPROXY_EXE.lower():
+                        asset = a
+                        break
+                # Fallback — любой exe
+                if not asset:
+                    for a in release.get("assets", []):
+                        if a.get("name", "").lower().endswith(".exe"):
+                            asset = a
+                            break
+
+                if not asset:
+                    raise ValueError(f"Файл {TGPROXY_EXE} не найден в релизе {tag}")
+
+                dl_url = asset["browser_download_url"]
+                size_mb = asset.get("size", 0) / 1024 / 1024
+                self.after(0, lambda: self._tgproxy_status.configure(
+                    text=f"Скачиваем {asset['name']} ({size_mb:.1f} МБ)…"))
+
+                req = urllib.request.Request(dl_url, headers={"User-Agent": "FlowZap/1.0"})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    data = r.read()
+
+                tgproxy_dir = self._app_dir / "tgproxy"
+                tgproxy_dir.mkdir(parents=True, exist_ok=True)
+                exe_path = tgproxy_dir / TGPROXY_EXE
+                exe_path.write_bytes(data)
+                (tgproxy_dir / "version.txt").write_text(tag, encoding="utf-8")
+
+                self.after(0, self._on_tgproxy_done, True, f"TG Proxy установлен ({tag})", tag)
+            except Exception as e:
+                self.after(0, self._on_tgproxy_done, False, str(e), "")
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_tgproxy_done(self, success: bool, message: str, tag: str) -> None:
+        p = theme.palette
+        self._btn_tgproxy_check.configure(state="normal")
+        self._btn_tgproxy_update.configure(text="Обновить")
+
+        if success:
+            self._tgproxy_status.configure(text=f"✓ {message}", text_color=p.success)
+            tgproxy_dir = self._app_dir / "tgproxy"
+            installed = self._get_tgproxy_version(tgproxy_dir)
+            self._tgproxy_installed_lbl.configure(
+                text=installed if installed else "установлен")
+        else:
+            self._tgproxy_status.configure(text=f"✗ {message}", text_color=p.error)
+            self._btn_tgproxy_update.configure(state="normal")
 
     def on_activate(self) -> None:
         """Автопроверка обновлений при переходе на вкладку."""

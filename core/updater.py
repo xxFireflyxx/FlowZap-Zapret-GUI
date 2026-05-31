@@ -11,8 +11,8 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.3.2"
-FLOWZAP_REPO = "xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy"
+GUI_VERSION = "0.4.0"
+FLOWZAP_REPO = "xxFireflyxx/FlowZap-Zapret-GUI"
 
 
 _github_token: Optional[str] = None
@@ -32,14 +32,34 @@ def _github_headers() -> dict:
     return headers
 
 
+# Специальное исключение для rate limit
+class RateLimitError(Exception):
+    pass
+
+
 def get_latest_release(repo: str = FLOWZAP_REPO) -> Optional[dict]:
     try:
         import urllib.request, json
+        from urllib.error import HTTPError
         url = f"https://api.github.com/repos/{repo}/releases/latest"
         req = urllib.request.Request(url, headers=_github_headers())
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r)
     except Exception as e:
+        # Проверяем превышение лимита
+        err_str = str(e).lower()
+        if "403" in err_str or "rate limit" in err_str:
+            try:
+                # Пробуем прочитать тело ответа
+                import json as _json
+                body = e.read().decode("utf-8") if hasattr(e, "read") else ""
+                if "rate limit" in body.lower():
+                    raise RateLimitError("Превышен лимит запросов к GitHub. Повторите через час.")
+            except RateLimitError:
+                raise
+            except Exception:
+                pass
+            raise RateLimitError("Превышен лимит запросов к GitHub. Повторите через час.")
         logger.error(f"Ошибка проверки обновлений: {e}")
         return None
 
@@ -374,3 +394,86 @@ def download_and_install_core(
                 on_done(False, str(exc))
 
     threading.Thread(target=_worker, daemon=True, name="core-updater").start()
+
+
+# ── TG WS Proxy ────────────────────────────────────────────────────────
+
+TG_PROXY_REPO = "Flowseal/tg-ws-proxy"
+TG_PROXY_EXE  = "TgWsProxy_windows.exe"
+
+
+def get_installed_tg_proxy_version(tgproxy_dir: Path) -> Optional[str]:
+    ver_file = tgproxy_dir / "version.txt"
+    if ver_file.exists():
+        try:
+            return ver_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    return None
+
+
+def find_tg_proxy_asset(release: dict) -> Optional[dict]:
+    """Найти exe для Windows в релизе tg-ws-proxy."""
+    assets = release.get("assets", [])
+    # Приоритет: TgWsProxy_windows.exe (Windows 10+)
+    for asset in assets:
+        name = asset.get("name", "").lower()
+        if name == "tgwsproxy_windows.exe":
+            return asset
+    # Любой windows exe
+    for asset in assets:
+        name = asset.get("name", "").lower()
+        if "windows" in name and name.endswith(".exe") and "7" not in name:
+            return asset
+    return None
+
+
+def download_and_install_tg_proxy(
+    tgproxy_dir: Path,
+    repo: str = TG_PROXY_REPO,
+    on_progress: Optional[Callable[[str], None]] = None,
+    on_done: Optional[Callable[[bool, str], None]] = None,
+) -> None:
+    def _log(msg: str) -> None:
+        logger.info(msg)
+        if on_progress:
+            on_progress(msg)
+
+    def _worker() -> None:
+        try:
+            import urllib.request
+
+            _log("Получаем информацию о последнем релизе tg-ws-proxy...")
+            release = get_latest_release(repo)
+            if not release:
+                raise ValueError("Не удалось получить информацию о релизе")
+
+            tag = release.get("tag_name", "unknown")
+            asset = find_tg_proxy_asset(release)
+            if not asset:
+                raise ValueError(f"Файл TgWsProxy_windows.exe не найден в релизе {tag}")
+
+            dl_url = asset["browser_download_url"]
+            size_mb = asset.get("size", 0) / 1024 / 1024
+            _log(f"Скачиваем TgWsProxy_windows.exe ({tag}, {size_mb:.1f} МБ)...")
+
+            req = urllib.request.Request(dl_url, headers=_github_headers())
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = r.read()
+
+            tgproxy_dir.mkdir(parents=True, exist_ok=True)
+            exe_path = tgproxy_dir / "TgWsProxy_windows.exe"
+            exe_path.write_bytes(data)
+            (tgproxy_dir / "version.txt").write_text(tag, encoding="utf-8")
+
+            _log(f"✓ TG WS Proxy установлен ({tag})")
+            if on_done:
+                on_done(True, f"TG WS Proxy установлен ({tag})")
+
+        except Exception as exc:
+            logger.error(f"Ошибка установки TG Proxy: {exc}")
+            _log(f"✗ Ошибка: {exc}")
+            if on_done:
+                on_done(False, str(exc))
+
+    threading.Thread(target=_worker, daemon=True, name="tgproxy-updater").start()

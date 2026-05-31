@@ -10,6 +10,7 @@ from core.manager import ZapretManager, ServiceState
 from core.bat_parser import list_presets
 from core.ping_checker import PresetPingManager, PingStatus
 from ui.theme import theme
+from core.tg_proxy import TgProxyManager
 
 
 
@@ -279,6 +280,12 @@ class DashboardTab(ctk.CTkFrame):
             on_tests_done=self._on_tests_done,
         )
 
+        # Инициализируем TgProxyManager до _build() — он используется в UI
+        self._tg_proxy = TgProxyManager(
+            app_root=_app_dir,
+            on_state_change=self._on_tg_proxy_state,
+        )
+
         self._build()
 
         # Сначала загружаем пресеты, потом кэш — порядок важен!
@@ -400,8 +407,21 @@ class DashboardTab(ctk.CTkFrame):
         )
         self._btn_game.pack(side="left", padx=(8, 0))
 
+        # ── Кнопка TG Proxy ───────────────────
+        self._btn_tg = ctk.CTkButton(
+            bf, text="TG Proxy",
+            fg_color=p.bg_card, hover_color=p.bg_hover,
+            text_color=p.text_secondary, border_width=1, border_color=p.border_light,
+            corner_radius=m.corner_radius,
+            font=(t.family_ui, t.size_md, "bold"),
+            height=m.button_height + 8, width=120,
+            command=self._on_tg_proxy_toggle,
+        )
+        self._btn_tg.pack(side="left", padx=(8, 0))
+
         self._update_buttons()
         self._load_game_filter_state()
+        self._update_tg_btn()
 
     # ──────────────────────────────────────────────
     #  Пресеты
@@ -651,6 +671,41 @@ class DashboardTab(ctk.CTkFrame):
             self.manager.restart(bat_path=self._get_current_bat())
 
     # ──────────────────────────────────────────────
+    #  TG Proxy
+    # ──────────────────────────────────────────
+
+    def _update_tg_btn(self) -> None:
+        available = self._tg_proxy.is_available
+        if not available:
+            self._btn_tg.configure(
+                text="TG Proxy",
+                state="disabled",
+                **self._btn_style_off(),
+            )
+            return
+        if self._tg_proxy.is_running:
+            self._btn_tg.configure(state="normal", text="TG Proxy", **self._btn_style_on())
+        else:
+            self._btn_tg.configure(state="normal", text="TG Proxy", **self._btn_style_off())
+
+    def _on_tg_proxy_toggle(self) -> None:
+        if not self._tg_proxy.is_available:
+            import tkinter.messagebox as mb
+            mb.showwarning(
+                "FlowZap — TG Proxy",
+                "Файл TgWsProxy_windows.exe не найден.\n\n"
+                "Скачайте его с github.com/Flowseal/tg-ws-proxy\n"
+                "и положите в папку tgproxy/ рядом с FlowZap.exe"
+            )
+            return
+        self._tg_proxy.toggle()
+
+    def _on_tg_proxy_state(self, running: bool) -> None:
+        self.after(0, self._update_tg_btn)
+        if running:
+            # Автоматически открыть в Telegram
+            self.after(1500, self._tg_proxy.open_in_telegram)
+
     #  DNS-кнопка
     # ──────────────────────────────────────────────
     def _get_active_interface(self) -> str:
