@@ -287,7 +287,8 @@ class MainWindow(ctk.CTk):
             tg_available_fn=lambda: getattr(
                 getattr(self._tabs.get("dashboard"), "_tg_proxy", None), "is_available", False),
         )
-        self._tray.start()
+        if tray_enabled:
+            self._tray.start()
 
         # Автопроверка обновлений: при старте и затем каждый час
         self._update_dots: dict = {}   # tab_id -> bool (есть ли обновление)
