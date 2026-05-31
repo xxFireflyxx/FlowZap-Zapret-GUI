@@ -14,6 +14,7 @@ from pathlib import Path
 from ui.theme import theme
 from core.updater import GUI_VERSION
 from core.manager import ZapretManager, ServiceState
+from core.tray import TrayManager
 
 
 # ─────────────────────────────────────────────
@@ -268,6 +269,25 @@ class MainWindow(ctk.CTk):
 
         self._load_tabs()
         self.show_tab("dashboard")
+
+        # ── Трей ─────────────────────────────
+        tray_enabled = self.config.get("ui", {}).get("tray_enabled", True)
+        self._tray_enabled = tray_enabled
+        self._tray = TrayManager(
+            on_show=self._show_window,
+            on_toggle=self._tray_toggle,
+            on_quit=self._quit_app,
+            on_dns=self._tray_dns_toggle,
+            on_tg_proxy=self._tray_tg_toggle,
+            on_tg_open=self._tray_tg_open,
+            is_running_fn=lambda: self.manager.is_running,
+            is_dns_on_fn=lambda: getattr(self._tabs.get("dashboard"), "_dns_enabled", False),
+            is_tg_running_fn=lambda: getattr(
+                getattr(self._tabs.get("dashboard"), "_tg_proxy", None), "is_running", False),
+            tg_available_fn=lambda: getattr(
+                getattr(self._tabs.get("dashboard"), "_tg_proxy", None), "is_available", False),
+        )
+        self._tray.start()
 
         # Автопроверка обновлений: при старте и затем каждый час
         self._update_dots: dict = {}   # tab_id -> bool (есть ли обновление)
@@ -570,6 +590,10 @@ class MainWindow(ctk.CTk):
         if dashboard and hasattr(dashboard, "on_state_change"):
             self.after(0, dashboard.on_state_change, state)
 
+        # Обновить иконку трея
+        running = state == ServiceState.RUNNING
+        self.after(0, lambda: self._tray.update_icon(running))
+
     # ─────────────────────────────────────────
     #  Автопроверка обновлений
     # ─────────────────────────────────────────
@@ -598,15 +622,22 @@ class MainWindow(ctk.CTk):
         from pathlib import Path
 
         def _ver(v: str) -> tuple:
+            """
+            Сравнивает версии вида 1.9.8c, 1.9.9a корректно.
+            Буква после цифры — суффикс релиза: a < b < c...
+            1.9.8c < 1.9.9a потому что 8 < 9 (числа сравниваются первыми).
+            """
             import re as _re
             try:
                 parts = v.lstrip("v").split(".")
                 result = []
                 for p in parts:
-                    # Разбиваем "8c" → (8, "c"), "9" → (9, "")
                     m = _re.match(r"(\d+)([a-zA-Z]*)", p)
                     if m:
-                        result.append((int(m.group(1)), m.group(2)))
+                        num = int(m.group(1))
+                        suffix = m.group(2).lower()
+                        # Числа идут первыми, буква — вторичный ключ
+                        result.append((num, suffix))
                     else:
                         result.append((0, ""))
                 return tuple(result)
@@ -615,6 +646,8 @@ class MainWindow(ctk.CTk):
 
         has_app_update = False
         has_core_update = False
+
+        import time as _time
 
         # ── FlowZap GUI ──────────────────────────────────────────────────────
         try:
@@ -627,12 +660,12 @@ class MainWindow(ctk.CTk):
         except Exception:
             pass
 
+        _time.sleep(1)  # пауза между запросами чтобы не превысить rate limit
+
         # ── Zapret core ──────────────────────────────────────────────────────
         try:
-            core_repo = self.config.get("updater", {}).get(
-                "repo", "Flowseal/zapret-discord-youtube"
-            )
-            rel_core = get_latest_release(core_repo)
+            # Репо запрета — всегда Flowseal, не путать с репо FlowZap GUI
+            rel_core = get_latest_release("Flowseal/zapret-discord-youtube")
             if rel_core:
                 latest_core = rel_core.get("tag_name", "").lstrip("v")
                 app_dir = Path(self.config.get("_app_dir", "."))
@@ -640,18 +673,41 @@ class MainWindow(ctk.CTk):
                     "presets_dir", "zapret"
                 )
                 installed = (get_installed_core_version(zapret_dir) or "").lstrip("v")
+                _log2 = __import__("logging").getLogger(__name__)
+                _log2.info(f"Core версия: installed='{installed}' latest='{latest_core}' ver_cmp={_ver(latest_core)} > {_ver(installed)} = {_ver(latest_core) > _ver(installed)}")
                 # Если Core не установлен или версия устарела — показываем точку
                 if latest_core and (not installed or _ver(latest_core) > _ver(installed)):
                     has_core_update = True
         except Exception:
             pass
 
+        _time.sleep(1)  # пауза между запросами
+
+        # ── TG Proxy ─────────────────────────────────────────────────────────
+        has_tgproxy_update = False
+        try:
+            from core.updater import get_latest_release as _get_rel
+            rel_tg = _get_rel("Flowseal/tg-ws-proxy")
+            if rel_tg:
+                latest_tg = rel_tg.get("tag_name", "").lstrip("v")
+                app_dir = Path(self.config.get("_app_dir", "."))
+                ver_file = app_dir / "tgproxy" / "version.txt"
+                if ver_file.exists():
+                    installed_tg = ver_file.read_text(encoding="utf-8").strip().lstrip("v")
+                    if latest_tg and _ver(latest_tg) > _ver(installed_tg):
+                        has_tgproxy_update = True
+                else:
+                    # Не установлен — тоже показываем точку
+                    has_tgproxy_update = True
+        except Exception:
+            pass
+
         # ── Обновить точки в UI (только в main thread) ───────────────────────
         import logging as _log
         _log.getLogger(__name__).info(
-            f"Проверка обновлений: has_app={has_app_update}, has_core={has_core_update}"
+            f"Проверка обновлений: has_app={has_app_update}, has_core={has_core_update}, has_tgproxy={has_tgproxy_update}"
         )
-        self.after(0, lambda: self._apply_update_dots(has_app_update, has_core_update))
+        self.after(0, lambda: self._apply_update_dots(has_app_update, has_core_update or has_tgproxy_update))
 
     def _apply_update_dots(self, has_app: bool, has_core: bool) -> None:
         """Показать/скрыть точки на кнопках навигации."""
@@ -669,6 +725,60 @@ class MainWindow(ctk.CTk):
             updates_tab.set_update_flags(has_app=has_app, has_core=has_core)
 
     def _on_close(self) -> None:
+        """При закрытии окна — свернуть в трей или выйти."""
+        if getattr(self, "_tray_enabled", True):
+            self.withdraw()
+        else:
+            self._quit_app()
+
+    def _show_window(self) -> None:
+        """Показать окно из трея."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def _tray_toggle(self) -> None:
+        """Запустить или остановить zapret из трея."""
+        if self.manager.is_running:
+            self.manager.stop()
+        else:
+            dashboard = self._tabs.get("dashboard")
+            bat = None
+            if dashboard and hasattr(dashboard, "_get_current_bat"):
+                bat = dashboard._get_current_bat()
+            self.manager.start(bat_path=bat)
+        self.after(500, lambda: self._tray.update_icon(self.manager.is_running))
+
+    def set_tray_enabled(self, enabled: bool) -> None:
+        """Включить или выключить трей."""
+        self._tray_enabled = enabled
+        if enabled:
+            self._tray.start()
+        else:
+            self._tray.stop()
+
+    def _tray_dns_toggle(self) -> None:
+        """Включить/выключить DNS из трея."""
+        dashboard = self._tabs.get("dashboard")
+        if dashboard and hasattr(dashboard, "_on_dns_toggle"):
+            self.after(0, dashboard._on_dns_toggle)
+        self.after(600, lambda: self._tray.update_icon(self.manager.is_running))
+
+    def _tray_tg_toggle(self) -> None:
+        """Включить/выключить TG Proxy из трея."""
+        dashboard = self._tabs.get("dashboard")
+        if dashboard and hasattr(dashboard, "_on_tg_proxy_toggle"):
+            self.after(0, dashboard._on_tg_proxy_toggle)
+        self.after(800, lambda: self._tray._update_menu())
+
+    def _tray_tg_open(self) -> None:
+        """Открыть TG Proxy в Telegram из трея."""
+        dashboard = self._tabs.get("dashboard")
+        if dashboard and hasattr(dashboard, "_tg_proxy"):
+            self.after(0, dashboard._tg_proxy.open_in_telegram)
+
+    def _quit_app(self) -> None:
+        """Полный выход из приложения."""
         dashboard = self._tabs.get("dashboard")
         if dashboard and getattr(dashboard, "_dns_enabled", False):
             try:
@@ -680,6 +790,6 @@ class MainWindow(ctk.CTk):
                 )
             except Exception:
                 pass
-
         self.manager.shutdown_all()
-        self.destroy()
+        self._tray.stop()
+        self.after(0, self.destroy)

@@ -102,6 +102,31 @@ def main() -> None:
     zapret_exe = _exe_raw if _exe_raw.is_absolute() else ROOT / _exe_raw
     manager = ZapretManager(zapret_exe=zapret_exe)
 
+    # Прогрев WinDivert в фоне — без этого первый тест пресетов падает
+    # если драйвер не был загружен после перезагрузки ПК
+    def _warmup_windivert():
+        import subprocess, time
+        winws = ROOT / "zapret" / "bin" / "winws.exe"
+        if winws.exists():
+            try:
+                proc = subprocess.Popen(
+                    [str(winws), "--wf-tcp=80"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    creationflags=0x08000000,
+                )
+                time.sleep(3)
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    proc.kill()
+                log.info("WinDivert прогрет при старте")
+            except Exception as e:
+                log.debug(f"Прогрев WinDivert: {e}")
+
+    import threading
+    threading.Thread(target=_warmup_windivert, daemon=True, name="windivert-warmup").start()
+
     from ui.main_window import MainWindow
     config["_app_dir"] = str(ROOT)   # служебный ключ — путь к корню приложения
     app = MainWindow(manager=manager, config=config, config_path=ROOT / "config.toml")
@@ -127,6 +152,7 @@ def main() -> None:
         app.after(1500, _autostart)
 
     log.info("UI готов, запуск mainloop")
+
     app.mainloop()
     log.info("─── FlowZap завершён ───")
 
