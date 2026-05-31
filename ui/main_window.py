@@ -291,6 +291,17 @@ class MainWindow(ctk.CTk):
 
         # Автопроверка обновлений: при старте и затем каждый час
         self._update_dots: dict = {}   # tab_id -> bool (есть ли обновление)
+        # Кэш результатов последней проверки обновлений
+        self._update_cache: dict = {
+            "gui_release":    None,   # dict с данными релиза FlowZap
+            "core_release":   None,   # dict с данными релиза Core
+            "tg_release":     None,   # dict с данными релиза TG Proxy
+            "has_app":        False,
+            "has_core":       False,
+            "has_tgproxy":    False,
+            "last_checked":   None,   # timestamp последней проверки
+        }
+
         self.after(3000, self._check_updates_bg)          # 3 сек после старта
         self._schedule_periodic_update_check()
 
@@ -694,20 +705,42 @@ class MainWindow(ctk.CTk):
                 ver_file = app_dir / "tgproxy" / "version.txt"
                 if ver_file.exists():
                     installed_tg = ver_file.read_text(encoding="utf-8").strip().lstrip("v")
+                    _log_tg = __import__("logging").getLogger(__name__)
+                    _log_tg.info(f"TGProxy версия: installed='{installed_tg}' latest='{latest_tg}' update={_ver(latest_tg) > _ver(installed_tg)}")
                     if latest_tg and _ver(latest_tg) > _ver(installed_tg):
                         has_tgproxy_update = True
                 else:
-                    # Не установлен — тоже показываем точку
-                    has_tgproxy_update = True
+                    _log_tg = __import__("logging").getLogger(__name__)
+                    _log_tg.info(f"TGProxy: version.txt не найден по пути {ver_file}")
+                    # Показываем точку только если папка tgproxy существует
+                    # (пользователь установил прокси, но version.txt отсутствует)
+                    tgproxy_dir = app_dir / "tgproxy"
+                    has_tgproxy_update = tgproxy_dir.exists()
         except Exception:
             pass
 
-        # ── Обновить точки в UI (только в main thread) ───────────────────────
-        import logging as _log
+        # ── Сохраняем в кэш ──────────────────────────────────────────────────
+        import time as _t2, logging as _log
         _log.getLogger(__name__).info(
             f"Проверка обновлений: has_app={has_app_update}, has_core={has_core_update}, has_tgproxy={has_tgproxy_update}"
         )
-        self.after(0, lambda: self._apply_update_dots(has_app_update, has_core_update or has_tgproxy_update))
+        self._update_cache.update({
+            "gui_release":  rel if "rel" in dir() else None,
+            "core_release": rel_core if "rel_core" in dir() else None,
+            "tg_release":   rel_tg if "rel_tg" in dir() else None,
+            "has_app":      has_app_update,
+            "has_core":     has_core_update,
+            "has_tgproxy":  has_tgproxy_update,
+            "last_checked": _t2.time(),
+        })
+        def _apply_all():
+            self._apply_update_dots(has_app_update, has_core_update or has_tgproxy_update)
+            # Если вкладка обновлений открыта — применяем кэш сразу
+            if getattr(self, "_active_tab", None) == "updates":
+                updates_tab = self._tabs.get("updates")
+                if updates_tab and hasattr(updates_tab, "on_activate"):
+                    updates_tab.on_activate()
+        self.after(0, _apply_all)
 
     def _apply_update_dots(self, has_app: bool, has_core: bool) -> None:
         """Показать/скрыть точки на кнопках навигации."""
@@ -790,6 +823,15 @@ class MainWindow(ctk.CTk):
                 )
             except Exception:
                 pass
+        # Остановить TG Proxy если запущен
+        dashboard = self._tabs.get("dashboard")
+        if dashboard and hasattr(dashboard, "_tg_proxy"):
+            try:
+                if dashboard._tg_proxy.is_running:
+                    dashboard._tg_proxy.stop()
+            except Exception:
+                pass
+
         self.manager.shutdown_all()
         self._tray.stop()
         self.after(0, self.destroy)

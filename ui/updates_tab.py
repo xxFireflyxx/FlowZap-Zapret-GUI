@@ -258,6 +258,14 @@ class UpdatesTab(ctk.CTkFrame):
             return
 
         self._latest_gui_release = release
+        # Сохраняем в кэш чтобы on_activate восстановил статус
+        try:
+            root = self.winfo_toplevel()
+            if not hasattr(root, "_update_cache"):
+                root._update_cache = {}
+            root._update_cache["gui"] = release
+        except Exception:
+            pass
         tag = release.get("tag_name", "?")
         has_asset = find_exe_asset(release) is not None
         current = _version_tuple(GUI_VERSION)
@@ -327,6 +335,15 @@ class UpdatesTab(ctk.CTkFrame):
     def _apply_core_check(self, release) -> None:
         p = theme.palette
         self._btn_core_check.configure(state="normal", text="Проверить")
+        # Сохраняем в кэш
+        if release:
+            try:
+                root = self.winfo_toplevel()
+                if not hasattr(root, "_update_cache"):
+                    root._update_cache = {}
+                root._update_cache["core"] = release
+            except Exception:
+                pass
 
         if not release:
             installed = get_installed_core_version(self._app_dir / "zapret")
@@ -495,6 +512,15 @@ class UpdatesTab(ctk.CTkFrame):
     def _apply_tgproxy_check(self, release) -> None:
         p = theme.palette
         self._btn_tgproxy_check.configure(state="normal", text="Проверить")
+        # Сохраняем в кэш
+        if release:
+            try:
+                root = self.winfo_toplevel()
+                if not hasattr(root, "_update_cache"):
+                    root._update_cache = {}
+                root._update_cache["tg"] = release
+            except Exception:
+                pass
 
         if not release:
             self._tgproxy_status.configure(
@@ -579,15 +605,52 @@ class UpdatesTab(ctk.CTkFrame):
             installed = self._get_tgproxy_version(tgproxy_dir)
             self._tgproxy_installed_lbl.configure(
                 text=installed if installed else "установлен")
+            # Сбросить оранжевую точку и перепроверить обновления
+            try:
+                root = self.winfo_toplevel()
+                updates_btn = getattr(root, "_nav_buttons", {}).get("updates")
+                if updates_btn and hasattr(updates_btn, "hide_dot"):
+                    updates_btn.hide_dot()
+                if hasattr(root, "_do_check_updates"):
+                    root.after(1000, lambda: __import__("threading").Thread(
+                        target=root._do_check_updates, daemon=True).start())
+            except Exception:
+                pass
         else:
             self._tgproxy_status.configure(text=f"✗ {message}", text_color=p.error)
             self._btn_tgproxy_update.configure(state="normal")
 
     def on_activate(self) -> None:
-        """Автопроверка обновлений при переходе на вкладку."""
-        installed = get_installed_core_version(self._app_dir / "zapret")
+        """При открытии вкладки — читаем кэш из main_window, не делаем новых запросов."""
+        # Обновляем установленные версии
+        installed_core = get_installed_core_version(self._app_dir / "zapret")
         self._core_installed_lbl.configure(
-            text=installed if installed else "не установлен")
-        # Автоматически запускаем проверку обоих блоков
-        self._check_gui()
-        self._check_core()
+            text=installed_core if installed_core else "не установлен")
+
+        tg_ver_file = self._app_dir / "tgproxy" / "version.txt"
+        if tg_ver_file.exists():
+            try:
+                installed_tg = tg_ver_file.read_text(encoding="utf-8").strip()
+                self._tg_installed_lbl.configure(text=installed_tg)
+            except Exception:
+                pass
+
+        # Применяем данные из кэша main_window если есть
+        root = self.winfo_toplevel()
+        cache = getattr(root, "_update_cache", None)
+        if not cache or cache.get("last_checked") is None:
+            # Кэш пустой — ничего не показываем, ждём фоновой проверки
+            return
+
+        # Применяем кэшированные данные к UI
+        gui_release = cache.get("gui_release")
+        if gui_release:
+            self._apply_gui_check(gui_release)
+
+        core_release = cache.get("core_release")
+        if core_release:
+            self._apply_core_check(core_release)
+
+        tg_release = cache.get("tg_release")
+        if tg_release:
+            self._apply_tgproxy_check(tg_release)

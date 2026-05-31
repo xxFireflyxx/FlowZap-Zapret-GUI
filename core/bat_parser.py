@@ -115,36 +115,51 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
     # Убираем "pause", "exit", echo и подобные хвосты
     args_raw = re.sub(r'(?i)\b(pause|exit|echo[^\n]*).*', '', args_raw)
 
-    # Заменяем обратные слеши в путях на прямые перед shlex
-    # чтобы избежать интерпретации \ как escape в posix режиме
-    # Делаем это только внутри кавычек
-    import shlex
-
-    # Используем posix=False чтобы сохранить кавычки
-    try:
-        args = shlex.split(args_raw, posix=False)
-    except ValueError:
-        args = args_raw.split()
-
-    # Оставляем только --аргументы
+    # Парсим аргументы вручную — shlex некорректно работает
+    # с кириллическими путями в кавычках на Windows
     cleaned = []
-    for a in args:
-        a = a.strip()
-        # Убираем внешние кавычки со всего токена
-        if (a.startswith('"') and a.endswith('"')) or \
-           (a.startswith("'") and a.endswith("'")):
-            a = a[1:-1]
-        if not a:
+    i = 0
+    s = args_raw.strip()
+    while i < len(s):
+        # Пропускаем пробелы
+        while i < len(s) and s[i] in (' ', '\t'):
+            i += 1
+        if i >= len(s):
+            break
+
+        # Читаем токен
+        token = []
+        in_quotes = False
+        quote_char = None
+
+        while i < len(s):
+            c = s[i]
+            if not in_quotes and c in ('"', "'"):
+                in_quotes = True
+                quote_char = c
+                i += 1
+            elif in_quotes and c == quote_char:
+                in_quotes = False
+                quote_char = None
+                i += 1
+            elif not in_quotes and c in (' ', '\t'):
+                break
+            else:
+                token.append(c)
+                i += 1
+
+        tok = ''.join(token).strip()
+        if not tok:
             continue
-        if a.startswith('--'):
-            # Убираем кавычки из значения после = если есть
-            if '=' in a:
-                key, _, val = a.partition('=')
-                val = val.strip('"').strip("'")
-                a = f"{key}={val}"
-            cleaned.append(a)
+
+        if tok.startswith('--'):
+            if '=' in tok:
+                key, _, val = tok.partition('=')
+                tok = f"{key}={val}"
+            cleaned.append(tok)
         elif cleaned:
-            continue
+            # Первый не-аргумент после набора аргументов — стоп
+            break
 
     import logging
     _log = logging.getLogger(__name__)
