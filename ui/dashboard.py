@@ -857,44 +857,77 @@ class DashboardTab(ctk.CTkFrame):
         ).start()
 
     def _dns_worker(self, enable: bool, dns1: str, dns2: str, interface: str) -> None:
-        """Выполняется в фоновом потоке. UI обновляется через after()."""
+        """Выполняется в фоновом потоке. Применяет DNS через netsh."""
         import subprocess, logging
         log = logging.getLogger(__name__)
         error = ""
+
+        def run(cmd: str):
+            return subprocess.run(
+                cmd, shell=True, capture_output=True,
+                encoding='cp866', errors='replace',
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+
         try:
+            # Получаем все активные интерфейсы через netsh
+            r_ifaces = run('netsh interface show interface')
+            iface_list = []
+            for line in r_ifaces.stdout.splitlines():
+                if 'Подключён' in line or 'Connected' in line or 'Подключен' in line:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        iface_list.append(' '.join(parts[3:]))
+
+            if not iface_list:
+                iface_list = [interface] if interface else ['Ethernet']
+
             if enable:
-                # Сначала сбрасываем ВСЕ DNS на DHCP — очищаем старые записи
-                subprocess.run(
-                    f'netsh interface ip set dns name="{interface}" source=dhcp',
-                    shell=True, capture_output=True,
-                    text=True, encoding='cp866', errors='replace'
-                )
-                # Устанавливаем основной DNS
-                cmd1 = f'netsh interface ip set dns name="{interface}" source=static addr={dns1} validate=no'
-                log.debug(f"DNS cmd: {cmd1}")
-                r1 = subprocess.run(cmd1, shell=True, capture_output=True,
-                                    text=True, encoding='cp866', errors='replace')
-                if r1.returncode != 0:
-                    raise RuntimeError(r1.stdout.strip() or r1.stderr.strip() or f"код {r1.returncode}")
-                # Добавляем запасной DNS если есть
-                if dns2:
-                    cmd2 = f'netsh interface ip add dns name="{interface}" addr={dns2} index=2 validate=no'
-                    subprocess.run(cmd2, shell=True, capture_output=True,
-                                   text=True, encoding='cp866', errors='replace')
-                log.info(f"DNS установлен: {dns1}" + (f", {dns2}" if dns2 else ""))
+                for iface in iface_list:
+                    # Сначала сбрасываем на DHCP чтобы очистить старые записи
+                    run(f'netsh interface ip set dns name="{iface}" source=dhcp')
+                    # Устанавливаем основной DNS
+                    run(f'netsh interface ip set dns name="{iface}" source=static addr={dns1} validate=no')
+                    # Добавляем запасной если есть
+                    if dns2:
+                        run(f'netsh interface ip add dns name="{iface}" addr={dns2} index=2 validate=no')
+                ifaces_str = ', '.join(iface_list)
+                log.info(f"DNS установлен: {dns1}" + (f", {dns2}" if dns2 else "") + f" | Интерфейсы: {ifaces_str}")
             else:
-                cmd = f'netsh interface ip set dns name="{interface}" source=dhcp'
-                log.debug(f"DNS reset cmd: {cmd}")
-                r = subprocess.run(cmd, shell=True, capture_output=True,
-                                   text=True, encoding='cp866', errors='replace')
-                if r.returncode != 0:
-                    raise RuntimeError(r.stdout.strip() or r.stderr.strip() or f"код {r.returncode}")
-                log.info("DNS сброшен на DHCP")
+                for iface in iface_list:
+                    run(f'netsh interface ip set dns name="{iface}" source=dhcp')
+                ifaces_str = ', '.join(iface_list)
+                log.info(f"DNS сброшен на DHCP | Интерфейсы: {ifaces_str}")
+
         except Exception as e:
             error = str(e)
             log.error(f"Ошибка DNS: {e}")
 
         self.after(0, self._dns_done, enable, interface, error)
+
+    def on_close(self) -> None:
+        """Вызывается при закрытии приложения — сбрасываем DNS если включён."""
+        if self._dns_enabled:
+            import subprocess
+            def run(cmd):
+                subprocess.run(cmd, shell=True, capture_output=True,
+                               encoding='cp866', errors='replace',
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                r = subprocess.run(
+                    'netsh interface show interface',
+                    shell=True, capture_output=True,
+                    encoding='cp866', errors='replace',
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                for line in r.stdout.splitlines():
+                    if 'Подключён' in line or 'Connected' in line or 'Подключен' in line:
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            iface = ' '.join(parts[3:])
+                            run(f'netsh interface ip set dns name="{iface}" source=dhcp')
+            except Exception:
+                pass
 
     def _restart_dns(self) -> None:
         """Переподключиться к DNS — выключить и включить с новыми адресами."""

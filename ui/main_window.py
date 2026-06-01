@@ -814,18 +814,15 @@ class MainWindow(ctk.CTk):
     def _quit_app(self) -> None:
         """Полный выход из приложения."""
         dashboard = self._tabs.get("dashboard")
-        if dashboard and getattr(dashboard, "_dns_enabled", False):
+
+        # Сбрасываем DNS на всех интерфейсах
+        if dashboard and hasattr(dashboard, "on_close"):
             try:
-                import subprocess
-                interface = dashboard._get_active_interface()
-                subprocess.run(
-                    f'netsh interface ip set dns name="{interface}" source=dhcp',
-                    shell=True, capture_output=True, timeout=5,
-                )
+                dashboard.on_close()
             except Exception:
                 pass
+
         # Остановить TG Proxy если запущен
-        dashboard = self._tabs.get("dashboard")
         if dashboard and hasattr(dashboard, "_tg_proxy"):
             try:
                 if dashboard._tg_proxy.is_running:
