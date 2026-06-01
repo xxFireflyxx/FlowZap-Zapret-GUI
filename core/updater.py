@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.4.2"
+GUI_VERSION = "0.4.3"
 FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
 FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
@@ -218,22 +218,43 @@ def download_and_install_exe(
             target_dir = current_exe.parent
             asset_lower = asset_name.lower()
 
+            # Извлекаем новый exe
             if asset_lower.endswith(".zip"):
                 _log("Распаковываем zip архив...")
                 result = _extract_exe_from_zip(data)
                 if not result:
                     raise ValueError("exe не найден внутри zip архива")
                 exe_name, exe_data = result
-                new_exe = target_dir / exe_name
-                new_exe.write_bytes(exe_data)
-
             else:
-                new_exe = target_dir / asset_name
-                new_exe.write_bytes(data)
+                exe_name = asset_name
+                exe_data = data
 
-            _log(f"✓ FlowZap обновлён до {tag}. Перезапустите приложение.")
+            # Сохраняем под временным именем
+            temp_exe = target_dir / "_flowzap_update_tmp.exe"
+            temp_exe.write_bytes(exe_data)
+
+            # Создаём скрытый bat для замены и перезапуска
+            bat_path = target_dir / "_flowzap_update.bat"
+            lines = [
+                "@echo off",
+                "timeout /t 2 /nobreak >nul",
+                'move /y "' + str(temp_exe) + '" "' + str(current_exe) + '"',
+                'start "" "' + str(current_exe) + '"',
+                'del "%~f0"',
+            ]
+            bat_path.write_text("\r\n".join(lines), encoding="utf-8")
+
+            # Запускаем bat скрытно
+            import subprocess as _sp
+            _sp.Popen(
+                ["cmd.exe", "/c", str(bat_path)],
+                creationflags=0x08000000,  # CREATE_NO_WINDOW
+                close_fds=True,
+            )
+
+            _log(f"✓ Обновление до {tag} готово. Приложение перезапустится...")
             if on_done:
-                on_done(True, f"Обновлено до {tag}. Перезапустите приложение.")
+                on_done(True, f"Обновлено до {tag}. Перезапускаем...")
 
         except Exception as exc:
             logger.error(f"Ошибка обновления: {exc}")

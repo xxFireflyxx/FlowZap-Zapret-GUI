@@ -408,6 +408,7 @@ class DashboardTab(ctk.CTkFrame):
 
         # ── Кнопка DNS ────────────────────────
         self._dns_enabled = False
+        self._dns_interface: str = ""  # интерфейс на котором был включён DNS
         self._btn_dns = ctk.CTkButton(
             bf, text="DNS",
             fg_color=p.bg_card, hover_color=p.bg_hover,
@@ -770,18 +771,42 @@ class DashboardTab(ctk.CTkFrame):
     #  DNS-кнопка
     # ──────────────────────────────────────────────
     def _get_active_interface(self) -> str:
-        """Автоматически находит имя активного сетевого адаптера (поддерживает русские имена)."""
-        import subprocess
+        """
+        Находит имя интерфейса с активным шлюзом через ipconfig.
+        Поддерживает русские и английские названия.
+        """
+        import subprocess, re
         try:
             result = subprocess.run(
-                'netsh interface show interface',
-                capture_output=True, text=True, shell=True, encoding='cp866', errors='replace'
+                'ipconfig',
+                capture_output=True, shell=True, encoding='cp866', errors='replace'
             )
+            # Парсим вывод ipconfig — ищем блок с шлюзом
+            current_name = ""
             for line in result.stdout.splitlines():
-                if 'Подключен' in line or 'Connected' in line:
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        return ' '.join(parts[3:])
+                # Строка с именем адаптера — не начинается с пробела и содержит ":"
+                if not line.startswith(" ") and ":" in line:
+                    # Убираем все префиксы до последнего слова-имени
+                    # "Адаптер Ethernet Ethernet:" -> "Ethernet"
+                    # "Адаптер беспроводной локальной сети Беспроводная сеть:" -> "Беспроводная сеть"
+                    # "Wireless LAN adapter Беспроводная сеть:" -> "Беспроводная сеть"
+                    name = re.sub(
+                        r'^.*?(Ethernet|Wireless LAN adapter|беспроводной локальной сети|PPP adapter|Адаптер \w+)\s+',
+                        '', line, flags=re.IGNORECASE
+                    ).strip().rstrip(':').strip()
+                    if not name:
+                        # Fallback — берём всё после последнего известного слова
+                        name = line.strip().rstrip(':').strip()
+                    current_name = name
+                # Строка с основным шлюзом
+                elif current_name and ('Основной шлюз' in line or 'Default Gateway' in line):
+                    gw = line.split(':', 1)[-1].strip()
+                    # Убираем IPv6 адреса (содержат %)
+                    if gw and '%' not in gw and gw != '' and not gw.startswith('fe80'):
+                        # Проверяем что это валидный IPv4
+                        parts = gw.split('.')
+                        if len(parts) == 4:
+                            return current_name
         except Exception:
             pass
         return "Ethernet"
@@ -813,7 +838,18 @@ class DashboardTab(ctk.CTkFrame):
                                 border_color=p.border)
 
         import threading
-        interface = self._get_active_interface()
+        if self._dns_enabled:
+            # При включении определяем интерфейс и запоминаем его
+            interface = self._get_active_interface()
+            self._dns_interface = interface
+            import logging as _lg
+            _lg.getLogger(__name__).debug(f"DNS включается на интерфейсе: '{interface}'")
+        else:
+            # При выключении используем тот же интерфейс что и при включении
+            interface = self._dns_interface or self._get_active_interface()
+            import logging as _lg
+            _lg.getLogger(__name__).debug(f"DNS выключается на интерфейсе: '{interface}' (сохранён: '{self._dns_interface}')") 
+
         threading.Thread(
             target=self._dns_worker,
             args=(self._dns_enabled, dns1, dns2, interface),
