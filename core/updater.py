@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.4.3"
+GUI_VERSION = "0.3.5"
 FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
 FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
@@ -229,17 +229,30 @@ def download_and_install_exe(
                 exe_name = asset_name
                 exe_data = data
 
-            # Сохраняем под временным именем
-            temp_exe = target_dir / "_flowzap_update_tmp.exe"
+            # Сохраняем во временную папку системы
+            import tempfile as _tempfile
+            tmp_dir = Path(_tempfile.gettempdir())
+            temp_exe = tmp_dir / "_flowzap_update_tmp.exe"
             temp_exe.write_bytes(exe_data)
 
-            # Создаём скрытый bat для замены и перезапуска
-            bat_path = target_dir / "_flowzap_update.bat"
+            # Создаём bat с повторными попытками замены
+            bat_path = tmp_dir / "_flowzap_update.bat"
             lines = [
                 "@echo off",
-                "timeout /t 2 /nobreak >nul",
-                'move /y "' + str(temp_exe) + '" "' + str(current_exe) + '"',
+                # Ждём закрытия приложения (до 15 сек, по 1 сек)
+                "set /a attempts=0",
+                ":wait_loop",
+                "timeout /t 1 /nobreak >nul",
+                'move /y "' + str(temp_exe) + '" "' + str(current_exe) + '" >nul 2>&1',
+                "if errorlevel 1 (",
+                "  set /a attempts+=1",
+                "  if %attempts% lss 15 goto wait_loop",
+                "  echo Failed to replace exe after 15 attempts",
+                "  goto cleanup",
+                ")",
+                # Успешно заменили — запускаем новую версию
                 'start "" "' + str(current_exe) + '"',
+                ":cleanup",
                 'del "%~f0"',
             ]
             bat_path.write_text("\r\n".join(lines), encoding="utf-8")
