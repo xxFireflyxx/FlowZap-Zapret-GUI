@@ -304,10 +304,11 @@ class UpdatesTab(ctk.CTkFrame):
         if not success:
             self._enable_gui_update(True)
         else:
-            # Перезапускаем проверку — точка погаснет если всё актуально
+            # Закрываем приложение — bat скрипт заменит exe и перезапустит
+            self._gui_status.configure(
+                text=f"{msg} Закрываем...", text_color=p.success)
             root = self.winfo_toplevel()
-            if hasattr(root, "_check_updates_bg"):
-                self.after(2000, root._check_updates_bg)
+            self.after(2000, lambda: root._quit_app() if hasattr(root, "_quit_app") else root.destroy())
 
     # ──────────────────────────────────────────────
     #  Core обновление
