@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.3.5"
+GUI_VERSION = "0.4.3"
 FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
 FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
@@ -257,13 +257,22 @@ def download_and_install_exe(
             ]
             bat_path.write_text("\r\n".join(lines), encoding="utf-8")
 
-            # Запускаем bat скрытно
-            import subprocess as _sp
-            _sp.Popen(
-                ["cmd.exe", "/c", str(bat_path)],
-                creationflags=0x08000000,  # CREATE_NO_WINDOW
-                close_fds=True,
-            )
+            # Запускаем bat с правами администратора через ShellExecute runas
+            import subprocess as _sp, ctypes as _ct
+            try:
+                # ShellExecute с runas — покажет UAC если нужно
+                _ct.windll.shell32.ShellExecuteW(
+                    None, "runas", "cmd.exe",
+                    f'/c "{bat_path}"',
+                    None, 0  # SW_HIDE
+                )
+            except Exception:
+                # Fallback без UAC
+                _sp.Popen(
+                    ["cmd.exe", "/c", str(bat_path)],
+                    creationflags=0x08000000,
+                    close_fds=True,
+                )
 
             _log(f"✓ Обновление до {tag} готово. Приложение перезапустится...")
             if on_done:
