@@ -12,6 +12,7 @@ import subprocess
 from pathlib import Path
 
 import customtkinter as ctk
+import tkinter as tk
 import tkinter.messagebox as mb
 
 from ui.theme import theme
@@ -129,18 +130,27 @@ class ParametersTab(ctk.CTkFrame):
             # Новый формат: [{main="...", backup="..."}, ...]
             for entry in pairs_raw:
                 if isinstance(entry, dict):
-                    self._dns_pairs.append((
-                        entry.get("main", ""),
-                        entry.get("backup", ""),
-                    ))
+                    self._dns_pairs.append({
+                        "name":        entry.get("name", entry.get("main", "")),
+                        "ipv4_main":   entry.get("ipv4_main", entry.get("main", "")),
+                        "ipv4_backup": entry.get("ipv4_backup", entry.get("backup", "")),
+                        "ipv6_main":   entry.get("ipv6_main", ""),
+                        "ipv6_backup": entry.get("ipv6_backup", ""),
+                        "main":        entry.get("main", entry.get("ipv4_main", "")),
+                        "backup":      entry.get("backup", entry.get("ipv4_backup", "")),
+                    })
         else:
             # Fallback: старый плоский список — каждый адрес отдельной парой
             for addr in dns_cfg.get("servers", []):
                 if addr:
-                    self._dns_pairs.append((addr, ""))
+                    self._dns_pairs.append({
+                        "name": addr, "ipv4_main": addr, "ipv4_backup": "",
+                        "ipv6_main": "", "ipv6_backup": "", "main": addr, "backup": "",
+                    })
 
         if not self._dns_pairs:
-            self._dns_pairs = [("", "")]
+            self._dns_pairs = [{"name": "", "ipv4_main": "", "ipv4_backup": "",
+                                 "ipv6_main": "", "ipv6_backup": "", "main": "", "backup": ""}]
         self._active_dns_idx = 0
         self._refresh_dns_ui()
 
@@ -235,43 +245,7 @@ class ParametersTab(ctk.CTkFrame):
         # _dns_popup — CTkToplevel, создаётся в _open_dns_popup()
         self._dns_popup = None
 
-        # ── row=2: строки ввода ───────────────────────────────────────────────
-        input_frame = ctk.CTkFrame(dns_card, fg_color="transparent")
-        input_frame.grid(row=2, column=0, sticky="ew", padx=m.padding_md, pady=(8, 8))
-        input_frame.grid_columnconfigure(0, weight=1)
-        input_frame.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            input_frame, text="Основной",
-            font=(t.family_ui, t.size_xs), text_color=p.text_muted,
-        ).grid(row=0, column=0, sticky="w", pady=(0, 2))
-
-        ctk.CTkLabel(
-            input_frame, text="Запасной",
-            font=(t.family_ui, t.size_xs), text_color=p.text_muted,
-        ).grid(row=0, column=1, sticky="w", padx=(8, 0), pady=(0, 2))
-
-        self._dns_main_entry = ctk.CTkEntry(
-            input_frame,
-            placeholder_text="1.1.1.1",
-            fg_color=p.bg_input, text_color=p.text_primary,
-            placeholder_text_color=p.text_muted,
-            border_color=p.border, corner_radius=m.corner_radius_sm, height=32,
-            font=(t.family_ui, t.size_sm),
-        )
-        self._dns_main_entry.grid(row=1, column=0, sticky="ew")
-
-        self._dns_backup_entry = ctk.CTkEntry(
-            input_frame,
-            placeholder_text="1.0.0.1  (необязательно)",
-            fg_color=p.bg_input, text_color=p.text_primary,
-            placeholder_text_color=p.text_muted,
-            border_color=p.border, corner_radius=m.corner_radius_sm, height=32,
-            font=(t.family_ui, t.size_sm),
-        )
-        self._dns_backup_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0))
-
-        # ── row=4: кнопка добавить ────────────────────────────────────────────
+        # ── row=2: кнопка добавить ────────────────────────────────────────────
         ctk.CTkButton(
             dns_card,
             text="＋  Добавить",
@@ -280,17 +254,20 @@ class ParametersTab(ctk.CTkFrame):
             text_color=p.bg_root,
             corner_radius=m.corner_radius,
             font=(t.family_ui, t.size_sm),
-            command=self._add_dns_pair,
-        ).grid(row=3, column=0, sticky="w", padx=m.padding_md, pady=(0, m.padding_md))
+            command=self._open_add_dns_dialog,
+        ).grid(row=2, column=0, sticky="w", padx=m.padding_md, pady=(8, 0))
 
         self._dns_status = ctk.CTkLabel(
             dns_card, text="",
             font=(t.family_ui, t.size_xs), text_color=p.text_muted,
             anchor="w",
         )
-        self._dns_status.grid(row=4, column=0, sticky="ew", padx=m.padding_md, pady=(0, m.padding_md))
+        self._dns_status.grid(row=3, column=0, sticky="ew", padx=m.padding_md, pady=(4, m.padding_md))
 
         self._mode_var = ctk.StringVar(value="winws")
+
+        # ── Overlay добавления DNS ─────────────
+        self._build_add_dns_overlay()
 
         # ── Списки zapret ─────────────────────
         self._build_lists_block()
@@ -710,7 +687,11 @@ class ParametersTab(ctk.CTkFrame):
         scroll.pack(fill="both", expand=True)
         scroll.grid_columnconfigure(0, weight=1)
 
-        for i, (main, backup) in enumerate(self._dns_pairs):
+        for i, pair in enumerate(self._dns_pairs):
+            main   = pair["ipv4_main"] if isinstance(pair, dict) else pair[0]
+            backup = pair["ipv4_backup"] if isinstance(pair, dict) else pair[1]
+            name   = pair.get("name", "") if isinstance(pair, dict) else ""
+            display = name if name and name != main else main + (f"  +  {backup}" if backup else "")
             is_active = (i == 0)
 
             row = ctk.CTkFrame(scroll, fg_color=p.bg_hover if is_active else "transparent",
@@ -718,10 +699,9 @@ class ParametersTab(ctk.CTkFrame):
             row.grid(row=i, column=0, sticky="ew", padx=4, pady=(4 if i == 0 else 2))
             row.grid_columnconfigure(0, weight=1)
 
-            # Адрес
-            addr_text = main + (f"  +  {backup}" if backup else "")
+            # Адрес или название
             addr_lbl = ctk.CTkLabel(
-                row, text=addr_text,
+                row, text=display,
                 font=(t.family_ui, t.size_sm),
                 text_color=p.accent if is_active else p.text_primary,
                 anchor="w", cursor="hand2",
@@ -792,9 +772,13 @@ class ParametersTab(ctk.CTkFrame):
         self._close_dns_popup()
 
         if self._dns_pairs:
-            main, backup = self._dns_pairs[0]
-            self._dns_active_label.configure(text=main or "—")
-            self._dns_backup_label.configure(text=f"+ {backup}" if backup else "")
+            pair = self._dns_pairs[0]
+            main   = pair["ipv4_main"] if isinstance(pair, dict) else pair[0]
+            backup = pair["ipv4_backup"] if isinstance(pair, dict) else pair[1]
+            name   = pair.get("name", "") if isinstance(pair, dict) else ""
+            display = name if name and name != main else main
+            self._dns_active_label.configure(text=display or "—")
+            self._dns_backup_label.configure(text=f"+ {backup}" if backup and not name else "")
         else:
             self._dns_active_label.configure(text="—")
             self._dns_backup_label.configure(text="")
@@ -815,43 +799,245 @@ class ParametersTab(ctk.CTkFrame):
 
     def _remove_dns_pair(self, idx: int) -> None:
         p = theme.palette
-        if len(self._dns_pairs) <= 1:
-            self._dns_status.configure(text="Нельзя удалить единственный DNS", text_color=p.warning)
-            self.after(2000, lambda: self._dns_status.configure(text=""))
-            return
         self._dns_pairs.pop(idx)
         self._refresh_dns_ui()
         self._save_dns()
         self._dns_status.configure(text="✓ Удалено", text_color=p.success)
         self.after(2000, lambda: self._dns_status.configure(text=""))
 
-    def _add_dns_pair(self) -> None:
+    # ──────────────────────────────────────────
+    #  Inline overlay: добавление DNS
+    # ──────────────────────────────────────────
+
+    def _build_add_dns_overlay(self) -> None:
+        """Подготовить виджеты карточки. Toplevel-ы создаются при открытии."""
         p = theme.palette
-        main = self._dns_main_entry.get().strip()
-        backup = self._dns_backup_entry.get().strip()
+        t = theme.typography
+        m = theme.metrics
 
-        if not main:
-            self._dns_status.configure(text="Введите основной адрес", text_color=p.warning)
+        # Карточка — CTkFrame, будет помещена в _ov_card_win при открытии
+        self._ov_card_frame_widgets = (p, t, m)  # сохраняем для ленивого построения
+        self._ov_card_win = None   # tk.Toplevel с карточкой
+        self._ov_dim_win  = None   # tk.Toplevel с затемнением
+        self._ov_escape_bind_id = None
+
+    def _ensure_overlay_built(self) -> None:
+        """Построить карточку один раз при первом открытии."""
+        if self._ov_card_win is not None:
+            return
+        p, t, m = self._ov_card_frame_widgets
+        root = self.winfo_toplevel()
+
+        # ── Затемняющий фон ───────────────────────────────────────────────────
+        dim = tk.Toplevel(root)
+        dim.wm_overrideredirect(True)
+        dim.configure(bg="#000000")
+        dim.wm_attributes("-alpha", 0.45)
+        dim.withdraw()
+        self._ov_dim_win = dim
+
+        # ── Окно с карточкой ──────────────────────────────────────────────────
+        win = tk.Toplevel(root)
+        win.wm_overrideredirect(True)
+        win.configure(bg=p.bg_card)
+        win.withdraw()
+        self._ov_card_win = win
+
+        card = ctk.CTkFrame(win, fg_color=p.bg_card, corner_radius=m.corner_radius, width=400)
+        card.pack(fill="both", expand=True, padx=0, pady=0)
+        card.grid_columnconfigure(0, weight=1)
+
+        # ── Заголовок ────────────────────────────
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", padx=m.padding_md, pady=(m.padding_md, 4))
+        header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            header, text="Добавить DNS",
+            font=(t.family_ui, t.size_lg, "bold"),
+            text_color=p.text_primary,
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkButton(
+            header, text="✕", width=28, height=28,
+            fg_color="transparent", hover_color=p.bg_hover,
+            text_color=p.text_muted,
+            font=(t.family_ui, t.size_md),
+            corner_radius=6,
+            command=self._close_add_dns_overlay,
+        ).grid(row=0, column=1, sticky="e")
+
+        # ── Название ─────────────────────────────
+        ctk.CTkLabel(card, text="Название", font=(t.family_ui, t.size_xs),
+                     text_color=p.text_muted, anchor="w",
+                     ).grid(row=1, column=0, sticky="w", padx=m.padding_md, pady=(8, 2))
+        self._ov_name = ctk.CTkEntry(
+            card, placeholder_text="Например: Мой DNS",
+            fg_color=p.bg_input, text_color=p.text_primary,
+            placeholder_text_color=p.text_muted,
+            border_color=p.border, corner_radius=m.corner_radius_sm, height=34,
+            font=(t.family_ui, t.size_sm),
+        )
+        self._ov_name.grid(row=2, column=0, sticky="ew", padx=m.padding_md)
+
+        # ── IPv4 ─────────────────────────────────
+        ctk.CTkLabel(card, text="IPv4", font=(t.family_ui, t.size_sm, "bold"),
+                     text_color=p.text_secondary, anchor="w",
+                     ).grid(row=3, column=0, sticky="w", padx=m.padding_md, pady=(12, 2))
+
+        ipv4_frame = ctk.CTkFrame(card, fg_color="transparent")
+        ipv4_frame.grid(row=4, column=0, sticky="ew", padx=m.padding_md)
+        ipv4_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self._ov_ipv4_main = ctk.CTkEntry(
+            ipv4_frame, placeholder_text="Основной",
+            fg_color=p.bg_input, text_color=p.text_primary,
+            placeholder_text_color=p.text_muted,
+            border_color=p.border, corner_radius=m.corner_radius_sm, height=34,
+            font=(t.family_ui, t.size_sm), width=160,
+        )
+        self._ov_ipv4_main.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self._ov_ipv4_backup = ctk.CTkEntry(
+            ipv4_frame, placeholder_text="Запасной (необязательно)",
+            fg_color=p.bg_input, text_color=p.text_primary,
+            placeholder_text_color=p.text_muted,
+            border_color=p.border, corner_radius=m.corner_radius_sm, height=34,
+            font=(t.family_ui, t.size_sm), width=160,
+        )
+        self._ov_ipv4_backup.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        # ── IPv6 ─────────────────────────────────
+        ctk.CTkLabel(card, text="IPv6", font=(t.family_ui, t.size_sm, "bold"),
+                     text_color=p.text_secondary, anchor="w",
+                     ).grid(row=5, column=0, sticky="w", padx=m.padding_md, pady=(12, 2))
+
+        ipv6_frame = ctk.CTkFrame(card, fg_color="transparent")
+        ipv6_frame.grid(row=6, column=0, sticky="ew", padx=m.padding_md)
+        ipv6_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self._ov_ipv6_main = ctk.CTkEntry(
+            ipv6_frame, placeholder_text="Основной",
+            fg_color=p.bg_input, text_color=p.text_primary,
+            placeholder_text_color=p.text_muted,
+            border_color=p.border, corner_radius=m.corner_radius_sm, height=34,
+            font=(t.family_ui, t.size_sm), width=160,
+        )
+        self._ov_ipv6_main.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+        self._ov_ipv6_backup = ctk.CTkEntry(
+            ipv6_frame, placeholder_text="Запасной (необязательно)",
+            fg_color=p.bg_input, text_color=p.text_primary,
+            placeholder_text_color=p.text_muted,
+            border_color=p.border, corner_radius=m.corner_radius_sm, height=34,
+            font=(t.family_ui, t.size_sm), width=160,
+        )
+        self._ov_ipv6_backup.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        # ── Статус ───────────────────────────────
+        self._ov_status = ctk.CTkLabel(
+            card, text="", font=(t.family_ui, t.size_xs),
+            text_color=p.error, anchor="w",
+        )
+        self._ov_status.grid(row=7, column=0, sticky="w", padx=m.padding_md, pady=(6, 0))
+
+        # ── Кнопка Сохранить ─────────────────────
+        ctk.CTkButton(
+            card, text="Сохранить",
+            height=m.button_height,
+            fg_color=p.accent, hover_color=p.accent_dim,
+            text_color=p.bg_root,
+            corner_radius=m.corner_radius,
+            font=(t.family_ui, t.size_sm, "bold"),
+            command=self._on_overlay_save,
+        ).grid(row=8, column=0, sticky="ew", padx=m.padding_md, pady=(8, m.padding_md))
+
+    def _open_add_dns_dialog(self) -> None:
+        """Показать overlay добавления DNS поверх окна приложения."""
+        self._ensure_overlay_built()
+        root = self.winfo_toplevel()
+        root.update_idletasks()
+        rx = root.winfo_rootx()
+        ry = root.winfo_rooty()
+        rw = root.winfo_width()
+        rh = root.winfo_height()
+
+        # Затемнение — на весь root
+        self._ov_dim_win.geometry(f"{rw}x{rh}+{rx}+{ry}")
+        self._ov_dim_win.deiconify()
+        self._ov_dim_win.lift()
+
+        # Карточка — по центру root
+        self._ov_card_win.update_idletasks()
+        cw = self._ov_card_win.winfo_reqwidth()
+        ch = self._ov_card_win.winfo_reqheight()
+        cx = rx + (rw - cw) // 2
+        cy = ry + (rh - ch) // 2
+        self._ov_card_win.geometry(f"{cw}x{ch}+{cx}+{cy}")
+        self._ov_card_win.deiconify()
+        self._ov_card_win.lift()
+        self._ov_card_win.update()
+
+        self._ov_escape_bind_id = root.bind("<Escape>", lambda e: self._close_add_dns_overlay(), add="+")
+        self._ov_name.focus_set()
+
+    def _close_add_dns_overlay(self) -> None:
+        """Скрыть overlay и очистить поля."""
+        if self._ov_dim_win:
+            self._ov_dim_win.withdraw()
+        if self._ov_card_win:
+            self._ov_card_win.withdraw()
+        root = self.winfo_toplevel()
+        if self._ov_escape_bind_id:
+            try:
+                root.unbind("<Escape>", self._ov_escape_bind_id)
+            except Exception:
+                pass
+            self._ov_escape_bind_id = None
+        for entry in (self._ov_name, self._ov_ipv4_main, self._ov_ipv4_backup,
+                      self._ov_ipv6_main, self._ov_ipv6_backup):
+            entry.delete(0, "end")
+        self._ov_status.configure(text="")
+
+    def _on_overlay_save(self) -> None:
+        p = theme.palette
+        name   = self._ov_name.get().strip()
+        ipv4_m = self._ov_ipv4_main.get().strip()
+        ipv4_b = self._ov_ipv4_backup.get().strip()
+        ipv6_m = self._ov_ipv6_main.get().strip()
+        ipv6_b = self._ov_ipv6_backup.get().strip()
+
+        if not ipv4_m:
+            self._ov_status.configure(text="Введите хотя бы основной IPv4 адрес", text_color=p.error)
+            return
+        if not _valid_entry(ipv4_m):
+            self._ov_status.configure(text=f"Некорректный IPv4: {ipv4_m}", text_color=p.error)
+            return
+        if ipv4_b and not _valid_entry(ipv4_b):
+            self._ov_status.configure(text=f"Некорректный запасной IPv4: {ipv4_b}", text_color=p.error)
+            return
+        if any(d.get("ipv4_main") == ipv4_m for d in self._dns_pairs if isinstance(d, dict)):
+            self._ov_status.configure(text="Такой DNS уже есть", text_color=p.warning)
             return
 
-        if not _valid_entry(main):
-            self._dns_status.configure(text=f"Некорректный адрес: {main}", text_color=p.error)
-            return
-
-        if backup and not _valid_entry(backup):
-            self._dns_status.configure(text=f"Некорректный запасной адрес: {backup}", text_color=p.error)
-            return
-
-        if any(d[0] == main for d in self._dns_pairs):
-            self._dns_status.configure(text="Такой DNS уже есть в списке", text_color=p.warning)
-            return
-
-        self._dns_pairs.append((main, backup))
+        pair = {
+            "name": name or ipv4_m,
+            "ipv4_main": ipv4_m, "ipv4_backup": ipv4_b,
+            "ipv6_main": ipv6_m, "ipv6_backup": ipv6_b,
+            "main": ipv4_m, "backup": ipv4_b,
+        }
+        # Конвертируем старые tuple пары если есть
+        self._dns_pairs = [
+            {"name": d[0], "ipv4_main": d[0], "ipv4_backup": d[1] if len(d) > 1 else "",
+             "ipv6_main": "", "ipv6_backup": "", "main": d[0], "backup": d[1] if len(d) > 1 else ""}
+            if isinstance(d, tuple) else d
+            for d in self._dns_pairs
+        ]
+        self._dns_pairs.append(pair)
+        self._close_add_dns_overlay()
         self._refresh_dns_ui()
         self._save_dns()
-        self._dns_main_entry.delete(0, "end")
-        self._dns_backup_entry.delete(0, "end")
-        self._dns_status.configure(text="✓ Добавлено, пингуем...", text_color=p.success)
+        self._dns_status.configure(text="✓ Добавлено", text_color=p.success)
         self._ping_dns_pair(len(self._dns_pairs) - 1)
 
     def _ping_active_dns(self) -> None:
@@ -864,9 +1050,11 @@ class ParametersTab(ctk.CTkFrame):
         if not hasattr(self, "_dns_ping_cache"):
             self._dns_ping_cache = {}
 
-        pairs_to_ping = [
-            (i, main) for i, (main, _) in enumerate(self._dns_pairs) if main
-        ]
+        pairs_to_ping = []
+        for i, pair in enumerate(self._dns_pairs):
+            main = pair["ipv4_main"] if isinstance(pair, dict) else pair[0]
+            if main:
+                pairs_to_ping.append((i, main))
         if not pairs_to_ping:
             return
 
@@ -911,7 +1099,8 @@ class ParametersTab(ctk.CTkFrame):
         import threading
         if idx >= len(self._dns_pairs):
             return
-        main, _ = self._dns_pairs[idx]
+        pair = self._dns_pairs[idx]
+        main = pair["ipv4_main"] if isinstance(pair, dict) else pair[0]
         if not main:
             return
 
@@ -937,26 +1126,46 @@ class ParametersTab(ctk.CTkFrame):
 
     def get_dns_servers(self) -> list:
         """Вернуть плоский список основных DNS адресов (для dashboard/netsh)."""
-        return [main for main, backup in self._dns_pairs if main]
+        result = []
+        for pair in self._dns_pairs:
+            main = pair["ipv4_main"] if isinstance(pair, dict) else pair[0]
+            if main:
+                result.append(main)
+        return result
 
     def _get_dns_pairs_data(self) -> list:
-        """Вернуть пары в формате для config.toml: [{main=..., backup=...}, ...]"""
+        """Вернуть пары в формате для config.toml: [{ipv4_main=..., ipv6_main=..., ...}, ...]"""
         result = []
-        for main, backup in self._dns_pairs:
-            if main:
-                entry = {"main": main}
-                if backup:
-                    entry["backup"] = backup
-                result.append(entry)
+        for pair in self._dns_pairs:
+            if isinstance(pair, dict):
+                ipv4_m = pair.get("ipv4_main", pair.get("main", ""))
+                ipv4_b = pair.get("ipv4_backup", pair.get("backup", ""))
+                ipv6_m = pair.get("ipv6_main", "")
+                ipv6_b = pair.get("ipv6_backup", "")
+                name   = pair.get("name", ipv4_m)
+            else:
+                ipv4_m, ipv4_b = pair[0], pair[1] if len(pair) > 1 else ""
+                ipv6_m = ipv6_b = ""
+                name = ipv4_m
+            if not ipv4_m and not ipv6_m:
+                continue
+            entry = {"name": name, "ipv4_main": ipv4_m, "ipv4_backup": ipv4_b,
+                     "ipv6_main": ipv6_m, "ipv6_backup": ipv6_b,
+                     # legacy поля — dashboard._apply_new_dns читает их как fallback
+                     "main": ipv4_m, "backup": ipv4_b}
+            result.append(entry)
         return result
 
     def _build_flat_servers(self) -> list:
         """Плоский список — ТОЛЬКО активная пара (первая в списке).
-        dashboard берёт [0] как основной и [1] как запасной.
+        dashboard берёт [0] как основной IPv4 и [1] как запасной IPv4.
+        IPv6 адреса хранятся в pairs[] и читаются dashboard напрямую.
         """
         flat = []
         if self._dns_pairs:
-            main, backup = self._dns_pairs[0]
+            pair = self._dns_pairs[0]
+            main   = pair["ipv4_main"] if isinstance(pair, dict) else pair[0]
+            backup = pair.get("ipv4_backup", pair[1] if not isinstance(pair, dict) and len(pair) > 1 else "")
             if main:
                 flat.append(main)
             if backup:
