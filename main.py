@@ -61,7 +61,18 @@ def load_config(config_path: Path) -> dict:
         },
         "ui":      {"theme": "earthy", "remember_tab": True},
         "updater": {"repo": "Flowseal/zapret-discord-youtube", "check_on_start": True},
-        "dns":     {"servers": ["111.88.98.50", "111.88.96.51"]},
+        "dns": {
+            "pairs": [{
+                "name":        "xbox-dns",
+                "ipv4_main":   "111.88.96.50",
+                "ipv4_backup": "111.88.96.51",
+                "ipv6_main":   "2a00:ab00:1233:26::50",
+                "ipv6_backup": "2a00:ab00:1233:26::51",
+                "main":        "111.88.96.50",
+                "backup":      "111.88.96.51",
+            }],
+            "servers": ["111.88.96.50", "111.88.96.51"],
+        },
     }
     if not config_path.exists():
         return defaults
@@ -73,6 +84,19 @@ def load_config(config_path: Path) -> dict:
                 defaults[section].update(values)
             else:
                 defaults[section] = values
+        # Миграция: старый формат (servers без pairs) — конвертируем
+        dns = defaults.get("dns", {})
+        if not dns.get("pairs") and dns.get("servers"):
+            servers = dns["servers"]
+            dns["pairs"] = [{
+                "name":        "xbox-dns",
+                "ipv4_main":   servers[0] if len(servers) > 0 else "",
+                "ipv4_backup": servers[1] if len(servers) > 1 else "",
+                "ipv6_main":   "2a00:ab00:1233:26::50",
+                "ipv6_backup": "2a00:ab00:1233:26::51",
+                "main":        servers[0] if len(servers) > 0 else "",
+                "backup":      servers[1] if len(servers) > 1 else "",
+            }]
     except Exception as exc:
         logging.getLogger(__name__).error(f"Ошибка чтения config.toml: {exc}")
     return defaults
@@ -150,6 +174,19 @@ def main() -> None:
             manager.start(bat_path=bat_path)
 
         app.after(1500, _autostart)
+
+    # Игровые списки — при первом запуске скачиваем синхронно,
+    # при последующих — тихо в фоне раз в 6 часов
+    from core.updater import update_gaming_lists, GAMING_LIST_DOMAINS, GAMING_LIST_IPSET
+    _lists_dir = ROOT / "zapret" / "lists"
+    _first_run = not (_lists_dir / GAMING_LIST_DOMAINS).exists()
+    if _first_run:
+        log.info("Первый запуск — загружаем игровые списки синхронно...")
+        update_gaming_lists(_lists_dir, force=True)
+        import time as _time
+        _time.sleep(3)  # даём время скачаться до запуска zapret
+    else:
+        update_gaming_lists(_lists_dir)
 
     log.info("UI готов, запуск mainloop")
 

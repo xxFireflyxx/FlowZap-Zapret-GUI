@@ -406,6 +406,19 @@ class DashboardTab(ctk.CTkFrame):
             command=self._on_toggle, **btn_cfg)
         self._btn_toggle.pack(side="left", padx=(0, 8))
 
+        # ── Кнопка Game Filter ────────────────
+        self._game_filter_enabled = False
+        self._btn_game = ctk.CTkButton(
+            bf, text="Game Filter",
+            fg_color=p.bg_card, hover_color=p.bg_hover,
+            text_color=p.text_secondary, border_width=1, border_color=p.border_light,
+            corner_radius=m.corner_radius,
+            font=(t.family_ui, t.size_md, "bold"),
+            height=m.button_height + 8, width=130,
+            command=self._on_game_filter_toggle,
+        )
+        self._btn_game.pack(side="left", padx=(8, 0))
+
         # ── Кнопка DNS ────────────────────────
         self._dns_enabled = False
         self._dns_interface: str = ""  # интерфейс на котором был включён DNS
@@ -419,19 +432,6 @@ class DashboardTab(ctk.CTkFrame):
             command=self._on_dns_toggle,
         )
         self._btn_dns.pack(side="left", padx=(8, 0))
-
-        # ── Кнопка Game Filter ────────────────
-        self._game_filter_enabled = False
-        self._btn_game = ctk.CTkButton(
-            bf, text="Game Filter",
-            fg_color=p.bg_card, hover_color=p.bg_hover,
-            text_color=p.text_secondary, border_width=1, border_color=p.border_light,
-            corner_radius=m.corner_radius,
-            font=(t.family_ui, t.size_md, "bold"),
-            height=m.button_height + 8, width=130,
-            command=self._on_game_filter_toggle,
-        )
-        self._btn_game.pack(side="left", padx=(8, 0))
 
         # ── Кнопка TG Proxy ───────────────────
         self._btn_tg = ctk.CTkButton(
@@ -818,12 +818,23 @@ class DashboardTab(ctk.CTkFrame):
         self._dns_enabled = not self._dns_enabled
         p = theme.palette
 
-        servers = self._config.get("dns", {}).get("servers", [])
-        dns1 = servers[0] if len(servers) > 0 else ""
-        dns2 = servers[1] if len(servers) > 1 else ""
+        dns_cfg = self._config.get("dns", {})
+        pairs = dns_cfg.get("pairs", [])
+        if pairs and isinstance(pairs[0], dict):
+            pair  = pairs[0]
+            dns1  = pair.get("ipv4_main",   pair.get("main",   ""))
+            dns2  = pair.get("ipv4_backup",  pair.get("backup", ""))
+            dns1v6 = pair.get("ipv6_main",  "")
+            dns2v6 = pair.get("ipv6_backup", "")
+        else:
+            servers = dns_cfg.get("servers", [])
+            dns1   = servers[0] if len(servers) > 0 else ""
+            dns2   = servers[1] if len(servers) > 1 else ""
+            dns1v6 = ""
+            dns2v6 = ""
 
         if self._dns_enabled:
-            if not dns1:
+            if not dns1 and not dns1v6:
                 self._dns_enabled = False
                 mb.showwarning(
                     "FlowZap — DNS",
@@ -848,15 +859,16 @@ class DashboardTab(ctk.CTkFrame):
             # При выключении используем тот же интерфейс что и при включении
             interface = self._dns_interface or self._get_active_interface()
             import logging as _lg
-            _lg.getLogger(__name__).debug(f"DNS выключается на интерфейсе: '{interface}' (сохранён: '{self._dns_interface}')") 
+            _lg.getLogger(__name__).debug(f"DNS выключается на интерфейсе: '{interface}' (сохранён: '{self._dns_interface}')")
 
         threading.Thread(
             target=self._dns_worker,
-            args=(self._dns_enabled, dns1, dns2, interface),
+            args=(self._dns_enabled, dns1, dns2, interface, dns1v6, dns2v6),
             daemon=True,
         ).start()
 
-    def _dns_worker(self, enable: bool, dns1: str, dns2: str, interface: str) -> None:
+    def _dns_worker(self, enable: bool, dns1: str, dns2: str, interface: str,
+                    dns1v6: str = "", dns2v6: str = "") -> None:
         """Выполняется в фоновом потоке. Применяет DNS через netsh."""
         import subprocess, logging
         log = logging.getLogger(__name__)
@@ -884,18 +896,26 @@ class DashboardTab(ctk.CTkFrame):
 
             if enable:
                 for iface in iface_list:
-                    # Сначала сбрасываем на DHCP чтобы очистить старые записи
+                    # Сначала сбрасываем на DHCP чтобы очистить старые записи (IPv4 и IPv6)
                     run(f'netsh interface ip set dns name="{iface}" source=dhcp')
-                    # Устанавливаем основной DNS
-                    run(f'netsh interface ip set dns name="{iface}" source=static addr={dns1} validate=no')
-                    # Добавляем запасной если есть
-                    if dns2:
-                        run(f'netsh interface ip add dns name="{iface}" addr={dns2} index=2 validate=no')
+                    run(f'netsh interface ipv6 set dns name="{iface}" source=dhcp')
+                    # IPv4
+                    if dns1:
+                        run(f'netsh interface ip set dns name="{iface}" source=static addr={dns1} validate=no')
+                        if dns2:
+                            run(f'netsh interface ip add dns name="{iface}" addr={dns2} index=2 validate=no')
+                    # IPv6
+                    if dns1v6:
+                        run(f'netsh interface ipv6 set dns name="{iface}" source=static addr={dns1v6} validate=no')
+                        if dns2v6:
+                            run(f'netsh interface ipv6 add dns name="{iface}" addr={dns2v6} index=2 validate=no')
                 ifaces_str = ', '.join(iface_list)
-                log.info(f"DNS установлен: {dns1}" + (f", {dns2}" if dns2 else "") + f" | Интерфейсы: {ifaces_str}")
+                parts_log = [x for x in [dns1, dns2, dns1v6, dns2v6] if x]
+                log.info(f"DNS установлен: {', '.join(parts_log)} | Интерфейсы: {ifaces_str}")
             else:
                 for iface in iface_list:
                     run(f'netsh interface ip set dns name="{iface}" source=dhcp')
+                    run(f'netsh interface ipv6 set dns name="{iface}" source=dhcp')
                 ifaces_str = ', '.join(iface_list)
                 log.info(f"DNS сброшен на DHCP | Интерфейсы: {ifaces_str}")
 
@@ -926,6 +946,7 @@ class DashboardTab(ctk.CTkFrame):
                         if len(parts) >= 4:
                             iface = ' '.join(parts[3:])
                             run(f'netsh interface ip set dns name="{iface}" source=dhcp')
+                            run(f'netsh interface ipv6 set dns name="{iface}" source=dhcp')
             except Exception:
                 pass
 
@@ -950,14 +971,19 @@ class DashboardTab(ctk.CTkFrame):
         dns_cfg = self._config.get("dns", {})
         pairs = dns_cfg.get("pairs", [])
         if pairs and isinstance(pairs[0], dict):
-            dns1 = pairs[0].get("main", "")
-            dns2 = pairs[0].get("backup", "")
+            pair   = pairs[0]
+            dns1   = pair.get("ipv4_main",   pair.get("main",   ""))
+            dns2   = pair.get("ipv4_backup",  pair.get("backup", ""))
+            dns1v6 = pair.get("ipv6_main",  "")
+            dns2v6 = pair.get("ipv6_backup", "")
         else:
             servers = dns_cfg.get("servers", [])
-            dns1 = servers[0] if servers else ""
-            dns2 = servers[1] if len(servers) > 1 else ""
+            dns1   = servers[0] if servers else ""
+            dns2   = servers[1] if len(servers) > 1 else ""
+            dns1v6 = ""
+            dns2v6 = ""
 
-        if not dns1:
+        if not dns1 and not dns1v6:
             return
 
         self._dns_enabled = True
@@ -965,7 +991,7 @@ class DashboardTab(ctk.CTkFrame):
         import threading
         threading.Thread(
             target=self._dns_worker,
-            args=(True, dns1, dns2, interface),
+            args=(True, dns1, dns2, interface, dns1v6, dns2v6),
             daemon=True,
         ).start()
 

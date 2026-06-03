@@ -265,6 +265,37 @@ class MainWindow(ctk.CTk):
         self._content.grid_columnconfigure(0, weight=1)
         self._content.grid_rowconfigure(0, weight=1)
 
+        # Горячие клавиши для русской раскладки
+        def _hotkey(event_name):
+            def _handler(e):
+                w = self.focus_get()
+                if w:
+                    try:
+                        w.event_generate(event_name)
+                    except Exception:
+                        pass
+            return _handler
+
+        # Латиница (уже работает, дублируем для надёжности)
+        self.bind_all("<Control-c>", _hotkey("<<Copy>>"))
+        self.bind_all("<Control-v>", _hotkey("<<Paste>>"))
+        self.bind_all("<Control-x>", _hotkey("<<Cut>>"))
+        self.bind_all("<Control-a>", _hotkey("<<SelectAll>>"))
+        self.bind_all("<Control-z>", _hotkey("<<Undo>>"))
+        # Кириллица: ловим по keycode (физическая клавиша, не зависит от раскладки)
+        # Windows: c=67, v=86, x=88, a=65, z=90
+        _keycode_map = {67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>",
+                        65: "<<SelectAll>>", 90: "<<Undo>>"}
+        def _on_ctrl_key(e):
+            if e.state & 0x4 and e.keycode in _keycode_map:
+                w = e.widget
+                try:
+                    w.event_generate(_keycode_map[e.keycode])
+                except Exception:
+                    pass
+                return "break"
+        self.bind_all("<KeyPress>", _on_ctrl_key, add="+")
+
         self.manager.zapret.on_state_change = self._on_state_change
 
         self._load_tabs()
@@ -304,6 +335,7 @@ class MainWindow(ctk.CTk):
         }
 
         self.after(3000, self._check_updates_bg)          # 3 сек после старта
+        self.after(500, self._check_path_warning)            # проверка пути на кириллицу
         self._schedule_periodic_update_check()
 
     # ─────────────────────────────────────────
@@ -618,6 +650,58 @@ class MainWindow(ctk.CTk):
     def _periodic_update_check(self) -> None:
         self._check_updates_bg()
         self._schedule_periodic_update_check()
+
+    def _check_path_warning(self) -> None:
+        """Проверить путь к программе на кириллицу и пробелы — winws.exe может не работать."""
+        import ctypes, tkinter.messagebox as mb
+        app_dir = self.config.get("_app_dir", "")
+        if not app_dir:
+            return
+
+        path_str = str(app_dir)
+
+        # Проверяем наличие кириллицы или пробелов
+        has_cyrillic = any('Ѐ' <= c <= 'ӿ' for c in path_str)
+        has_spaces   = ' ' in path_str
+        if not has_cyrillic and not has_spaces:
+            return  # Путь чистый — всё хорошо
+
+        # Пробуем GetShortPathNameW — может помочь если 8.3 имена включены
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            ctypes.windll.kernel32.GetShortPathNameW(path_str, buf, 512)
+            short = buf.value
+        except Exception:
+            short = ""
+
+        short_has_cyrillic = any('Ѐ' <= c <= 'ӿ' for c in short) if short else True
+        short_has_spaces   = ' ' in short if short else True
+
+        if short and not short_has_cyrillic and not short_has_spaces:
+            # GetShortPathNameW справился — молча используем короткий путь,
+            # но всё равно предупреждаем пользователя что лучше переместить
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Путь содержит кириллицу/пробелы, используется короткий путь 8.3: {short}"
+            )
+            return  # winws запустится через _short_path в manager.py
+
+        # GetShortPathNameW не помог — показываем предупреждение
+        problems = []
+        if has_cyrillic:
+            problems.append("кириллицу")
+        if has_spaces:
+            problems.append("пробелы")
+        problems_str = " и ".join(problems)
+
+        msg = (
+            "Путь к программе содержит " + problems_str + ":\n\n"
+            + path_str + "\n\n"
+            "Это может помешать работе zapret (winws.exe не запустится).\n\n"
+            "Рекомендуется переместить папку FlowZap в путь без кириллицы и пробелов,\n"
+            "например: C:\\FlowZap"
+        )
+        mb.showwarning("FlowZap — предупреждение о пути", msg)
 
     def _check_updates_bg(self) -> None:
         """Запускает проверку обновлений в фоновом потоке."""

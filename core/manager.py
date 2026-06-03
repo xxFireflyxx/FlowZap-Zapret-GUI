@@ -35,6 +35,18 @@ class ServiceState(Enum):
 #  Менеджер одного сервиса (zapret / zapret2)
 # ─────────────────────────────────────────────
 
+def _short_path(path) -> str:
+    """Конвертировать путь в короткий формат 8.3 — убирает кириллицу и пробелы."""
+    try:
+        import ctypes
+        p = str(path)
+        buf = ctypes.create_unicode_buffer(512)
+        ctypes.windll.kernel32.GetShortPathNameW(p, buf, 512)
+        return buf.value if buf.value else p
+    except Exception:
+        return str(path)
+
+
 class ServiceManager:
     """
     Управляет одним внешним процессом (zapret.exe или аналог).
@@ -173,27 +185,35 @@ class ServiceManager:
                         for search_dir in (bin_dir, lists_dir):
                             candidate = search_dir / val
                             if candidate.exists():
-                                val = str(candidate)
+                                val = _short_path(candidate)
                                 break
                             candidate2 = search_dir / Path(val).name
                             if candidate2.exists():
-                                val = str(candidate2)
+                                val = _short_path(candidate2)
                                 break
-                        # Оборачиваем в кавычки если путь содержит пробелы или кириллицу
-                        needs_quotes = any(c in val for c in (' ', '\t')) or any(ord(c) > 127 for c in val)
-                        if needs_quotes and not val.startswith('"'):
-                            val = f'"{val}"'
                         resolved_args.append(f"{key}={val}")
                     else:
                         resolved_args.append(arg)
+
+                # Если Game Filter включён — добавляем игровые списки доменов и IP
+                if game_flag.exists():
+                    for gf_file in ("flowzap-game-list-all.txt", "flowzap-game-ipset.txt"):
+                        gf_path = lists_dir / gf_file
+                        if gf_path.exists():
+                            short = _short_path(gf_path)
+                            key = "--hostlist" if gf_file.endswith("-list-all.txt") else "--ipset"
+                            resolved_args.append(f"{key}={short}")
+                            self._emit_log(f"[INFO] Game список подключён: {gf_file}")
+                        else:
+                            self._emit_log(f"[DEBUG] Game список не найден (будет загружен): {gf_file}")
 
                 if not self.executable.exists():
                     self._emit_log(f"[ERROR] winws.exe не найден: {self.executable}")
                     self._set_state(ServiceState.ERROR)
                     return False
 
-                cmd = [str(self.executable)] + resolved_args
-                cwd = bin_dir
+                cmd = [_short_path(self.executable)] + resolved_args
+                cwd = _short_path(bin_dir)
                 self._emit_log(f"[DEBUG] Аргументы: {' '.join(resolved_args[:5])}…")
             else:
                 if not self.executable.exists():

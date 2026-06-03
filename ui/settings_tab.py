@@ -135,6 +135,7 @@ class SettingsTab(ctk.CTkFrame):
         m = theme.metrics
 
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
         ctk.CTkLabel(
             self, text="Настройки",
@@ -143,8 +144,17 @@ class SettingsTab(ctk.CTkFrame):
         ).grid(row=0, column=0, sticky="w", padx=m.padding_lg,
                pady=(m.padding_lg, m.padding_md))
 
+        # Скроллируемый контейнер для всех карточек
+        scroll = ctk.CTkScrollableFrame(
+            self, fg_color="transparent",
+            scrollbar_button_color=p.border,
+            scrollbar_button_hover_color=p.accent,
+        )
+        scroll.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        scroll.grid_columnconfigure(0, weight=1)
+
         # ── Автозапуск ────────────────────────────
-        auto_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        auto_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
         auto_card.grid(row=1, column=0, sticky="ew", padx=m.padding_lg,
                        pady=(0, m.padding_md))
 
@@ -195,7 +205,7 @@ class SettingsTab(ctk.CTkFrame):
         ).pack(anchor="w", padx=m.padding_md, pady=(0, m.padding_md))
 
         # ── Стиль статус-бара ─────────────────────
-        style_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        style_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
         style_card.grid(row=2, column=0, sticky="ew", padx=m.padding_lg,
                         pady=(0, m.padding_md))
         style_card.grid_columnconfigure(1, weight=1)
@@ -224,7 +234,7 @@ class SettingsTab(ctk.CTkFrame):
                padx=m.padding_md, pady=(0, m.padding_md))
 
         # ── Тема интерфейса ───────────────────────
-        theme_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        theme_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
         theme_card.grid(row=3, column=0, sticky="ew", padx=m.padding_lg,
                         pady=(0, m.padding_md))
         theme_card.grid_columnconfigure(1, weight=1)
@@ -252,9 +262,32 @@ class SettingsTab(ctk.CTkFrame):
         self._theme_dd.grid(row=2, column=0, columnspan=2, sticky="ew",
                padx=m.padding_md, pady=(0, m.padding_md))
 
+        # ── Ярлык ────────────────────────────────
+        shortcut_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        shortcut_card.grid(row=4, column=0, sticky="ew", padx=m.padding_lg,
+                           pady=(0, m.padding_md))
+        shortcut_card.grid_columnconfigure(0, weight=1)
+
+        shortcut_row = ctk.CTkFrame(shortcut_card, fg_color="transparent")
+        shortcut_row.grid(row=0, column=0, sticky="ew", padx=m.padding_md, pady=(10, 10))
+        shortcut_row.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(shortcut_row, text="Ярлык",
+                     font=(t.family_ui, t.size_md, "bold"),
+                     text_color=p.text_primary).grid(row=0, column=0, sticky="w")
+
+        self._shortcut_btn = ctk.CTkButton(
+            shortcut_row, text="Создать на рабочем столе",
+            fg_color=p.bg_input, hover_color=p.bg_hover,
+            text_color=p.text_primary, height=m.button_height,
+            corner_radius=m.corner_radius,
+            command=self._create_shortcut,
+        )
+        self._shortcut_btn.grid(row=0, column=1, sticky="e")
+
         # ── Логи ─────────────────────────────────
-        logs_card = ctk.CTkFrame(self, fg_color=p.bg_card, corner_radius=m.corner_radius)
-        logs_card.grid(row=4, column=0, sticky="ew", padx=m.padding_lg,
+        logs_card = ctk.CTkFrame(scroll, fg_color=p.bg_card, corner_radius=m.corner_radius)
+        logs_card.grid(row=5, column=0, sticky="ew", padx=m.padding_lg,
                        pady=(0, m.padding_md))
         logs_card.grid_columnconfigure(0, weight=1)
 
@@ -400,6 +433,51 @@ class SettingsTab(ctk.CTkFrame):
         if hasattr(root, "set_bar_style"):
             root.set_bar_style(key)
         self._save()
+
+    def _create_shortcut(self) -> None:
+        """Создать ярлык FlowZap на рабочем столе."""
+        import os
+        try:
+            exe_path = Path(sys.executable) if getattr(sys, "frozen", False) else Path(__file__).parent.parent / "main.py"
+            desktop = Path(os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"))
+            shortcut_path = desktop / "FlowZap.lnk"
+
+            import win32com.client
+            shell = win32com.client.Dispatch("WScript.Shell")
+            shortcut = shell.CreateShortCut(str(shortcut_path))
+            shortcut.Targetpath = str(exe_path)
+            shortcut.WorkingDirectory = str(exe_path.parent)
+            icon_path = self._app_dir / "assets" / "icon.ico"
+            if icon_path.exists():
+                shortcut.IconLocation = str(icon_path)
+            shortcut.save()
+
+            self._shortcut_btn.configure(text="✓ Создан!", text_color=theme.palette.success)
+        except ImportError:
+            # win32com недоступен — используем PowerShell
+            try:
+                import subprocess
+                exe_path = Path(sys.executable) if getattr(sys, "frozen", False) else Path(__file__).parent.parent / "main.py"
+                desktop = Path(os.path.join(os.environ.get("USERPROFILE", ""), "Desktop"))
+                shortcut_path = desktop / "FlowZap.lnk"
+                icon_path = self._app_dir / "assets" / "icon.ico"
+                ps = (
+                    f'$s=(New-Object -COM WScript.Shell).CreateShortcut("{shortcut_path}");'
+                    f'$s.TargetPath="{exe_path}";'
+                    f'$s.WorkingDirectory="{exe_path.parent}";'
+                )
+                if icon_path.exists():
+                    ps += f'$s.IconLocation="{icon_path}";'
+                ps += "$s.Save()"
+                subprocess.run(["powershell", "-Command", ps],
+                               capture_output=True, timeout=10)
+                self._shortcut_btn.configure(text="✓ Создан!", text_color=theme.palette.success)
+            except Exception as e:
+                self._shortcut_btn.configure(text=f"Ошибка: {e}", text_color=theme.palette.error)
+        except Exception as e:
+            self._shortcut_btn.configure(text=f"Ошибка: {e}", text_color=theme.palette.error)
+        self.after(3000, lambda: self._shortcut_btn.configure(
+            text="Создать на рабочем столе", text_color=theme.palette.text_primary))
 
     def _save(self) -> None:
         root = self.winfo_toplevel()
