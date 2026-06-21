@@ -926,7 +926,22 @@ class DashboardTab(ctk.CTkFrame):
         self.after(0, self._dns_done, enable, interface, error)
 
     def on_close(self) -> None:
-        """Вызывается при закрытии приложения — сбрасываем DNS если включён."""
+        """Вызывается при закрытии приложения — сохраняем состояние
+        и сбрасываем DNS если включён."""
+        # Запоминаем состояние сервисов для восстановления при следующем запуске
+        last_state = {
+            "zapret_running": bool(self.manager.is_running),
+            "zapret_preset":  self._selected_preset.get("name", "") if self._selected_preset else "",
+            "dns_enabled":    bool(self._dns_enabled),
+            "tg_proxy_running": bool(self._tg_proxy.is_running),
+        }
+        self._config["last_state"] = last_state
+        if self._save_config_fn:
+            try:
+                self._save_config_fn()
+            except Exception:
+                pass
+
         if self._dns_enabled:
             import subprocess
             def run(cmd):
@@ -1021,3 +1036,32 @@ class DashboardTab(ctk.CTkFrame):
             self._btn_dns.configure(**self._btn_style_off())
             # DNS выключен — убираем предупреждение
             self._ping_status_lbl.configure(text="")
+
+    # ──────────────────────────────────────────────
+    #  Восстановление состояния при запуске
+    # ──────────────────────────────────────────────
+
+    def restore_state(self) -> None:
+        """Поднять сервисы по сохранённому состоянию из прошлой сессии.
+        Вызывается из main.py после полной инициализации UI."""
+        if not self._config.get("ui", {}).get("restore_state", True):
+            return
+        state = self._config.get("last_state", {})
+        if not state:
+            return
+
+        # zapret — выбрать сохранённый пресет и запустить
+        if state.get("zapret_running") and not self.manager.is_running:
+            preset_name = state.get("zapret_preset", "")
+            preset = next((p for p in self._presets if p["name"] == preset_name), None)
+            if preset:
+                self._selected_preset = preset
+                self.manager.start(bat_path=preset.get("path"))
+
+        # DNS
+        if state.get("dns_enabled") and not self._dns_enabled:
+            self._on_dns_toggle()
+
+        # TG Proxy
+        if state.get("tg_proxy_running") and not self._tg_proxy.is_running:
+            self._on_tg_proxy_toggle()

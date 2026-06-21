@@ -36,12 +36,14 @@ class UpdatesTab(ctk.CTkFrame):
         config: dict = None,
         manager=None,
         on_core_updated=None,
+        tg_proxy_manager=None,
     ) -> None:
         p = theme.palette
         super().__init__(parent, fg_color=p.bg_root, corner_radius=0)
         self._config = config or {}
         self._manager = manager
         self._on_core_updated = on_core_updated
+        self._tg_proxy_manager = tg_proxy_manager
         # При запуске из exe Path(__file__) указывает на _internal — берём из конфига
         _cfg_app_dir = (config or {}).get("_app_dir")
         self._app_dir = Path(_cfg_app_dir) if _cfg_app_dir else Path(__file__).parent.parent
@@ -550,6 +552,11 @@ class UpdatesTab(ctk.CTkFrame):
         self._tgproxy_status.configure(text="Начинаем загрузку…",
                                         text_color=theme.palette.text_muted)
 
+        # Запоминаем состояние и останавливаем прокси если запущен
+        _was_running = bool(self._tg_proxy_manager and self._tg_proxy_manager.is_running)
+        if _was_running:
+            self._tg_proxy_manager.stop()
+
         def _worker():
             try:
                 import urllib.request, json
@@ -589,13 +596,13 @@ class UpdatesTab(ctk.CTkFrame):
                 exe_path.write_bytes(data)
                 (tgproxy_dir / "version.txt").write_text(tag, encoding="utf-8")
 
-                self.after(0, self._on_tgproxy_done, True, f"TG Proxy установлен ({tag})", tag)
+                self.after(0, self._on_tgproxy_done, True, f"TG Proxy установлен ({tag})", tag, _was_running)
             except Exception as e:
-                self.after(0, self._on_tgproxy_done, False, str(e), "")
+                self.after(0, self._on_tgproxy_done, False, str(e), "", _was_running)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_tgproxy_done(self, success: bool, message: str, tag: str) -> None:
+    def _on_tgproxy_done(self, success: bool, message: str, tag: str, was_running: bool = False) -> None:
         p = theme.palette
         self._btn_tgproxy_check.configure(state="normal")
         self._btn_tgproxy_update.configure(text="Обновить")
@@ -606,6 +613,9 @@ class UpdatesTab(ctk.CTkFrame):
             installed = self._get_tgproxy_version(tgproxy_dir)
             self._tgproxy_installed_lbl.configure(
                 text=installed if installed else "установлен")
+            # Перезапускаем прокси если был запущен до обновления
+            if was_running and self._tg_proxy_manager:
+                self._tg_proxy_manager.start()
             # Сбросить оранжевую точку и перепроверить обновления
             try:
                 root = self.winfo_toplevel()

@@ -578,6 +578,12 @@ class MainWindow(ctk.CTk):
                     logs_tab.append_log(msg)
                 self.manager.zapret.on_log = combined_log
 
+            # Передаём tg_proxy_manager в updates_tab после создания всех вкладок
+            updates_tab = self._tabs.get("updates")
+            dashboard_tab = self._tabs.get("dashboard")
+            if updates_tab and dashboard_tab:
+                updates_tab._tg_proxy_manager = getattr(dashboard_tab, "_tg_proxy", None)
+
         except Exception:
             import traceback, logging
             logging.getLogger(__name__).error(f"ОШИБКА В _load_tabs:\n{traceback.format_exc()}")
@@ -897,14 +903,16 @@ class MainWindow(ctk.CTk):
 
     def _quit_app(self) -> None:
         """Полный выход из приложения."""
+        import logging
+        log = logging.getLogger(__name__)
         dashboard = self._tabs.get("dashboard")
 
-        # Сбрасываем DNS на всех интерфейсах
+        # Сбрасываем DNS на всех интерфейсах, сохраняем состояние сервисов
         if dashboard and hasattr(dashboard, "on_close"):
             try:
                 dashboard.on_close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.error(f"Ошибка в dashboard.on_close(): {exc}")
 
         # Остановить TG Proxy если запущен
         if dashboard and hasattr(dashboard, "_tg_proxy"):
