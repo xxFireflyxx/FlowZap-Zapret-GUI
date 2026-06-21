@@ -68,10 +68,24 @@ class TrayManager:
             return
 
         self._started = True
-        thread = threading.Thread(target=self._run, daemon=True, name="tray")
+        thread = threading.Thread(target=self._run_with_retry, daemon=True, name="tray")
         thread.start()
 
-    def _run(self) -> None:
+    def _run_with_retry(self, max_attempts: int = 5, delay: float = 2.0) -> None:
+        """Пытаться поднять трей несколько раз — сразу после логина в Windows
+        shell (explorer.exe) может быть ещё не готов принимать иконки,
+        из-за чего pystray падает или создаёт "призрачную" неотвечающую иконку."""
+        import time
+        for attempt in range(1, max_attempts + 1):
+            ok = self._run()
+            if ok:
+                return
+            logger.warning(f"Трей не поднялся (попытка {attempt}/{max_attempts}), повтор через {delay}с")
+            time.sleep(delay)
+        logger.error("Не удалось запустить трей после всех попыток")
+        self._started = False
+
+    def _run(self) -> bool:
         try:
             import pystray
 
@@ -129,9 +143,12 @@ class TrayManager:
                 menu=menu,
             )
             self._icon.run()
+            # run() возвращается только после icon.stop() — штатное завершение
+            return True
         except Exception as e:
             import traceback
             logger.error(f"Ошибка трея: {e}\n{traceback.format_exc()}")
+            return False
         finally:
             self._started = False
             self._icon = None

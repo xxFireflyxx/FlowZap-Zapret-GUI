@@ -191,7 +191,21 @@ class SettingsTab(ctk.CTkFrame):
             text_color=p.text_muted, anchor="w",
             height=0,
         )
-        self._win_autostart_status.pack(anchor="w", padx=m.padding_md, pady=(0, 4))
+        # Не паковать сразу — будет показан через pack() только когда
+        # появится текст статуса (см. _on_win_autostart_change), чтобы
+        # пустой лейбл не создавал визуальный зазор между переключателями.
+
+        # Запоминать состояние сервисов (zapret/DNS/TG Proxy) между запусками
+        self._restore_state_var = ctk.BooleanVar(
+            value=self._config.get("ui", {}).get("restore_state", True))
+        ctk.CTkSwitch(
+            auto_card,
+            text="Запоминать активные сервисы для следующего запуска",
+            variable=self._restore_state_var,
+            progress_color=p.accent, button_color=p.text_primary,
+            font=(t.family_ui, t.size_md), text_color=p.text_primary,
+            command=self._on_restore_state_change,
+        ).pack(anchor="w", padx=m.padding_md, pady=(0, 8))
 
         # Трей
         self._tray_var = ctk.BooleanVar(
@@ -339,27 +353,49 @@ class SettingsTab(ctk.CTkFrame):
         except Exception:
             return False
 
+    def _set_win_autostart_status(self, text: str, text_color=None) -> None:
+        """Показать/скрыть статус-лейбл — пустой текст убирает его из layout
+        чтобы не было визуального зазора между переключателями."""
+        if text:
+            kwargs = {"text": text}
+            if text_color:
+                kwargs["text_color"] = text_color
+            self._win_autostart_status.configure(**kwargs)
+            self._win_autostart_status.pack(anchor="w", padx=theme.metrics.padding_md, pady=(0, 4))
+        else:
+            self._win_autostart_status.configure(text="")
+            self._win_autostart_status.pack_forget()
+
     def _on_win_autostart_change(self) -> None:
         import subprocess
         enable = self._win_autostart_var.get()
         try:
             if enable:
                 exe = self._get_exe_path()
-                # Создать задачу с правами администратора через планировщик
+                import os
+                user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}"
+                # Создать задачу с правами администратора через планировщик.
+                # ONLOGON + HIGHEST иногда не срабатывает автоматически сразу
+                # после входа — Windows не успевает тихо поднять UAC права
+                # на этом этапе и просто пропускает запуск (молча, без ошибки).
+                # /delay даёт системе несколько секунд после логона перед стартом.
                 cmd = [
                     "schtasks", "/create", "/tn", "FlowZap",
                     "/tr", exe,
                     "/sc", "ONLOGON",
+                    "/delay", "0000:30",  # задержка 30 секунд после логона
                     "/rl", "HIGHEST",   # запускать с наивысшими правами
+                    "/ru", user,        # явный пользователь
+                    "/it",              # интерактивный режим запуска
                     "/f",               # перезаписать если уже есть
                 ]
                 result = subprocess.run(cmd, capture_output=True,
                                         text=True, timeout=10,
                                         encoding="cp866", errors="replace")
                 if result.returncode == 0:
-                    self._win_autostart_status.configure(
-                        text="✓ FlowZap добавлен в автозапуск (с правами администратора)",
-                        text_color=theme.palette.success,
+                    self._set_win_autostart_status(
+                        "✓ FlowZap добавлен в автозапуск (с правами администратора)",
+                        theme.palette.success,
                     )
                 else:
                     raise RuntimeError(result.stdout.strip() or result.stderr.strip())
@@ -370,21 +406,18 @@ class SettingsTab(ctk.CTkFrame):
                     encoding="cp866", errors="replace",
                 )
                 if result.returncode == 0:
-                    self._win_autostart_status.configure(
-                        text="Убран из автозапуска",
-                        text_color=theme.palette.text_muted,
+                    self._set_win_autostart_status(
+                        "Убран из автозапуска",
+                        theme.palette.text_muted,
                     )
                 else:
                     raise RuntimeError(result.stdout.strip() or result.stderr.strip())
 
-            self.after(4000, lambda: self._win_autostart_status.configure(text=""))
+            self.after(4000, lambda: self._set_win_autostart_status(""))
 
         except Exception as e:
             self._win_autostart_var.set(not enable)
-            self._win_autostart_status.configure(
-                text=f"Ошибка: {e}",
-                text_color=theme.palette.error,
-            )
+            self._set_win_autostart_status(f"Ошибка: {e}", theme.palette.error)
 
     def _open_logs_folder(self) -> None:
         import subprocess, os
@@ -394,6 +427,14 @@ class SettingsTab(ctk.CTkFrame):
             subprocess.Popen(["explorer", str(logs_dir)])
         else:
             subprocess.Popen(["xdg-open", str(logs_dir)])
+
+    def _on_restore_state_change(self) -> None:
+        if "ui" not in self._config:
+            self._config["ui"] = {}
+        self._config["ui"]["restore_state"] = self._restore_state_var.get()
+        root = self.winfo_toplevel()
+        if hasattr(root, "save_config"):
+            root.save_config()
 
     def _on_tray_change(self) -> None:
         enabled = self._tray_var.get()

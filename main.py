@@ -175,6 +175,17 @@ def main() -> None:
 
         app.after(1500, _autostart)
 
+    # Восстановление состояния прошлой сессии (DNS, TG Proxy, zapret) —
+    # отдельный механизм от zapret.autostart выше, оба могут быть включены
+    # одновременно, manager.start() внутри restore_state не запустится повторно
+    # если zapret уже работает (is_running проверяется).
+    def _restore_state():
+        dashboard = app._tabs.get("dashboard")
+        if dashboard and hasattr(dashboard, "restore_state"):
+            dashboard.restore_state()
+
+    app.after(2000, _restore_state)
+
     # Игровые списки — при первом запуске скачиваем синхронно,
     # при последующих — тихо в фоне раз в 6 часов
     from core.updater import update_gaming_lists, GAMING_LIST_DOMAINS, GAMING_LIST_IPSET
