@@ -13,8 +13,8 @@
 
 # FlowZap
 
-[![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/total)](https://github.com/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/releases)
-[![Version](https://img.shields.io/github/v/release/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy)](https://github.com/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/releases)
+[![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/FlowZap-Zapret-GUI/total)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
+[![Version](https://img.shields.io/github/v/release/xxFireflyxx/FlowZap-Zapret-GUI)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 
 
@@ -45,7 +45,7 @@
 
 ### Вариант 1 — EXE (рекомендуется)
 
-1. Скачай последний релиз со страницы **[Releases](https://github.com/xxFireflyxx/Flowzap-zapret-dns/releases)**
+1. Скачай последний релиз со страницы **[Releases]([https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)**
 2. Распакуй архив
 3. Запусти `FlowZap.exe` от имени администратора
 4. Если у вас уже есть папка `zapret/` — просто положите её рядом с `FlowZap.exe`
@@ -159,7 +159,7 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 
 ### Option 1 — EXE (recommended)
 
-1. Download the latest release from the **[Releases](https://github.com/xxFireflyxx/Flowzap-zapret-dns/releases)** page
+1. Download the latest release from the **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)** page
 2. Extract the archive
 3. Run `FlowZap.exe` as administrator
 4. If you already have a `zapret/` folder — place it next to `FlowZap.exe`
