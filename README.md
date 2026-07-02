@@ -1,22 +1,19 @@
 > [!WARNING]
 > ## ⚠️ Проект находится в активной разработке
-> 
+>
 > Приложение может содержать баги и нестабильные функции. Если вы столкнулись с проблемой или что-то не работает — пожалуйста, [создайте Issue](../../issues/new) и опишите проблему. Ваши отчёты помогают улучшить проект.
 
 ## Безопасность
 
 [![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/cc1f920dc655e70fbc5f3924b597f28a281286e400185dc74b9b0befb98661f7/detection)
 
-- 🔒 [Проверка Exe файла на VirusTotal](https://www.virustotal.com/gui/file/cc1f920dc655e70fbc5f3924b597f28a281286e400185dc74b9b0befb98661f7/detection)
-- 📖 Исходный код полностью открыт — вы можете проверить его самостоятельно
-
+- 🔒 Исходный код полностью открыт — вы можете проверить его самостоятельно
 
 # FlowZap
 
-[![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/total)](https://github.com/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/releases)
-[![Version](https://img.shields.io/github/v/release/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy)](https://github.com/xxFireflyxx/Flowzap-gui-zapret-dns-tgwsproxy/releases)
+[![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/FlowZap-Zapret-GUI/total)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
+[![Version](https://img.shields.io/github/v/release/xxFireflyxx/FlowZap-Zapret-GUI)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
-
 
 ⭐ Если приложение помогло — поставь звезду, это мотивирует развивать проект!
 
@@ -32,6 +29,7 @@
 - 🔓 Обход блокировок Discord, YouTube и других сайтов через zapret
 - 🌐 Управление DNS-серверами (основной + запасные) — по умолчанию используется [xbox-dns.ru](https://xbox-dns.ru), можно заменить на свои
 - 📋 Выбор пресета из списка с цветным индикатором пинга (🟢 🟡 🔴)
+- 🎮 Game Filter — автоматически подключает игровые списки доменов и IP
 - 💾 Запоминает выбранный пресет между запусками
 - 🎨 Четыре темы оформления на выбор — тёмные и светлые варианты
 - 🚀 Автозапуск FlowZap вместе с Windows — настраивается в один клик
@@ -45,7 +43,7 @@
 
 ### Вариант 1 — EXE (рекомендуется)
 
-1. Скачай последний релиз со страницы **[Releases](https://github.com/xxFireflyxx/Flowzap-zapret-dns/releases)**
+1. Скачай последний релиз со страницы **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)**
 2. Распакуй архив
 3. Запусти `FlowZap.exe` от имени администратора
 4. Если у вас уже есть папка `zapret/` — просто положите её рядом с `FlowZap.exe`
@@ -78,7 +76,7 @@
 4. Чтобы удалить — нажми **✕** рядом с записью
 5. Включи/выключи DNS кнопкой на главном экране
 
-### Списки запрета
+### Списки zapret
 
 1. Перейди во вкладку **Параметры** → раздел **Списки zapret**
 2. Введи домен в поле ввода и нажми **Добавить**
@@ -103,6 +101,7 @@
 ## Благодарности
 
 - [Flowseal](https://github.com/Flowseal) — за пресеты и скрипты zapret-discord-youtube
+- [medvedeff-true](https://github.com/medvedeff-true) — за игровые списки доменов и IP ([ru-gaming-blocklist](https://github.com/medvedeff-true/ru-gaming-blocklist))
 
 ---
 
@@ -118,19 +117,16 @@ MIT License — делай что хочешь, упоминание автор�
 
 ---
 
-
 > [!WARNING]
 > ## ⚠️ This project is under active development
-> 
+>
 > The application may contain bugs and unstable features. If you encounter a problem or something doesn't work — please [open an Issue](../../issues/new) and describe the problem. Your reports help improve the project.
 
 ## Security
 
 [![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/426e2d3eb4cc289b5ac99ddaaa0c86bd37879d891915454d70dd2a2f1093884f/detection)
 
-- 🔒 [ZIP archive scan on VirusTotal](https://www.virustotal.com/gui/file/426e2d3eb4cc289b5ac99ddaaa0c86bd37879d891915454d70dd2a2f1093884f/detection)
-- 🔒 [FlowZap.exe scan on VirusTotal](https://www.virustotal.com/gui/file/45b7543c81de92224f3934d0218f5d9b36be0be8102f1c42214123a1410f672e/detection)
-- 📖 The source code is fully open — you can verify it yourself
+- 🔒 The source code is fully open — you can verify it yourself
 
 <a name="english"></a>
 
@@ -146,6 +142,7 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 - 🔓 Bypass blocks for Discord, YouTube and other sites via zapret
 - 🌐 DNS server management (primary + fallback) — [xbox-dns.ru](https://xbox-dns.ru) by default, customizable
 - 📋 Preset selector with color-coded ping indicator (🟢 🟡 🔴)
+- 🎮 Game Filter — automatically connects gaming domain and IP lists
 - 💾 Remembers selected preset between sessions
 - 🎨 Four UI themes — dark and light variants
 - 🚀 Launch FlowZap with Windows — configurable in one click
@@ -159,7 +156,7 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 
 ### Option 1 — EXE (recommended)
 
-1. Download the latest release from the **[Releases](https://github.com/xxFireflyxx/Flowzap-zapret-dns/releases)** page
+1. Download the latest release from the **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)** page
 2. Extract the archive
 3. Run `FlowZap.exe` as administrator
 4. If you already have a `zapret/` folder — place it next to `FlowZap.exe`
@@ -209,6 +206,7 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 ## Credits
 
 - [Flowseal](https://github.com/Flowseal) — for zapret-discord-youtube presets and scripts
+- [medvedeff-true](https://github.com/medvedeff-true) — for gaming domain and IP lists ([ru-gaming-blocklist](https://github.com/medvedeff-true/ru-gaming-blocklist))
 
 ---
 
@@ -221,7 +219,3 @@ Developed by [xxFireflyxx](https://github.com/xxFireflyxx)
 ## License
 
 MIT License — free to use, attribution appreciated.
-
----
-
-

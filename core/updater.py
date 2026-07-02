@@ -68,26 +68,45 @@ def _get_from_gitlab() -> Optional[dict]:
         return None
 
 
-def get_latest_release(repo: str = FLOWZAP_REPO) -> Optional[dict]:
+# Кэш релизов: repo -> (timestamp, release_dict)
+_release_cache: dict = {}
+_CACHE_TTL = 3 * 3600  # 3 часа
+
+
+def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optional[dict]:
+    import time, urllib.request, json
+
+    # Проверяем in-memory кэш
+    if not force and repo in _release_cache:
+        ts, cached = _release_cache[repo]
+        if time.time() - ts < _CACHE_TTL:
+            logger.debug(f"Релиз из кэша: {repo}")
+            return cached
+
     try:
-        import urllib.request, json
-        from urllib.error import HTTPError
         url = f"https://api.github.com/repos/{repo}/releases/latest"
         req = urllib.request.Request(url, headers=_github_headers())
         with urllib.request.urlopen(req, timeout=10) as r:
-            return json.load(r)
+            result = json.load(r)
+        _release_cache[repo] = (time.time(), result)
+        return result
     except Exception as e:
-        # Проверяем превышение лимита
         err_str = str(e).lower()
         if "403" in err_str or "rate limit" in err_str or "404" in err_str:
             if repo == FLOWZAP_REPO:
                 reason = "rate limit" if ("403" in err_str or "rate limit" in err_str) else "404"
                 logger.warning(f"GitHub {reason} - switching to GitLab fallback")
-                return _get_from_gitlab()
+                result = _get_from_gitlab()
+                if result:
+                    _release_cache[repo] = (time.time(), result)
+                return result
         logger.error(f"Ошибка проверки обновлений: {e}")
         if repo == FLOWZAP_REPO:
             logger.info("Trying GitLab fallback after error...")
-            return _get_from_gitlab()
+            result = _get_from_gitlab()
+            if result:
+                _release_cache[repo] = (time.time(), result)
+            return result
         return None
 
 
