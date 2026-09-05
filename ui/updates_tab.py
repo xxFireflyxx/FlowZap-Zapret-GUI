@@ -13,7 +13,7 @@ from core.updater import (
     GUI_VERSION, FLOWZAP_REPO,
     get_latest_release, find_exe_asset,
     get_installed_core_version, download_and_install_core,
-    download_and_install_exe, RateLimitError,
+    download_and_install_exe, download_and_install_tg_proxy,
 )
 
 
@@ -239,15 +239,8 @@ class UpdatesTab(ctk.CTkFrame):
         self._gui_status.configure(text="Проверка обновлений…",
                                    text_color=theme.palette.text_secondary)
         def _worker():
-            try:
-                release = get_latest_release()
-                self.after(0, self._apply_gui_check, release)
-            except RateLimitError as e:
-                _msg = str(e)
-                self.after(0, lambda m=_msg: (
-                    self._btn_gui_check.configure(state="normal", text="Проверить"),
-                    self._gui_status.configure(text=m, text_color=theme.palette.warning)
-                ))
+            release = get_latest_release()
+            self.after(0, self._apply_gui_check, release)
         threading.Thread(target=_worker, daemon=True).start()
 
     def _apply_gui_check(self, release) -> None:
@@ -255,7 +248,7 @@ class UpdatesTab(ctk.CTkFrame):
         self._btn_gui_check.configure(state="normal", text="Проверить")
         if not release:
             self._gui_status.configure(
-                text="Не удалось подключиться к GitHub.",
+                text="Ошибка соединения. Попробуйте позже.",
                 text_color=p.error)
             return
 
@@ -277,15 +270,15 @@ class UpdatesTab(ctk.CTkFrame):
             if has_asset:
                 self._gui_status.configure(
                     text=f"Доступна новая версия: {tag}",
-                    text_color=p.success)
+                    text_color=p.warning)
                 self._enable_gui_update(True)
             else:
                 self._gui_status.configure(
                     text=f"Версия {tag} есть, но файл релиза ещё не добавлен.",
-                    text_color=p.warning)
+                    text_color=p.error)
         else:
             self._gui_status.configure(
-                text=f"У вас актуальная версия ({tag})",
+                text="✓ Актуальная версия",
                 text_color=p.success)
 
     def _update_gui(self) -> None:
@@ -301,14 +294,14 @@ class UpdatesTab(ctk.CTkFrame):
     def _on_gui_done(self, success: bool, msg: str) -> None:
         p = theme.palette
         self._btn_gui_check.configure(state="normal")
-        self._gui_status.configure(
-            text=msg, text_color=p.success if success else p.error)
         if not success:
+            self._gui_status.configure(
+                text="Ошибка, попробуйте позже", text_color=p.error)
             self._enable_gui_update(True)
         else:
-            # Закрываем приложение — bat скрипт заменит exe и перезапустит
-            self._gui_status.configure(
-                text=f"{msg} Закрываем...", text_color=p.success)
+            # Текст уже показывает финальный шаг прогресса ("...Приложение
+            # перезапустится..."), не перезатираем его. Закрываем приложение —
+            # bat скрипт заменит exe и перезапустит его сам.
             root = self.winfo_toplevel()
             self.after(2000, lambda: root._quit_app() if hasattr(root, "_quit_app") else root.destroy())
 
@@ -318,20 +311,13 @@ class UpdatesTab(ctk.CTkFrame):
 
     def _check_core(self) -> None:
         self._btn_core_check.configure(state="disabled", text="Проверяю…")
-        self._core_status.configure(text="Запрос к GitHub…",
+        self._core_status.configure(text="Проверка обновлений…",
                                     text_color=theme.palette.text_muted)
-        self._enable_core_update(False)
+        self._btn_core_update.configure(state="disabled")
 
         def _worker():
-            try:
-                release = get_latest_release(CORE_REPO)
-                self.after(0, self._apply_core_check, release)
-            except RateLimitError as e:
-                _msg = str(e)
-                self.after(0, lambda m=_msg: (
-                    self._btn_core_check.configure(state="normal", text="Проверить"),
-                    self._core_status.configure(text=m, text_color=theme.palette.warning)
-                ))
+            release = get_latest_release(CORE_REPO)
+            self.after(0, self._apply_core_check, release)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -350,25 +336,21 @@ class UpdatesTab(ctk.CTkFrame):
 
         if not release:
             installed = get_installed_core_version(self._app_dir / "zapret")
+            self._core_status.configure(
+                text="Ошибка соединения. Попробуйте позже.",
+                text_color=p.error)
             if not installed:
                 # Core не установлен и нет интернета — всё равно даём возможность попробовать
-                self._core_status.configure(
-                    text="Нет подключения. Проверьте интернет и нажмите «Проверить».",
-                    text_color=p.warning)
                 self._enable_core_update(True)
-            else:
-                self._core_status.configure(
-                    text="Не удалось получить информацию. Проверьте интернет.",
-                    text_color=p.error)
             return
 
         tag = release.get("tag_name", "?")
         # core_latest_lbl скрыт
 
         installed = get_installed_core_version(self._app_dir / "zapret")
-        if installed and installed == tag:
+        if installed and installed.lstrip("vV") == tag.lstrip("vV"):
             self._core_status.configure(
-                text=f"✓ Core актуален ({tag})", text_color=p.success)
+                text="✓ Актуальная версия", text_color=p.success)
         else:
             self._core_status.configure(
                 text=f"Доступно обновление: {tag}" +
@@ -415,7 +397,7 @@ class UpdatesTab(ctk.CTkFrame):
             if hasattr(root, "_check_updates_bg"):
                 self.after(2000, root._check_updates_bg)
         else:
-            self._core_status.configure(text=f"✗ {message}", text_color=p.error)
+            self._core_status.configure(text="Ошибка, попробуйте позже", text_color=p.error)
             self._enable_core_update(True)
 
 
@@ -502,7 +484,7 @@ class UpdatesTab(ctk.CTkFrame):
 
     def _check_tgproxy(self) -> None:
         self._btn_tgproxy_check.configure(state="disabled", text="Проверяю…")
-        self._tgproxy_status.configure(text="Запрос к GitHub…",
+        self._tgproxy_status.configure(text="Проверка обновлений…",
                                         text_color=theme.palette.text_muted)
         self._btn_tgproxy_update.configure(state="disabled")
 
@@ -527,7 +509,7 @@ class UpdatesTab(ctk.CTkFrame):
 
         if not release:
             self._tgproxy_status.configure(
-                text="Не удалось получить информацию. Проверьте интернет.",
+                text="Ошибка соединения. Попробуйте позже.",
                 text_color=p.error)
             return
 
@@ -535,9 +517,9 @@ class UpdatesTab(ctk.CTkFrame):
         tgproxy_dir = self._app_dir / "tgproxy"
         installed = self._get_tgproxy_version(tgproxy_dir)
 
-        if installed and installed == tag:
+        if installed and installed.lstrip("vV") == tag.lstrip("vV"):
             self._tgproxy_status.configure(
-                text=f"✓ TG Proxy актуален ({tag})", text_color=p.success)
+                text="✓ Актуальная версия", text_color=p.success)
         else:
             label = "Обновить" if installed else "Установить"
             self._btn_tgproxy_update.configure(state="normal")
@@ -557,50 +539,19 @@ class UpdatesTab(ctk.CTkFrame):
         if _was_running:
             self._tg_proxy_manager.stop()
 
-        def _worker():
-            try:
-                import urllib.request, json
-                release = get_latest_release(TGPROXY_REPO)
-                if not release:
-                    raise ValueError("Не удалось получить информацию о релизе")
+        tgproxy_dir = self._app_dir / "tgproxy"
 
-                tag = release.get("tag_name", "?")
-                # Ищем TgWsProxy_windows.exe в assets
-                asset = None
-                for a in release.get("assets", []):
-                    if a.get("name", "").lower() == TGPROXY_EXE.lower():
-                        asset = a
-                        break
-                # Fallback — любой exe
-                if not asset:
-                    for a in release.get("assets", []):
-                        if a.get("name", "").lower().endswith(".exe"):
-                            asset = a
-                            break
+        def _on_progress(msg: str) -> None:
+            self.after(0, lambda: self._tgproxy_status.configure(text=msg))
 
-                if not asset:
-                    raise ValueError(f"Файл {TGPROXY_EXE} не найден в релизе {tag}")
+        def _on_done(success: bool, message: str) -> None:
+            self.after(0, self._on_tgproxy_done, success, message, "", _was_running)
 
-                dl_url = asset["browser_download_url"]
-                size_mb = asset.get("size", 0) / 1024 / 1024
-                self.after(0, lambda: self._tgproxy_status.configure(
-                    text=f"Скачиваем {asset['name']} ({size_mb:.1f} МБ)…"))
-
-                req = urllib.request.Request(dl_url, headers={"User-Agent": "FlowZap/1.0"})
-                with urllib.request.urlopen(req, timeout=120) as r:
-                    data = r.read()
-
-                tgproxy_dir = self._app_dir / "tgproxy"
-                tgproxy_dir.mkdir(parents=True, exist_ok=True)
-                exe_path = tgproxy_dir / TGPROXY_EXE
-                exe_path.write_bytes(data)
-                (tgproxy_dir / "version.txt").write_text(tag, encoding="utf-8")
-
-                self.after(0, self._on_tgproxy_done, True, f"TG Proxy установлен ({tag})", tag, _was_running)
-            except Exception as e:
-                self.after(0, self._on_tgproxy_done, False, str(e), "", _was_running)
-
-        threading.Thread(target=_worker, daemon=True).start()
+        download_and_install_tg_proxy(
+            tgproxy_dir,
+            on_progress=_on_progress,
+            on_done=_on_done,
+        )
 
     def _on_tgproxy_done(self, success: bool, message: str, tag: str, was_running: bool = False) -> None:
         p = theme.palette
@@ -628,7 +579,7 @@ class UpdatesTab(ctk.CTkFrame):
             except Exception:
                 pass
         else:
-            self._tgproxy_status.configure(text=f"✗ {message}", text_color=p.error)
+            self._tgproxy_status.configure(text="Ошибка, попробуйте позже", text_color=p.error)
             self._btn_tgproxy_update.configure(state="normal")
 
     def on_activate(self) -> None:
@@ -642,7 +593,7 @@ class UpdatesTab(ctk.CTkFrame):
         if tg_ver_file.exists():
             try:
                 installed_tg = tg_ver_file.read_text(encoding="utf-8").strip()
-                self._tg_installed_lbl.configure(text=installed_tg)
+                self._tgproxy_installed_lbl.configure(text=installed_tg)
             except Exception:
                 pass
 

@@ -7,13 +7,142 @@ ui/settings_tab.py
 """
 
 import sys
+import logging
 import customtkinter as ctk
 from pathlib import Path
 from ui.theme import theme, THEME_NAMES
+from ui.help_tooltip import add_help_icon
 from core.manager import ZapretManager
 
 REG_KEY   = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_NAME  = "FlowZap"
+
+# Версия схемы задачи автозапуска в Планировщике заданий. Увеличивать
+# при любом изменении параметров задачи (задержка, флаги питания и т.п.),
+# чтобы существующие у пользователей задачи, созданные более старой
+# версией FlowZap, тихо пересоздавались с новыми настройками при
+# следующем запуске приложения — без участия пользователя.
+AUTOSTART_TASK_VERSION = 3
+AUTOSTART_DELAY_SECONDS = 15
+
+
+def _get_exe_action() -> tuple[str, str]:
+    """(execute, argument) для запускаемого файла — exe или python скрипт."""
+    if getattr(sys, "frozen", False):
+        return str(Path(sys.executable)), ""
+    # Режим разработки — запускаем через pythonw чтобы не было консоли
+    pythonw = Path(sys.executable).parent / "pythonw.exe"
+    script = Path(__file__).parent.parent / "main.py"
+    exe = str(pythonw) if pythonw.exists() else str(sys.executable)
+    return exe, f'"{script}"'
+
+
+def register_win_autostart_task(delay_seconds: int = AUTOSTART_DELAY_SECONDS) -> None:
+    """Регистрирует задачу автозапуска FlowZap в планировщике через
+    PowerShell. Не зависит от UI — используется и настройками, и
+    автоматической миграцией при старте. Бросает исключение при ошибке."""
+    import os, subprocess, tempfile
+    exe, arg = _get_exe_action()
+    user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}"
+    # New-ScheduledTaskAction -Argument не принимает пустую строку (валится
+    # с "Аргумент пуст или NULL") — для собранного exe arg всегда "",
+    # поэтому параметр добавляем только когда он реально есть.
+    action_line = (
+        f"$Action = New-ScheduledTaskAction -Execute '{exe}' -Argument '{arg}'"
+        if arg else
+        f"$Action = New-ScheduledTaskAction -Execute '{exe}'"
+    )
+    # schtasks /create не даёт отключить условие "только при питании от
+    # сети" — по умолчанию Windows создаёт такие задачи с
+    # DisallowStartIfOnBatteries=true, из-за чего на ноутбуке от батареи
+    # задача молча не срабатывает при входе в систему без какой-либо
+    # ошибки. Регистрируем через PowerShell, чтобы явно выставить
+    # AllowStartIfOnBatteries / DontStopIfGoingOnBatteries.
+    #
+    # $ErrorActionPreference = 'Stop' + try/catch с exit 1 — без этого
+    # PowerShell по умолчанию не считает ошибку внутри cmdlet (например,
+    # Register-ScheduledTask) поводом завершить процесс ненулевым кодом:
+    # скрипт просто продолжит выполнение, powershell.exe вернёт 0, и
+    # Python решит, что задача создана, хотя на деле её нет.
+    ps_script = f'''
+$ErrorActionPreference = 'Stop'
+try {{
+    $Trigger1 = New-ScheduledTaskTrigger -AtLogOn -User '{user}'
+    $Trigger1.Delay = 'PT{delay_seconds}S'
+    $Trigger2 = New-ScheduledTaskTrigger -AtStartup
+    $Trigger2.Delay = 'PT{delay_seconds}S'
+    {action_line}
+    $Principal = New-ScheduledTaskPrincipal -UserId '{user}' -RunLevel Highest -LogonType Interactive
+    $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Unregister-ScheduledTask -TaskName 'FlowZap' -Confirm:$false -ErrorAction SilentlyContinue
+    Register-ScheduledTask -TaskName 'FlowZap' -Action $Action -Trigger @($Trigger1, $Trigger2) -Principal $Principal -Settings $Settings -Force | Out-Null
+}} catch {{
+    Write-Error $_.Exception.Message
+    exit 1
+}}
+'''
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(ps_script)
+        ps_path = f.name
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", ps_path],
+            capture_output=True, text=True, timeout=15,
+            encoding="cp866", errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    finally:
+        try:
+            os.unlink(ps_path)
+        except Exception:
+            pass
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    # Второй уровень подстраховки: даже при returncode == 0 явно
+    # перепроверяем, что задача реально появилась в планировщике.
+    if not win_autostart_task_exists():
+        raise RuntimeError("Задача не найдена в планировщике после создания")
+
+
+def win_autostart_task_exists() -> bool:
+    """Проверить есть ли задача FlowZap в планировщике задач."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["schtasks", "/query", "/tn", "FlowZap"],
+            capture_output=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def ensure_win_autostart_migrated(config: dict) -> bool:
+    """Если задача автозапуска уже была включена пользователем, но
+    создана более старой версией FlowZap (устаревшая схема — старая
+    задержка, отсутствие флагов работы от батареи и т.п.) — тихо
+    пересоздаёт её с актуальными настройками. Не требует участия
+    пользователя и не трогает config.toml сама — вызывающий код должен
+    сохранить config после вызова, если вернулось True.
+    Возвращает True, если конфиг был изменён (нужно сохранить)."""
+    import logging
+    log = logging.getLogger("flowzap.autostart")
+    ui_cfg = config.setdefault("ui", {})
+    stored_version = ui_cfg.get("autostart_task_version", 0)
+    if stored_version >= AUTOSTART_TASK_VERSION:
+        return False
+    if win_autostart_task_exists():
+        try:
+            register_win_autostart_task()
+            log.info(f"Задача автозапуска обновлена до версии {AUTOSTART_TASK_VERSION}")
+        except Exception as e:
+            log.warning(f"Не удалось обновить задачу автозапуска: {e}")
+    ui_cfg["autostart_task_version"] = AUTOSTART_TASK_VERSION
+    return True
 
 
 class _SimpleDropdown(ctk.CTkFrame):
@@ -158,11 +287,22 @@ class SettingsTab(ctk.CTkFrame):
         auto_card.grid(row=1, column=0, sticky="ew", padx=m.padding_lg,
                        pady=(0, m.padding_md))
 
+        auto_header = ctk.CTkFrame(auto_card, fg_color="transparent")
+        auto_header.pack(anchor="w", padx=m.padding_md, pady=(m.padding_md, 4))
         ctk.CTkLabel(
-            auto_card, text="Автозапуск",
+            auto_header, text="Автозапуск",
             font=(t.family_ui, t.size_md, "bold"),
             text_color=p.text_primary,
-        ).pack(anchor="w", padx=m.padding_md, pady=(m.padding_md, 4))
+        ).pack(side="left")
+        add_help_icon(
+            auto_header,
+            "Настройки автоматического поведения при запуске FlowZap:\n"
+            "• включать zapret сразу при старте\n"
+            "• запускать FlowZap вместе с Windows\n"
+            "• восстанавливать состояние DNS/TG Proxy как в прошлый раз\n"
+            "• при закрытии окна не завершать работу, а сворачивать в трей",
+            popup_width=280,
+        )
 
         self._autostart_var = ctk.BooleanVar(
             value=self._config.get("zapret", {}).get("autostart", False))
@@ -329,29 +469,9 @@ class SettingsTab(ctk.CTkFrame):
     #  Запуск с Windows (реестр)
     # ──────────────────────────────────────────────
 
-    @staticmethod
-    def _get_exe_path() -> str:
-        """Путь к запускаемому файлу — exe или python скрипт."""
-        if getattr(sys, "frozen", False):
-            return str(Path(sys.executable))
-        # Режим разработки — запускаем через pythonw чтобы не было консоли
-        pythonw = Path(sys.executable).parent / "pythonw.exe"
-        script = Path(__file__).parent.parent / "main.py"
-        if pythonw.exists():
-            return f'"{pythonw}" "{script}"'
-        return f'"{sys.executable}" "{script}"'
-
     def _get_win_autostart(self) -> bool:
         """Проверить есть ли задача FlowZap в планировщике задач."""
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["schtasks", "/query", "/tn", "FlowZap"],
-                capture_output=True, timeout=5,
-            )
-            return result.returncode == 0
-        except Exception:
-            return False
+        return win_autostart_task_exists()
 
     def _set_win_autostart_status(self, text: str, text_color=None) -> None:
         """Показать/скрыть статус-лейбл — пустой текст убирает его из layout
@@ -371,43 +491,25 @@ class SettingsTab(ctk.CTkFrame):
         enable = self._win_autostart_var.get()
         try:
             if enable:
-                exe = self._get_exe_path()
-                import os
-                user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}"
-                # Создать задачу с правами администратора через планировщик.
-                # ONLOGON + HIGHEST иногда не срабатывает автоматически сразу
-                # после входа — Windows не успевает тихо поднять UAC права
-                # на этом этапе и просто пропускает запуск (молча, без ошибки).
-                # /delay даёт системе несколько секунд после логона перед стартом.
-                cmd = [
-                    "schtasks", "/create", "/tn", "FlowZap",
-                    "/tr", exe,
-                    "/sc", "ONLOGON",
-                    "/delay", "0000:30",  # задержка 30 секунд после логона
-                    "/rl", "HIGHEST",   # запускать с наивысшими правами
-                    "/ru", user,        # явный пользователь
-                    "/it",              # интерактивный режим запуска
-                    "/f",               # перезаписать если уже есть
-                ]
-                result = subprocess.run(cmd, capture_output=True,
-                                        text=True, timeout=10,
-                                        encoding="cp866", errors="replace")
-                if result.returncode == 0:
-                    self._set_win_autostart_status(
-                        "✓ FlowZap добавлен в автозапуск (с правами администратора)",
-                        theme.palette.success,
-                    )
-                else:
-                    raise RuntimeError(result.stdout.strip() or result.stderr.strip())
+                register_win_autostart_task()
+                # Задача создана вручную сейчас — она заведомо актуальной
+                # схемы, дальнейшая автомиграция при старте не нужна.
+                self._config.setdefault("ui", {})["autostart_task_version"] = AUTOSTART_TASK_VERSION
+                self._save()
+                self._set_win_autostart_status(
+                    "✓ FlowZap добавлен в автозапуск",
+                    theme.palette.success,
+                )
             else:
                 result = subprocess.run(
                     ["schtasks", "/delete", "/tn", "FlowZap", "/f"],
                     capture_output=True, text=True, timeout=10,
                     encoding="cp866", errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
                 if result.returncode == 0:
                     self._set_win_autostart_status(
-                        "Убран из автозапуска",
+                        "Автозапуск отключён",
                         theme.palette.text_muted,
                     )
                 else:
@@ -416,8 +518,11 @@ class SettingsTab(ctk.CTkFrame):
             self.after(4000, lambda: self._set_win_autostart_status(""))
 
         except Exception as e:
+            logging.getLogger("flowzap.autostart").error(
+                f"Не удалось изменить автозапуск Windows (enable={enable}): {e}"
+            )
             self._win_autostart_var.set(not enable)
-            self._set_win_autostart_status(f"Ошибка: {e}", theme.palette.error)
+            self._set_win_autostart_status("Ошибка автозапуска", theme.palette.error)
 
     def _open_logs_folder(self) -> None:
         import subprocess, os
@@ -493,7 +598,7 @@ class SettingsTab(ctk.CTkFrame):
                 shortcut.IconLocation = str(icon_path)
             shortcut.save()
 
-            self._shortcut_btn.configure(text="✓ Создан!", text_color=theme.palette.success)
+            self._shortcut_btn.configure(text="✓ Ярлык создан на рабочем столе", text_color=theme.palette.success)
         except ImportError:
             # win32com недоступен — используем PowerShell
             try:
@@ -510,13 +615,21 @@ class SettingsTab(ctk.CTkFrame):
                 if icon_path.exists():
                     ps += f'$s.IconLocation="{icon_path}";'
                 ps += "$s.Save()"
-                subprocess.run(["powershell", "-Command", ps],
-                               capture_output=True, timeout=10)
-                self._shortcut_btn.configure(text="✓ Создан!", text_color=theme.palette.success)
+                result = subprocess.run(
+                    ["powershell", "-Command", ps],
+                    capture_output=True, text=True, timeout=10,
+                    encoding="cp866", errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+                self._shortcut_btn.configure(text="✓ Ярлык создан на рабочем столе", text_color=theme.palette.success)
             except Exception as e:
-                self._shortcut_btn.configure(text=f"Ошибка: {e}", text_color=theme.palette.error)
+                logging.getLogger("flowzap.shortcut").error(f"Ошибка создания ярлыка: {e}")
+                self._shortcut_btn.configure(text="Ошибка создания ярлыка", text_color=theme.palette.error)
         except Exception as e:
-            self._shortcut_btn.configure(text=f"Ошибка: {e}", text_color=theme.palette.error)
+            logging.getLogger("flowzap.shortcut").error(f"Ошибка создания ярлыка: {e}")
+            self._shortcut_btn.configure(text="Ошибка создания ярлыка", text_color=theme.palette.error)
         self.after(3000, lambda: self._shortcut_btn.configure(
             text="Создать на рабочем столе", text_color=theme.palette.text_primary))
 

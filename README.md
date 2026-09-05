@@ -28,13 +28,16 @@
 
 - 🔓 Обход блокировок Discord, YouTube и других сайтов через zapret
 - 🌐 Управление DNS-серверами (основной + запасные) — по умолчанию используется [xbox-dns.ru](https://xbox-dns.ru), можно заменить на свои
-- 📋 Выбор пресета из списка с цветным индикатором пинга (🟢 🟡 🔴)
-- 🎮 Game Filter — автоматически подключает игровые списки доменов и IP
-- 💾 Запоминает выбранный пресет между запусками
+- 📋 Выбор пресета из списка с цветным индикатором проверки (⚪ не проверялось, 🔵 идёт проверка, 🟢 работает, 🟡 нестабильно, 🔴 не работает)
+- 🎮 Game Filter — расширенная фильтрация игрового трафика с выбором режима (TCP / UDP / Все)
+- 📲 Управление TG Proxy прямо с главного экрана
+- ⬇️ Автоустановка zapret и TG Proxy при первом запуске — просто нажми «Запуск», всё скачается само, без похода во вкладку «Обновления»
+- 💾 Восстанавливает выбранный пресет и состояние DNS/TG Proxy между запусками — корректно работает даже после перезагрузки Windows
+- ❓ Подсказки прямо в интерфейсе — значок «?» рядом с непонятными разделами
 - 🎨 Четыре темы оформления на выбор — тёмные и светлые варианты
 - 🚀 Автозапуск FlowZap вместе с Windows — настраивается в один клик
 - ⚡ Автозапуск zapret при старте приложения
-- 🔄 Обновление zapret (Core) и FlowZap прямо из вкладки **Обновления**
+- 🔄 Обновление zapret (Core), TG Proxy и FlowZap прямо из вкладки **Обновления**
 - 🖥️ Не требует навыков работы с консолью
 
 ---
@@ -47,7 +50,7 @@
 2. Распакуй архив
 3. Запусти `FlowZap.exe` от имени администратора
 4. Если у вас уже есть папка `zapret/` — просто положите её рядом с `FlowZap.exe`
-5. Если папки нет — перейди во вкладку **Обновления** → нажми **Проверить** в разделе Core → нажми **Обновить** — zapret скачается автоматически
+5. Если папки нет — просто нажми **Запуск** на главном экране, zapret скачается и установится автоматически
 6. Готово — можно запускать обход блокировок
 
 ### Вариант 2 — из исходников
@@ -79,12 +82,16 @@
 ### Списки zapret
 
 1. Перейди во вкладку **Параметры** → раздел **Списки zapret**
-2. Введи домен в поле ввода и нажми **Добавить**
+2. Введи домен (или вставь ссылку целиком — домен выделится автоматически) и нажми **Добавить**
 3. Чтобы удалить домен — выбери его в списке и нажми **Удалить**
 
 ### Обновление zapret
 
 Вкладка **Обновления** → **Проверить** в разделе Core → **Обновить**
+
+### Обновление TG Proxy
+
+Вкладка **Обновления** → **Проверить** в разделе TG Proxy → **Обновить**
 
 ### Обновление FlowZap
 
@@ -141,13 +148,16 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 
 - 🔓 Bypass blocks for Discord, YouTube and other sites via zapret
 - 🌐 DNS server management (primary + fallback) — [xbox-dns.ru](https://xbox-dns.ru) by default, customizable
-- 📋 Preset selector with color-coded ping indicator (🟢 🟡 🔴)
-- 🎮 Game Filter — automatically connects gaming domain and IP lists
-- 💾 Remembers selected preset between sessions
+- 📋 Preset selector with color-coded check status (⚪ not checked, 🔵 checking, 🟢 working, 🟡 unstable, 🔴 not working)
+- 🎮 Game Filter — extended filtering for game traffic with selectable mode (TCP / UDP / All)
+- 📲 TG Proxy management right from the main screen
+- ⬇️ Auto-installs zapret and TG Proxy on first launch — just click **Start**, everything downloads automatically, no need to visit the Updates tab
+- 💾 Restores the selected preset and DNS/TG Proxy state between sessions — works correctly even after a Windows reboot
+- ❓ In-app hints — a "?" icon next to sections that need explaining
 - 🎨 Four UI themes — dark and light variants
 - 🚀 Launch FlowZap with Windows — configurable in one click
 - ⚡ Auto-start zapret when the app launches
-- 🔄 Update zapret (Core) and FlowZap directly from the **Updates** tab
+- 🔄 Update zapret (Core), TG Proxy and FlowZap directly from the **Updates** tab
 - 🖥️ No command line skills needed
 
 ---
@@ -160,7 +170,7 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 2. Extract the archive
 3. Run `FlowZap.exe` as administrator
 4. If you already have a `zapret/` folder — place it next to `FlowZap.exe`
-5. If you don't have it — go to the **Updates** tab → click **Check** in the Core section → click **Update** — zapret will be downloaded automatically
+5. If you don't have it — just click **Start** on the main screen, zapret will be downloaded and installed automatically
 6. Done — you can now start bypassing blocks
 
 ### Option 2 — from source
@@ -192,11 +202,14 @@ Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
 ### Block Lists
 
 1. Go to the **Parameters** tab → **zapret Lists** section
-2. Enter a domain in the input field and click **Add**
+2. Enter a domain (or paste a full URL — the domain will be extracted automatically) and click **Add**
 3. To remove a domain — select it in the list and click **Delete**
 
 ### Updating zapret
 **Updates** tab → **Check** in the Core section → **Update**
+
+### Updating TG Proxy
+**Updates** tab → **Check** in the TG Proxy section → **Update**
 
 ### Updating FlowZap
 **Updates** tab → **Check** → **Update**

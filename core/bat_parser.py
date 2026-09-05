@@ -163,16 +163,15 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
 
     import logging
     _log = logging.getLogger(__name__)
-    _log.debug(f"parse_bat {bat_path.name}: {len(cleaned)} args: {cleaned[:5]}...")
+    _log.debug(f"parse_bat {bat_path.name}: {len(cleaned)} args")
     return cleaned if cleaned else None
 
 
-def get_bat_description(bat_path: Path) -> str:
+def get_bat_description(args: list[str], bat_path: Path) -> str:
     """
     Вернуть короткое человекочитаемое описание пресета
-    на основе ключевых аргументов winws.
+    на основе уже распарсенных аргументов winws (см. parse_bat).
     """
-    args = parse_bat(bat_path) or []
     tags = []
     for arg in args:
         if '--dpi-desync=' in arg:
@@ -223,7 +222,7 @@ def list_presets(presets_dir: Path) -> list[dict]:
             'name': bat.stem,
             'path': bat,
             'args': args or [],
-            'desc': get_bat_description(bat) if args else '(аргументы не распарсены)',
+            'desc': get_bat_description(args, bat) if args else '(аргументы не распарсены)',
         })
 
     return presets

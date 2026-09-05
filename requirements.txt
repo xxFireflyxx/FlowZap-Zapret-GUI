@@ -1,3 +1,15 @@
-customtkinter>=5.2.0
-tomli-w>=1.0.0
-requests>=2.31.0
+# UI
+customtkinter==5.2.2
+Pillow==12.2.0
+
+# Системный трей
+pystray==0.19.5
+
+# Конфиг (tomllib для чтения — встроен в Python 3.11+, tomli_w нужен для записи)
+tomli_w==1.2.0
+
+# Сеть
+requests==2.33.1
+
+# Windows API (перехват завершения сеанса, автозапуск через Планировщик заданий)
+pywin32==311

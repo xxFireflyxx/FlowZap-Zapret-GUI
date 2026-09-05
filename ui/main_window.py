@@ -8,6 +8,7 @@ ui/main_window.py
 
 import customtkinter as ctk
 import tkinter as tk
+import logging
 from typing import Dict, Callable, Optional
 from pathlib import Path
 
@@ -24,7 +25,6 @@ from core.tray import TrayManager
 NAV_ICONS: Dict[str, str] = {
     "dashboard":  "⬡",
     "parameters": "⚙",
-    "logs":       "≡",
     "updates":    "↑",
     "settings":   "◎",
 }
@@ -253,6 +253,7 @@ class MainWindow(ctk.CTk):
         self._bar_canvas.grid(row=0, column=0, columnspan=2, sticky="ew")
         self._bar_offset = 0.0
         self._bar_style  = self.config.get("ui", {}).get("bar_style", "default")
+        self._bar_running = True
         self.after(16, self._animate_bar)
 
         # ── Sidebar ───────────────────────────
@@ -299,18 +300,28 @@ class MainWindow(ctk.CTk):
         self.manager.zapret.on_state_change = self._on_state_change
 
         self._load_tabs()
+        self._prewarm_tabs()
         self.show_tab("dashboard")
 
         # ── Трей ─────────────────────────────
+        # Колбэки TrayManager вызываются Windows'ом из потока pystray,
+        # а не из главного Tcl-потока. Любое прямое обращение к Tk
+        # (deiconify/lift/focus_force и т.п.) из чужого потока — источник
+        # редких тихих падений интерпретатора. _tray_safe гарантирует,
+        # что реальный колбэк выполнится через self.after(0, ...) в
+        # главном потоке — единственный безопасный способ маршалинга в Tk.
+        def _tray_safe(fn):
+            return lambda *a, **kw: self.after(0, lambda: fn(*a, **kw))
+
         tray_enabled = self.config.get("ui", {}).get("tray_enabled", True)
         self._tray_enabled = tray_enabled
         self._tray = TrayManager(
-            on_show=self._show_window,
-            on_toggle=self._tray_toggle,
-            on_quit=self._quit_app,
-            on_dns=self._tray_dns_toggle,
-            on_tg_proxy=self._tray_tg_toggle,
-            on_tg_open=self._tray_tg_open,
+            on_show=_tray_safe(self._show_window),
+            on_toggle=_tray_safe(self._tray_toggle),
+            on_quit=_tray_safe(self._quit_app),
+            on_dns=_tray_safe(self._tray_dns_toggle),
+            on_tg_proxy=_tray_safe(self._tray_tg_toggle),
+            on_tg_open=_tray_safe(self._tray_tg_open),
             is_running_fn=lambda: self.manager.is_running,
             is_dns_on_fn=lambda: getattr(self._tabs.get("dashboard"), "_dns_enabled", False),
             is_tg_running_fn=lambda: getattr(
@@ -337,6 +348,8 @@ class MainWindow(ctk.CTk):
         self.after(3000, self._check_updates_bg)          # 3 сек после старта
         self.after(500, self._check_path_warning)            # проверка пути на кириллицу
         self._schedule_periodic_update_check()
+        # self.after(0, self._heartbeat)  # отключено — не нужно сейчас, см. _heartbeat()
+        self.after(100, self._install_session_end_hook)
 
     # ─────────────────────────────────────────
     #  Градиентная полоска
@@ -350,6 +363,11 @@ class MainWindow(ctk.CTk):
         self.save_config()
 
     def _animate_bar(self) -> None:
+        if not self._bar_running:
+            # Окно свёрнуто в трей — не тратим CPU на отрисовку невидимого.
+            # Цикл не перепланирует сам себя, пока _show_window() не включит
+            # _bar_running обратно и не перезапустит его явно.
+            return
         try:
             c = self._bar_canvas
             w = c.winfo_width()
@@ -437,25 +455,6 @@ class MainWindow(ctk.CTk):
             logging.getLogger(__name__).error(f"Ошибка сохранения конфига: {exc}")
 
     # ─────────────────────────────────────────
-    #  DNS логика
-    # ─────────────────────────────────────────
-
-    def setup_dns_logic(self, dns_address, action="enable"):
-        import subprocess
-        interface_name = "Ethernet"
-
-        try:
-            if action == "enable":
-                cmd = f'netsh interface ip set dns name="{interface_name}" source=static addr={dns_address}'
-                subprocess.run(cmd, shell=True, check=True)
-                self.append_log(f"DNS {dns_address} успешно применен")
-            else:
-                cmd = f'netsh interface ip set dns name="{interface_name}" source=dhcp'
-                subprocess.run(cmd, shell=True, check=True)
-                self.append_log("DNS сброшен к системным настройкам")
-        except Exception as e:
-            self.append_log(f"Ошибка DNS: {e}")
-
     # ─────────────────────────────────────────
     #  Построение sidebar
     # ─────────────────────────────────────────
@@ -546,7 +545,6 @@ class MainWindow(ctk.CTk):
         try:
             from ui.dashboard    import DashboardTab
             from ui.parameters   import ParametersTab
-            from ui.logs_tab     import LogsTab
             from ui.updates_tab  import UpdatesTab
             from ui.settings_tab import SettingsTab
 
@@ -556,7 +554,6 @@ class MainWindow(ctk.CTk):
                                                    **( {"on_dns_changed": self._on_dns_changed}
                                                        if "on_dns_changed" in ParametersTab.__init__.__code__.co_varnames
                                                        else {} )}),
-                "logs":       (LogsTab,       {"manager": self.manager}),
                 "updates":    (UpdatesTab,    {"config": self.config, "manager": self.manager, "on_core_updated": self._on_core_updated}),
                 "settings":   (SettingsTab,   {"manager": self.manager, "config": self.config,
                                                **( {"on_dns_changed": self._on_dns_changed}
@@ -566,17 +563,12 @@ class MainWindow(ctk.CTk):
 
             for tab_id, (cls, kwargs) in tab_classes.items():
                 tab = cls(self._content, **kwargs)
+                # Не делаем grid_remove() — вкладка остаётся замаплена,
+                # видимость переключается через tkraise() в show_tab(),
+                # это не требует пересчёта геометрии при каждом переходе
+                # и убирает заметную "мозаику" отрисовки.
                 tab.grid(row=0, column=0, sticky="nsew")
-                tab.grid_remove()
                 self._tabs[tab_id] = tab
-
-            logs_tab = self._tabs.get("logs")
-            if logs_tab:
-                original_on_log = self.manager.zapret.on_log
-                def combined_log(msg: str) -> None:
-                    original_on_log(msg)
-                    logs_tab.append_log(msg)
-                self.manager.zapret.on_log = combined_log
 
             # Передаём tg_proxy_manager в updates_tab после создания всех вкладок
             updates_tab = self._tabs.get("updates")
@@ -588,21 +580,56 @@ class MainWindow(ctk.CTk):
             import traceback, logging
             logging.getLogger(__name__).error(f"ОШИБКА В _load_tabs:\n{traceback.format_exc()}")
 
+    def _prewarm_tabs(self) -> None:
+        """Заставляет Windows реально отрисовать каждую вкладку и каждую
+        кнопку навигации в активном состоянии один раз при старте.
+        Полностью перекрытое дочернее окно не получает WM_PAINT, а
+        CTkButton.configure(fg_color=...) генерирует изображение кнопки
+        заново при первом использовании нового цвета — без прогрева оба
+        эффекта откладываются на первый реальный клик/показ пользователем
+        и выглядят как заметная "сборка"."""
+        for tab_id, tab in self._tabs.items():
+            tab.tkraise()
+            btn = self._nav_buttons.get(tab_id)
+            if btn:
+                btn.set_active(True)
+                self.update_idletasks()
+                btn.set_active(False)
+            if hasattr(tab, "prewarm"):
+                tab.prewarm()
+            self.update_idletasks()
+
     def show_tab(self, tab_id: str) -> None:
         if tab_id not in self._tabs:
             return
 
+        from ui.help_tooltip import HelpIcon
+        HelpIcon.close_all()
+
         if self._active_tab and self._active_tab in self._tabs:
-            self._tabs[self._active_tab].grid_remove()
             self._nav_buttons[self._active_tab].set_active(False)
 
-        self._tabs[tab_id].grid()
-        self._nav_buttons[tab_id].set_active(True)
-        self._active_tab = tab_id
+        # "Занавеска" цвета фона поверх контента на время перерисовки —
+        # прячет волну построчной отрисовки виджетов вкладки. В отличие
+        # от прозрачности всего окна (пробовали — рискованно, окно могло
+        # пропасть насовсем при сбое), тут худший исход при ошибке —
+        # просто пустой фон, а не исчезнувшее окно, и try/finally
+        # гарантирует, что занавеска в любом случае будет убрана.
+        veil = ctk.CTkFrame(self._content, fg_color=theme.palette.bg_root, corner_radius=0)
+        veil.place(relx=0, rely=0, relwidth=1, relheight=1)
+        veil.lift()
+        try:
+            self._tabs[tab_id].tkraise()
+            self.update()
+            self._nav_buttons[tab_id].set_active(True)
+            self._active_tab = tab_id
 
-        tab = self._tabs[tab_id]
-        if hasattr(tab, "on_activate"):
-            tab.on_activate()
+            tab = self._tabs[tab_id]
+            if hasattr(tab, "on_activate"):
+                tab.on_activate()
+                self.update()
+        finally:
+            veil.destroy()
 
     # ─────────────────────────────────────────
     #  Коллбэки
@@ -652,6 +679,12 @@ class MainWindow(ctk.CTk):
 
     def _schedule_periodic_update_check(self) -> None:
         self.after(self.UPDATE_CHECK_INTERVAL_MS, self._periodic_update_check)
+
+    def _heartbeat(self) -> None:
+        """Раз в 15 секунд пишет метку в лог — позволяет точно
+        определить момент смерти процесса при диагностике падений в трее."""
+        logging.getLogger("flowzap.heartbeat").info("alive")
+        self.after(15000, self._heartbeat)
 
     def _periodic_update_check(self) -> None:
         self._check_updates_bg()
@@ -776,7 +809,7 @@ class MainWindow(ctk.CTk):
                 )
                 installed = (get_installed_core_version(zapret_dir) or "").lstrip("v")
                 _log2 = __import__("logging").getLogger(__name__)
-                _log2.info(f"Core версия: installed='{installed}' latest='{latest_core}' ver_cmp={_ver(latest_core)} > {_ver(installed)} = {_ver(latest_core) > _ver(installed)}")
+                _log2.debug(f"Core версия: installed='{installed}' latest='{latest_core}' ver_cmp={_ver(latest_core)} > {_ver(installed)} = {_ver(latest_core) > _ver(installed)}")
                 # Если Core не установлен или версия устарела — показываем точку
                 if latest_core and (not installed or _ver(latest_core) > _ver(installed)):
                     has_core_update = True
@@ -797,12 +830,12 @@ class MainWindow(ctk.CTk):
                 if ver_file.exists():
                     installed_tg = ver_file.read_text(encoding="utf-8").strip().lstrip("v")
                     _log_tg = __import__("logging").getLogger(__name__)
-                    _log_tg.info(f"TGProxy версия: installed='{installed_tg}' latest='{latest_tg}' update={_ver(latest_tg) > _ver(installed_tg)}")
+                    _log_tg.debug(f"TGProxy версия: installed='{installed_tg}' latest='{latest_tg}' update={_ver(latest_tg) > _ver(installed_tg)}")
                     if latest_tg and _ver(latest_tg) > _ver(installed_tg):
                         has_tgproxy_update = True
                 else:
                     _log_tg = __import__("logging").getLogger(__name__)
-                    _log_tg.info(f"TGProxy: version.txt не найден по пути {ver_file}")
+                    _log_tg.debug(f"TGProxy: version.txt не найден по пути {ver_file}")
                     # Показываем точку только если папка tgproxy существует
                     # (пользователь установил прокси, но version.txt отсутствует)
                     tgproxy_dir = app_dir / "tgproxy"
@@ -812,7 +845,7 @@ class MainWindow(ctk.CTk):
 
         # ── Сохраняем в кэш ──────────────────────────────────────────────────
         import time as _t2, logging as _log
-        _log.getLogger(__name__).info(
+        _log.getLogger(__name__).debug(
             f"Проверка обновлений: has_app={has_app_update}, has_core={has_core_update}, has_tgproxy={has_tgproxy_update}"
         )
         self._update_cache.update({
@@ -848,10 +881,54 @@ class MainWindow(ctk.CTk):
         if updates_tab and hasattr(updates_tab, "set_update_flags"):
             updates_tab.set_update_flags(has_app=has_app, has_core=has_core)
 
+    # ─────────────────────────────────────────
+    #  Завершение сеанса Windows (выключение/перезагрузка)
+    # ─────────────────────────────────────────
+
+    def _install_session_end_hook(self) -> None:
+        """WM_DELETE_WINDOW (self.protocol выше) ловит только клик по крестику.
+        При выключении/перезагрузке Windows шлёт WM_QUERYENDSESSION и
+        WM_ENDSESSION напрямую всем окнам и после короткого тайм-аута
+        принудительно завершает процесс — без этого хука last_state
+        не успевает сохраниться, и следующий запуск восстанавливает
+        состояние с прошлого явного выхода, а не актуальное."""
+        try:
+            import win32gui, win32con
+        except ImportError:
+            logging.getLogger(__name__).warning(
+                "pywin32 не установлен — состояние не будет сохраняться "
+                "при выключении/перезагрузке Windows (добавьте pywin32 "
+                "в requirements.txt, чтобы включить это)."
+            )
+            return
+        try:
+            hwnd = self.winfo_id()
+
+            def _wndproc(hwnd, msg, wparam, lparam):
+                if msg in (win32con.WM_QUERYENDSESSION, win32con.WM_ENDSESSION):
+                    try:
+                        dashboard = self._tabs.get("dashboard")
+                        if dashboard and hasattr(dashboard, "_persist_last_state"):
+                            dashboard._persist_last_state()
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "Ошибка сохранения состояния при завершении сеанса"
+                        )
+                return win32gui.CallWindowProc(self._old_wndproc, hwnd, msg, wparam, lparam)
+
+            self._old_wndproc = win32gui.SetWindowLong(
+                hwnd, win32con.GWL_WNDPROC, _wndproc
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Не удалось установить хук завершения сеанса Windows"
+            )
+
     def _on_close(self) -> None:
         """При закрытии окна — свернуть в трей или выйти."""
         if getattr(self, "_tray_enabled", True):
             self.withdraw()
+            self._bar_running = False  # анимация полоски бессмысленна пока окно не видно
         else:
             self._quit_app()
 
@@ -860,6 +937,9 @@ class MainWindow(ctk.CTk):
         self.deiconify()
         self.lift()
         self.focus_force()
+        if not getattr(self, "_bar_running", True):
+            self._bar_running = True
+            self._animate_bar()
 
     def _tray_toggle(self) -> None:
         """Запустить или остановить zapret из трея."""
