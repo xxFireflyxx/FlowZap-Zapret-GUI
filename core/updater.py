@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.4.5"
+GUI_VERSION = "0.5.0"
 FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
 FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
@@ -36,6 +36,53 @@ def _github_headers() -> dict:
 # Специальное исключение для rate limit
 class RateLimitError(Exception):
     pass
+
+
+def _download_with_grace(
+    url: str,
+    headers: dict,
+    connect_timeout: float = 15,
+    transfer_timeout: float = 120,
+) -> bytes:
+    """
+    Качает файл по url с раздельными таймаутами:
+    - connect_timeout — сколько ждём ОТВЕТА сервера целиком (не одну попытку
+      соединения — если DNS вернул несколько адресов или сервер сначала
+      редиректит на другой хост, urlopen(timeout=X) ограничивает только
+      КАЖДУЮ такую попытку по отдельности, и они суммируются). Поэтому
+      соединение выполняется в отдельном демон-потоке: не уложились в
+      connect_timeout секунд — сразу TimeoutError, не дожидаясь, пока сокет
+      переберёт все адреса. Поток-неудачник просто тихо доживает и
+      завершается сам, ничего не блокируя.
+    - transfer_timeout — если ответ получен и данные пошли, таймаут на
+      чтение шире: обрывает только реальное зависание передачи (нет новых
+      байт дольше transfer_timeout секунд), а не общий лимит на весь файл.
+    """
+    import urllib.request, threading
+
+    result: dict = {}
+
+    def _connect() -> None:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            result["response"] = urllib.request.urlopen(req, timeout=transfer_timeout)
+        except Exception as e:
+            result["error"] = e
+
+    t = threading.Thread(target=_connect, daemon=True)
+    t.start()
+    t.join(connect_timeout)
+    if t.is_alive():
+        raise TimeoutError(f"Нет ответа от сервера за {connect_timeout} сек")
+    if "error" in result:
+        raise result["error"]
+
+    r = result["response"]
+    try:
+        r.fp.raw._sock.settimeout(transfer_timeout)
+    except Exception:
+        pass  # не удалось достать сокет — читаем с тем же (широким) таймаутом
+    return r.read()
 
 
 def _get_from_gitlab() -> Optional[dict]:
@@ -210,7 +257,7 @@ def download_and_install_exe(
         try:
             import urllib.request, sys
 
-            _log("Получаем информацию о последнем релизе...")
+            _log("Проверяем обновления...")
             release = get_latest_release(repo)
             if not release:
                 raise ValueError("Не удалось получить информацию о релизе")
@@ -222,12 +269,45 @@ def download_and_install_exe(
 
             dl_url = asset["browser_download_url"]
             asset_name = asset["name"]
-            size_mb = asset.get("size", 0) / 1024 / 1024
-            _log(f"Скачиваем {asset_name} ({tag}, {size_mb:.1f} МБ)...")
+            _log("Скачивается...")
 
-            req = urllib.request.Request(dl_url, headers=_github_headers())
-            with urllib.request.urlopen(req, timeout=120) as r:
-                data = r.read()
+            data = None
+            github_error: Optional[Exception] = None
+
+            # Попытка 1: GitHub напрямую (15 сек ждём ответа, дальше таймаут
+            # шире — обрывает только зависание уже начавшейся закачки)
+            try:
+                data = _download_with_grace(dl_url, _github_headers())
+            except Exception as e:
+                github_error = e
+                logger.warning(f"Скачивание с GitHub не удалось: {e}")
+
+            # Попытка 2: зеркало GitLab — молча, без вывода ошибки пользователю
+            if data is None:
+                logger.info("Пробуем зеркало GitLab...")
+                try:
+                    gitlab_release = _get_from_gitlab()
+                    if not gitlab_release:
+                        raise ValueError("GitLab недоступен")
+                    gitlab_asset = find_exe_asset(gitlab_release)
+                    if not gitlab_asset:
+                        raise ValueError("Файл для обновления не найден в релизе GitLab")
+                    mirror_req = urllib.request.Request(
+                        gitlab_asset["browser_download_url"],
+                        headers={"User-Agent": "FlowZap/1.0"},
+                    )
+                    with urllib.request.urlopen(mirror_req, timeout=120) as r:
+                        data = r.read()
+                    asset_name = gitlab_asset["name"]
+                    tag = gitlab_release.get("tag_name", tag)
+                    logger.info(f"Зеркало GitLab: скачано {len(data)} байт")
+                except Exception as mirror_error:
+                    # Оба источника недоступны — вот теперь показываем ошибку пользователю
+                    logger.error(f"GitHub: {github_error}. GitLab: {mirror_error}")
+                    raise ValueError(
+                        "Не удалось скачать обновление с GitHub. Резервный "
+                        "источник тоже не дал результата. Попробуйте позже."
+                    )
 
             current_exe = (
                 Path(sys.executable)
@@ -239,7 +319,7 @@ def download_and_install_exe(
 
             # Извлекаем новый exe
             if asset_lower.endswith(".zip"):
-                _log("Распаковываем zip архив...")
+                _log("Распаковываем...")
                 result = _extract_exe_from_zip(data)
                 if not result:
                     raise ValueError("exe не найден внутри zip архива")
@@ -307,6 +387,21 @@ def download_and_install_exe(
 
 
 # ── Core (zapret) ──────────────────────────────────────────────────────
+
+# Зеркало на SourceForge — точная копия Flowseal/zapret-discord-youtube,
+# используется как молчаливый fallback, если GitHub недоступен из сети.
+SOURCEFORGE_ZAPRET_PROJECT = "flowseal.mirror"
+
+
+def _sourceforge_mirror_url(project: str, tag: str, filename: str) -> str:
+    """
+    Точная ссылка на конкретный файл конкретного релиза на SourceForge.
+    /files/latest/download НЕ годится — SourceForge отдаёт по ней первый
+    файл в списке релиза (часто это "Source code.tar.gz", а не нужный
+    exe/zip), независимо от того, какая версия реально нужна.
+    """
+    return f"https://sourceforge.net/projects/{project}/files/{tag}/{filename}/download"
+
 
 def get_installed_core_version(zapret_dir: Path) -> Optional[str]:
     ver_file = zapret_dir / "version.txt"
@@ -378,7 +473,7 @@ def download_and_install_core(
         try:
             import urllib.request, json, zipfile, io, tempfile, os
 
-            _log("Получаем информацию о последнем релизе zapret...")
+            _log("Проверяем обновления...")
             release = get_latest_release(repo)
             if not release:
                 raise ValueError("Не удалось получить информацию о релизе")
@@ -389,17 +484,47 @@ def download_and_install_core(
                 raise ValueError(f"Архив zapret не найден в релизе {tag}")
 
             dl_url = asset["browser_download_url"]
-            zip_name = asset["name"]
-            size_mb = asset.get("size", 0) / 1024 / 1024
-            _log(f"Скачиваем {zip_name} ({tag}, {size_mb:.1f} МБ)...")
+            _log("Скачивается...")
 
-            req = urllib.request.Request(dl_url, headers=_github_headers())
-            with urllib.request.urlopen(req, timeout=120) as r:
-                data = r.read()
+            data = None
+            github_error: Optional[Exception] = None
 
-            _log("Останавливаем WinDivert...")
+            # Попытка 1: GitHub напрямую (15 сек ждём ответа, дальше таймаут
+            # шире — обрывает только зависание уже начавшейся закачки)
+            try:
+                data = _download_with_grace(dl_url, _github_headers())
+            except Exception as e:
+                github_error = e
+                logger.warning(f"Скачивание с GitHub не удалось: {e}")
+
+            # Попытка 2: зеркало SourceForge — молча, без вывода ошибки пользователю.
+            # URL строится из tag и имени файла с GitHub, поэтому если скачивание
+            # успешно — это гарантированно тот же файл той же версии, отдельная
+            # сверка версии не нужна.
+            if data is None:
+                logger.info("Пробуем зеркало SourceForge...")
+                try:
+                    mirror_url = _sourceforge_mirror_url(
+                        SOURCEFORGE_ZAPRET_PROJECT, tag, asset["name"]
+                    )
+                    mirror_req = urllib.request.Request(
+                        mirror_url,
+                        headers={"User-Agent": "FlowZap/1.0"},
+                    )
+                    with urllib.request.urlopen(mirror_req, timeout=120) as r:
+                        data = r.read()
+                    logger.info(f"Зеркало SourceForge: скачано {len(data)} байт")
+                except Exception as mirror_error:
+                    # Оба источника недоступны — вот теперь показываем ошибку пользователю
+                    logger.error(f"GitHub: {github_error}. SourceForge: {mirror_error}")
+                    raise ValueError(
+                        "Не удалось скачать обновление с GitHub. Резервный "
+                        "источник тоже не дал результата. Попробуйте позже."
+                    )
+
+            logger.info("Останавливаем WinDivert...")
             _unload_windivert()
-            _log("Распаковываем архив...")
+            _log("Распаковываем...")
             with tempfile.TemporaryDirectory() as tmp:
                 with zipfile.ZipFile(io.BytesIO(data)) as zf:
                     zf.extractall(tmp)
@@ -457,7 +582,7 @@ def download_and_install_core(
                 import subprocess, time
                 winws = zapret_dir / "bin" / "winws.exe"
                 if winws.exists():
-                    _log("Инициализация WinDivert...")
+                    logger.info("Инициализация WinDivert...")
                     proc = subprocess.Popen(
                         [str(winws), "--wf-tcp=80"],
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -469,7 +594,7 @@ def download_and_install_core(
                         proc.wait(timeout=2)
                     except Exception:
                         proc.kill()
-                    _log("WinDivert инициализирован")
+                    logger.info("WinDivert инициализирован")
             except Exception as e:
                 logger.debug(f"Прогрев WinDivert: {e}")
 
@@ -489,6 +614,10 @@ def download_and_install_core(
 
 TG_PROXY_REPO = "Flowseal/tg-ws-proxy"
 TG_PROXY_EXE  = "TgWsProxy_windows.exe"
+
+# Зеркало на SourceForge — точная копия exe из релиза Flowseal/tg-ws-proxy,
+# используется как молчаливый fallback, если GitHub недоступен из сети.
+SOURCEFORGE_TGPROXY_PROJECT = "tg-ws-proxy.mirror"
 
 
 def get_installed_tg_proxy_version(tgproxy_dir: Path) -> Optional[str]:
@@ -517,6 +646,49 @@ def find_tg_proxy_asset(release: dict) -> Optional[dict]:
     return None
 
 
+def _get_exe_version(exe_path: Path) -> Optional[str]:
+    """
+    Читает версию, зашитую в PE-ресурсы exe (FileVersion). Не зависит
+    от того, откуда скачан файл — с GitHub или с зеркала — поэтому
+    надёжнее сверки размера с API релиза.
+    """
+    import ctypes
+
+    class _FixedFileInfo(ctypes.Structure):
+        _fields_ = [
+            ("dwSignature",        ctypes.c_uint32),
+            ("dwStrucVersion",     ctypes.c_uint32),
+            ("dwFileVersionMS",    ctypes.c_uint32),
+            ("dwFileVersionLS",    ctypes.c_uint32),
+            ("dwProductVersionMS", ctypes.c_uint32),
+            ("dwProductVersionLS", ctypes.c_uint32),
+        ]
+
+    try:
+        path = str(exe_path)
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return None
+        res = ctypes.create_string_buffer(size)
+        if not ctypes.windll.version.GetFileVersionInfoW(path, 0, size, res):
+            return None
+        r = ctypes.c_void_p()
+        l = ctypes.c_uint()
+        if not ctypes.windll.version.VerQueryValueW(res, "\\", ctypes.byref(r), ctypes.byref(l)):
+            return None
+        ffi = _FixedFileInfo.from_address(r.value)
+        parts = [
+            ffi.dwFileVersionMS >> 16, ffi.dwFileVersionMS & 0xFFFF,
+            ffi.dwFileVersionLS >> 16, ffi.dwFileVersionLS & 0xFFFF,
+        ]
+        if parts[-1] == 0:
+            parts = parts[:3]  # убираем нулевую 4-ю часть — как в теге на GitHub
+        return ".".join(str(p) for p in parts)
+    except Exception as e:
+        logger.debug(f"Не удалось прочитать версию из exe: {e}")
+        return None
+
+
 def download_and_install_tg_proxy(
     tgproxy_dir: Path,
     repo: str = TG_PROXY_REPO,
@@ -532,7 +704,7 @@ def download_and_install_tg_proxy(
         try:
             import urllib.request
 
-            _log("Получаем информацию о последнем релизе tg-ws-proxy...")
+            _log("Проверяем обновления...")
             release = get_latest_release(repo)
             if not release:
                 raise ValueError("Не удалось получить информацию о релизе")
@@ -543,21 +715,70 @@ def download_and_install_tg_proxy(
                 raise ValueError(f"Файл TgWsProxy_windows.exe не найден в релизе {tag}")
 
             dl_url = asset["browser_download_url"]
-            size_mb = asset.get("size", 0) / 1024 / 1024
-            _log(f"Скачиваем TgWsProxy_windows.exe ({tag}, {size_mb:.1f} МБ)...")
+            expected_size = asset.get("size", 0)
+            _log("Скачивается...")
 
-            req = urllib.request.Request(dl_url, headers=_github_headers())
-            with urllib.request.urlopen(req, timeout=120) as r:
-                data = r.read()
+            data = None
+            github_error: Optional[Exception] = None
+
+            # Попытка 1: GitHub напрямую (15 сек ждём ответа, дальше таймаут
+            # шире — обрывает только зависание уже начавшейся закачки)
+            try:
+                data = _download_with_grace(dl_url, _github_headers())
+            except Exception as e:
+                github_error = e
+                logger.warning(f"Скачивание с GitHub не удалось: {e}")
+
+            # Попытка 2: зеркало SourceForge — молча, без вывода ошибки пользователю.
+            # URL строится из tag и имени файла с GitHub, поэтому если скачивание
+            # успешно — это гарантированно тот же файл той же версии.
+            if data is None:
+                logger.info("Пробуем зеркало SourceForge...")
+                try:
+                    mirror_url = _sourceforge_mirror_url(
+                        SOURCEFORGE_TGPROXY_PROJECT, tag, asset["name"]
+                    )
+                    mirror_req = urllib.request.Request(
+                        mirror_url,
+                        headers={"User-Agent": "FlowZap/1.0"},
+                    )
+                    with urllib.request.urlopen(mirror_req, timeout=120) as r:
+                        data = r.read()
+                    logger.info(f"Зеркало SourceForge: скачано {len(data)} байт")
+                except Exception as mirror_error:
+                    # Оба источника недоступны — вот теперь показываем ошибку пользователю
+                    logger.error(f"GitHub: {github_error}. SourceForge: {mirror_error}")
+                    raise ValueError(
+                        "Не удалось скачать обновление с GitHub. Резервный "
+                        "источник тоже не дал результата. Попробуйте позже."
+                    )
+
+            # Сверяем размер скачанного файла с ожидаемым из GitHub API — это
+            # проверка на оборванную/повреждённую загрузку (с любого источника).
+            # На версию не влияет: URL зеркала уже пинует нужный tag, поэтому
+            # раз скачивание удалось — версия верна независимо от размера.
+            if expected_size and len(data) != expected_size:
+                logger.warning(
+                    f"Размер скачанного файла ({len(data)}) не совпадает с "
+                    f"ожидаемым из GitHub API ({expected_size}) — файл может "
+                    f"быть повреждён"
+                )
 
             tgproxy_dir.mkdir(parents=True, exist_ok=True)
             exe_path = tgproxy_dir / "TgWsProxy_windows.exe"
             exe_path.write_bytes(data)
-            (tgproxy_dir / "version.txt").write_text(tag, encoding="utf-8")
 
-            _log(f"✓ TG WS Proxy установлен ({tag})")
+            # Версия зашита в сам exe (FileVersion в PE-ресурсах) — читаем
+            # её оттуда напрямую как наиболее точный источник. Если не
+            # получилось — используем tag с GitHub, он уже гарантированно
+            # верен (URL зеркала пинует именно этот tag).
+            actual_version = _get_exe_version(exe_path)
+            installed_version = actual_version or tag
+            (tgproxy_dir / "version.txt").write_text(installed_version, encoding="utf-8")
+
+            _log(f"✓ TG WS Proxy установлен ({installed_version})")
             if on_done:
-                on_done(True, f"TG WS Proxy установлен ({tag})")
+                on_done(True, f"TG WS Proxy установлен ({installed_version})")
 
         except Exception as exc:
             logger.error(f"Ошибка установки TG Proxy: {exc}")

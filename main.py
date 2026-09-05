@@ -5,6 +5,11 @@ main.py
 """
 
 import sys
+import io
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
 import logging
 import traceback
 import tomllib
@@ -19,6 +24,16 @@ if getattr(sys, "frozen", False):
     ROOT = Path(sys.executable).parent
 else:
     ROOT = Path(__file__).parent
+
+# ─────────────────────────────────────────────
+#  faulthandler — ловит нативные крахи (access violation,
+#  segfault и т.п.), которые не долетают до обычного
+#  try/except, для диагностики тихих падений в трее.
+# ─────────────────────────────────────────────
+import faulthandler
+(ROOT / "logs").mkdir(parents=True, exist_ok=True)
+_fh_log = open(ROOT / "logs" / "faulthandler.log", "w", buffering=1, encoding="utf-8")
+faulthandler.enable(file=_fh_log)
 
 # ─────────────────────────────────────────────
 #  Аварийный лог — пишем ДО настройки логгера
@@ -40,8 +55,11 @@ def _write_crash(text: str) -> None:
 def setup_logging(log_dir: Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "flowzap.log"
+    # В собранном exe — INFO (меньше технического шума для пользователя),
+    # в dev-режиме (python main.py) — DEBUG (полная детализация при разработке).
+    level = logging.INFO if getattr(sys, "frozen", False) else logging.DEBUG
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(log_file, encoding="utf-8"),
@@ -154,6 +172,27 @@ def main() -> None:
     from ui.main_window import MainWindow
     config["_app_dir"] = str(ROOT)   # служебный ключ — путь к корню приложения
     app = MainWindow(manager=manager, config=config, config_path=ROOT / "config.toml")
+
+    # Миграция задачи автозапуска Windows: если пользователь включил
+    # автозапуск на более старой версии FlowZap, задача в Планировщике
+    # заданий могла остаться со старыми настройками (например, без
+    # разрешения запуска от батареи) — обновление файлов приложения
+    # само по себе эту задачу не трогает. Проверяем и тихо пересоздаём
+    # в фоне, не блокируя старт UI.
+    def _migrate_win_autostart():
+        from ui.settings_tab import ensure_win_autostart_migrated
+        if ensure_win_autostart_migrated(config):
+            app.after(0, app.save_config)
+
+    # Задержка вместо немедленного запуска: миграция (subprocess/PowerShell)
+    # нужна лишь один раз за всю жизнь установки — при первом старте
+    # после обновления версии. Не даём ей конкурировать с прогревом
+    # WinDivert, построением UI и автозапуском zapret в первые секунды.
+    def _schedule_migration():
+        threading.Thread(target=_migrate_win_autostart, daemon=True, name="autostart-migrate").start()
+
+    app.after(6000, _schedule_migration)
+
     if config["zapret"].get("autostart", False):
         log.info("Автозапуск zapret...")
 

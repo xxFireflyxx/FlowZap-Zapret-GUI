@@ -162,23 +162,15 @@ class ServiceManager:
                         except Exception as _e:
                             self._emit_log(f"[WARN] Не удалось создать {_uf}: {_e}")
 
-                # Определяем значение GameFilter
+                # GameFilter TCP/UDP порты уже подставлены в bat_parser.py
+                # (parse_bat читает game_filter.enabled и различает
+                # tcp/udp/all до того, как аргументы попадают сюда) —
+                # здесь достаточно только определить game_flag для
+                # блока подключения игровых списков ниже.
                 game_flag = self._bat_path.parent / "utils" / "game_filter.enabled"
-                if game_flag.exists():
-                    game_ports = "1024-65535"
-                    self._emit_log("[INFO] Game Filter: включён (1024-65535)")
-                else:
-                    game_ports = "12"  # фиктивный порт — фактически выключен
-                    self._emit_log("[INFO] Game Filter: выключен")
 
                 resolved_args = []
                 for arg in bat_args:
-                    # Подставляем GameFilter плейсхолдеры
-                    arg = arg.replace("__GAMEFILTER_TCP__", game_ports)
-                    arg = arg.replace("__GAMEFILTER_UDP__", game_ports)
-                    # Убираем лишние запятые если плейсхолдер был в середине
-                    arg = arg.replace(",,", ",").rstrip(",")
-
                     if "=" in arg:
                         key, val = arg.split("=", 1)
                         val = val.strip('"').strip("'")

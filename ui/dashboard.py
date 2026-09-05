@@ -10,6 +10,7 @@ from core.manager import ZapretManager, ServiceState
 from core.bat_parser import list_presets
 from core.ping_checker import PresetPingManager, PingStatus
 from ui.theme import theme
+from ui.help_tooltip import add_help_icon
 from core.tg_proxy import TgProxyManager
 
 
@@ -75,16 +76,6 @@ class PresetDropdown(ctk.CTkFrame):
         self._lbl.grid(row=0, column=1, sticky="ew", pady=8)
         self._lbl.bind("<Button-1>", self._toggle_popup)
 
-        # Статус пинга — мелко внутри строки, между текстом и стрелкой
-        self._status_lbl = ctk.CTkLabel(
-            self._btn_frame, text="",
-            font=("Segoe UI", 9),
-            text_color=p.text_muted,
-            anchor="e",
-        )
-        self._status_lbl.grid(row=0, column=2, padx=(4, 2), pady=8, sticky="e")
-        self._status_lbl.bind("<Button-1>", self._toggle_popup)
-
         self._arrow = ctk.CTkLabel(self._btn_frame, text="▼", width=20,
                                     text_color=p.accent,
                                     font=("Segoe UI", 10))
@@ -145,20 +136,6 @@ class PresetDropdown(ctk.CTkFrame):
 
     def get_selected_name(self) -> str:
         return self._selected_name
-
-    def set_status_text(self, text: str) -> None:
-        """Показать мелкий статус внутри строки (например 'обновление…')."""
-        try:
-            self._status_lbl.configure(text=text)
-        except Exception:
-            pass
-
-    def clear_status_text(self) -> None:
-        """Убрать статусный текст."""
-        try:
-            self._status_lbl.configure(text=" ")
-        except Exception:
-            pass
 
     # ── Попап ─────────────────────────────
 
@@ -361,9 +338,24 @@ class DashboardTab(ctk.CTkFrame):
         pc.grid(row=2, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
         pc.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(pc, text="Пресет", font=(t.family_ui, t.size_sm),
-                     text_color=p.text_secondary).grid(
-            row=0, column=0, padx=(m.padding_md, 8), pady=(m.padding_md, 4), sticky="w")
+        preset_label_row = ctk.CTkFrame(pc, fg_color="transparent")
+        preset_label_row.grid(row=0, column=0, padx=(m.padding_md, 8),
+                              pady=(m.padding_md, 4), sticky="w")
+        ctk.CTkLabel(preset_label_row, text="Пресет", font=(t.family_ui, t.size_sm),
+                     text_color=p.text_secondary).pack(side="left")
+        add_help_icon(
+            preset_label_row,
+            "Пресет — набор правил обхода блокировок. Если сайты не открываются "
+            "на текущем — попробуйте другой пресет. Точка слева от пресета "
+            "показывает статус проверки:",
+            legend=[
+                (_PING_COLOR[PingStatus.UNKNOWN],  "не проверялось"),
+                (_PING_COLOR[PingStatus.CHECKING], "идёт проверка"),
+                (_PING_COLOR[PingStatus.OK],       "работает"),
+                (_PING_COLOR[PingStatus.WARN],     "нестабильно"),
+                (_PING_COLOR[PingStatus.FAIL],     "не работает"),
+            ],
+        )
 
         self._preset_menu = PresetDropdown(
             pc,
@@ -388,6 +380,46 @@ class DashboardTab(ctk.CTkFrame):
         self._ping_status_lbl.grid(row=1, column=0, columnspan=2,
                                    padx=m.padding_md, pady=(2, 8), sticky="w")
 
+        # ── Game Filter — выбор режима (кнопка вкл/выкл — в верхнем ряду) ──
+        gf_col = ctk.CTkFrame(pc, fg_color="transparent")
+        gf_col.grid(row=2, column=0, columnspan=2, sticky="w",
+                    padx=m.padding_md, pady=(0, m.padding_md))
+
+        gf_mode_row = ctk.CTkFrame(gf_col, fg_color="transparent")
+        gf_mode_row.pack(anchor="w")
+
+        ctk.CTkLabel(
+            gf_mode_row, text="Game Filter",
+            font=(t.family_ui, t.size_sm),
+            text_color=p.text_secondary,
+        ).pack(side="left", padx=(0, 4))
+        add_help_icon(
+            gf_mode_row,
+            "Отдельная фильтрация для игрового трафика — применяется вместе "
+            "с zapret. Включайте, если блокируется подключение к играм; "
+            "попробуйте UDP — чаще всего игры используют именно его, но если "
+            "не поможет, попробуйте TCP или «Все».",
+            padx=(0, 8),
+        )
+
+        # Режим помнится даже когда фильтр выключен — чтобы при
+        # включении тумблером в верхнем ряду применился последний выбранный.
+        self._game_filter_mode = "all"        # tcp | udp | all
+        self._game_filter_enabled = False
+        self._game_filter_mode_buttons: dict = {}
+        for mode, label in (("tcp", "TCP"), ("udp", "UDP"), ("all", "Все")):
+            btn = ctk.CTkButton(
+                gf_mode_row, text=label,
+                width=52, height=26,
+                corner_radius=m.corner_radius_sm,
+                font=(t.family_ui, t.size_xs),
+                fg_color=p.bg_input, hover_color=p.bg_hover,
+                text_color=p.text_secondary, border_width=1, border_color=p.border_light,
+                command=lambda mo=mode: self._on_game_filter_mode_select(mo),
+            )
+            btn.pack(side="left", padx=(0, 4))
+            self._game_filter_mode_buttons[mode] = btn
+
         # Авто-рестарт теперь определяется автоматически — если zapret запущен
         self._auto_var = ctk.BooleanVar(value=True)
 
@@ -407,7 +439,6 @@ class DashboardTab(ctk.CTkFrame):
         self._btn_toggle.pack(side="left", padx=(0, 8))
 
         # ── Кнопка Game Filter ────────────────
-        self._game_filter_enabled = False
         self._btn_game = ctk.CTkButton(
             bf, text="Game Filter",
             fg_color=p.bg_card, hover_color=p.bg_hover,
@@ -649,8 +680,49 @@ class DashboardTab(ctk.CTkFrame):
     def _on_toggle(self) -> None:
         if self.manager.is_running:
             self.manager.stop()
-        else:
-            self.manager.start(bat_path=self._get_current_bat())
+            return
+        if not self._selected_preset:
+            # Пресетов нет — скорее всего core (zapret) ещё не установлен.
+            # Устанавливаем и запускаем сразу, не отправляя на вкладку «Обновления».
+            self._install_core_then_start()
+            return
+        self.manager.start(bat_path=self._get_current_bat())
+
+    def _install_core_then_start(self) -> None:
+        from core.updater import download_and_install_core
+        from pathlib import Path
+        _app_dir = Path(self._config.get("_app_dir", "")) or Path(__file__).parent.parent
+        zapret_dir = _app_dir / "zapret"
+
+        self._btn_toggle.configure(state="disabled")
+        self._ping_status_lbl.configure(
+            text="Устанавливаем zapret, это займёт немного времени…",
+            text_color=theme.palette.text_muted)
+
+        download_and_install_core(
+            zapret_dir=zapret_dir,
+            on_progress=lambda msg: self.after(
+                0, lambda m=msg: self._ping_status_lbl.configure(text=m)),
+            on_done=lambda ok, msg: self.after(0, self._on_core_install_done, ok, msg),
+        )
+
+    def _on_core_install_done(self, success: bool, message: str) -> None:
+        self._btn_toggle.configure(state="normal")
+        if not success:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка установки zapret: {message}")
+            self._ping_status_lbl.configure(
+                text="Не удалось установить zapret, попробуйте позже",
+                text_color=theme.palette.error)
+            self.after(4000, lambda: self._ping_status_lbl.configure(text=""))
+            return
+        self._ping_status_lbl.configure(
+            text="✓ zapret установлен, проверяем пресеты…", text_color=theme.palette.success)
+        self._load_presets()
+        # Небольшая пауза — иначе _run_auto_tests() мгновенно перезатирает
+        # это сообщение своим "обновление…", и зелёное подтверждение
+        # практически не успевает показаться пользователю.
+        self.after(1500, self._run_auto_tests)
 
     def on_state_change(self, state: ServiceState) -> None:
         labels = {
@@ -665,6 +737,7 @@ class DashboardTab(ctk.CTkFrame):
         pid = self.manager.pid
         self._pid_label.configure(text=f"PID: {pid}" if pid else "PID: —")
         self._update_buttons()
+        self._persist_last_state()
 
     def _btn_style_on(self) -> dict:
         p = theme.palette
@@ -701,34 +774,94 @@ class DashboardTab(ctk.CTkFrame):
         return _app_dir / "zapret" / "utils" / "game_filter.enabled"
 
     def _load_game_filter_state(self) -> None:
-        """Загрузить текущее состояние game filter из файла."""
-        self._game_filter_enabled = self._game_filter_flag_path().exists()
+        """Загрузить текущее состояние game filter из файла.
+        Файла нет — выключен (режим остаётся последним запомненным,
+        по умолчанию "all", для следующего включения тумблером)."""
+        flag = self._game_filter_flag_path()
+        if flag.exists():
+            try:
+                mode = flag.read_text(encoding="utf-8", errors="replace").strip().lower()
+            except Exception:
+                mode = "all"
+            self._game_filter_mode = mode if mode in ("tcp", "udp", "all") else "all"
+            self._game_filter_enabled = True
+        else:
+            self._game_filter_enabled = False
         self._apply_game_filter_style()
 
+    def prewarm(self) -> None:
+        """Вызывается main_window._prewarm_tabs() один раз при старте.
+        Обычный прогрев вкладок ничего не знает про кнопки режима Game
+        Filter (TCP/UDP/Все) — они переключаются между bg_input и accent,
+        и без явного прогона через оба состояния акцентный цвет рендерится
+        только при первом реальном клике, что выглядит как мозаика."""
+        p = theme.palette
+        for btn in self._game_filter_mode_buttons.values():
+            btn.configure(fg_color=p.accent, hover_color=p.accent,
+                         text_color=p.bg_root, border_width=0)
+            self.update_idletasks()
+        self._apply_game_filter_style()
+        self.update_idletasks()
+
     def _apply_game_filter_style(self) -> None:
+        p = theme.palette
+        for mode, btn in self._game_filter_mode_buttons.items():
+            if mode == self._game_filter_mode:
+                btn.configure(fg_color=p.accent, hover_color=p.accent,
+                             text_color=p.bg_root, border_width=0)
+            else:
+                btn.configure(fg_color=p.bg_input, hover_color=p.bg_hover,
+                             text_color=p.text_secondary, border_width=1,
+                             border_color=p.border_light)
         if self._game_filter_enabled:
             self._btn_game.configure(**self._btn_style_on())
         else:
             self._btn_game.configure(**self._btn_style_off())
 
-    def _on_game_filter_toggle(self) -> None:
+    def _write_game_filter_flag(self) -> None:
         flag = self._game_filter_flag_path()
-        self._game_filter_enabled = not self._game_filter_enabled
+        if self._game_filter_enabled:
+            flag.parent.mkdir(parents=True, exist_ok=True)
+            flag.write_text(self._game_filter_mode, encoding="utf-8")
+        elif flag.exists():
+            flag.unlink()
+
+    def _apply_game_filter_change(self, prev_enabled: bool, prev_mode: str) -> None:
+        import logging
+        log = logging.getLogger(__name__)
         try:
-            if self._game_filter_enabled:
-                flag.parent.mkdir(parents=True, exist_ok=True)
-                flag.write_text("all", encoding="utf-8")
-            else:
-                if flag.exists():
-                    flag.unlink()
+            self._write_game_filter_flag()
         except Exception as e:
+            log.error(f"Ошибка Game Filter: {e}")
+            self._game_filter_enabled = prev_enabled
+            self._game_filter_mode = prev_mode
             import tkinter.messagebox as mb
-            self._game_filter_enabled = not self._game_filter_enabled
-            mb.showerror("FlowZap — Game Filter", f"Ошибка: {e}")
+            mb.showerror("FlowZap — Game Filter", "Ошибка, попробуйте позже")
+        else:
+            if self._game_filter_enabled:
+                log.info(f"Game Filter включён, режим: {self._game_filter_mode}")
+            else:
+                log.info("Game Filter выключен")
         self._apply_game_filter_style()
         # Рестарт если запущен чтобы применить изменения
         if self.manager.is_running:
             self.manager.restart(bat_path=self._get_current_bat())
+
+    def _on_game_filter_mode_select(self, mode: str) -> None:
+        """Клик по TCP/UDP/Все — выбирает режим и включает фильтр (если
+        уже включён — просто переключает режим без "мигания" тумблера)."""
+        if self._game_filter_enabled and mode == self._game_filter_mode:
+            return  # уже выбран и включён — ничего не делаем
+        prev_enabled, prev_mode = self._game_filter_enabled, self._game_filter_mode
+        self._game_filter_mode = mode
+        self._game_filter_enabled = True
+        self._apply_game_filter_change(prev_enabled, prev_mode)
+
+    def _on_game_filter_toggle(self) -> None:
+        """Основной тумблер — вкл/выкл с последним запомненным режимом."""
+        prev_enabled, prev_mode = self._game_filter_enabled, self._game_filter_mode
+        self._game_filter_enabled = not self._game_filter_enabled
+        self._apply_game_filter_change(prev_enabled, prev_mode)
 
     # ──────────────────────────────────────────────
     #  TG Proxy
@@ -751,11 +884,7 @@ class DashboardTab(ctk.CTkFrame):
 
     def _on_tg_proxy_toggle(self) -> None:
         if not self._tg_proxy.is_available:
-            import tkinter.messagebox as mb
-            mb.showwarning(
-                "FlowZap — TG Proxy",
-                "TG Proxy не установлен."
-            )
+            self._install_tg_proxy_then_start()
             return
         # Запускаем в фоновом потоке чтобы не блокировать UI
         import threading
@@ -765,8 +894,47 @@ class DashboardTab(ctk.CTkFrame):
             name="tg-proxy-toggle"
         ).start()
 
+    def _install_tg_proxy_then_start(self) -> None:
+        from core.updater import download_and_install_tg_proxy
+        from pathlib import Path
+        _app_dir = Path(self._config.get("_app_dir", "")) or Path(__file__).parent.parent
+        tgproxy_dir = _app_dir / "tgproxy"
+
+        self._btn_tg.configure(state="disabled")
+        self._ping_status_lbl.configure(
+            text="Устанавливаем TG Proxy, это займёт немного времени…",
+            text_color=theme.palette.text_muted)
+
+        download_and_install_tg_proxy(
+            tgproxy_dir=tgproxy_dir,
+            on_progress=lambda msg: self.after(
+                0, lambda m=msg: self._ping_status_lbl.configure(text=m)),
+            on_done=lambda ok, msg: self.after(0, self._on_tg_proxy_install_done, ok, msg),
+        )
+
+    def _on_tg_proxy_install_done(self, success: bool, message: str) -> None:
+        self._btn_tg.configure(state="normal")
+        if not success:
+            import logging
+            logging.getLogger(__name__).error(f"Ошибка установки TG Proxy: {message}")
+            self._ping_status_lbl.configure(
+                text="Не удалось установить TG Proxy, попробуйте позже",
+                text_color=theme.palette.error)
+            self.after(4000, lambda: self._ping_status_lbl.configure(text=""))
+            return
+        self._ping_status_lbl.configure(
+            text="✓ TG Proxy установлен, запускаем…", text_color=theme.palette.success)
+        import threading
+        threading.Thread(
+            target=self._tg_proxy.toggle,
+            daemon=True,
+            name="tg-proxy-toggle"
+        ).start()
+        self.after(3000, lambda: self._ping_status_lbl.configure(text=""))
+
     def _on_tg_proxy_state(self, running: bool) -> None:
         self.after(0, self._update_tg_btn)
+        self.after(0, self._persist_last_state)
 
     #  DNS-кнопка
     # ──────────────────────────────────────────────
@@ -838,7 +1006,7 @@ class DashboardTab(ctk.CTkFrame):
                 self._dns_enabled = False
                 mb.showwarning(
                     "FlowZap — DNS",
-                    "Сначала добавьте DNS-адреса во вкладке «Параметры» и нажмите «Применить»."
+                    "Добавьте DNS адреса во вкладке «Параметры»."
                 )
                 self._btn_dns.configure(**self._btn_style_off())
                 return
@@ -921,14 +1089,16 @@ class DashboardTab(ctk.CTkFrame):
 
         except Exception as e:
             error = str(e)
-            log.error(f"Ошибка DNS: {e}")
+            log.error(f"Ошибка DNS (интерфейс: {interface}): {e}")
 
         self.after(0, self._dns_done, enable, interface, error)
 
-    def on_close(self) -> None:
-        """Вызывается при закрытии приложения — сохраняем состояние
-        и сбрасываем DNS если включён."""
-        # Запоминаем состояние сервисов для восстановления при следующем запуске
+    def _persist_last_state(self) -> None:
+        """Записывает текущее состояние сервисов (zapret/DNS/TG Proxy) в конфиг
+        сразу, а не только при штатном закрытии. Windows при выключении/
+        перезагрузке убивает процесс без вызова WM_DELETE_WINDOW — если
+        last_state обновлять только в on_close(), после такого завершения
+        в конфиге останется устаревшее состояние с прошлого явного выхода."""
         last_state = {
             "zapret_running": bool(self.manager.is_running),
             "zapret_preset":  self._selected_preset.get("name", "") if self._selected_preset else "",
@@ -941,6 +1111,11 @@ class DashboardTab(ctk.CTkFrame):
                 self._save_config_fn()
             except Exception:
                 pass
+
+    def on_close(self) -> None:
+        """Вызывается при закрытии приложения — сохраняем состояние
+        и сбрасываем DNS если включён."""
+        self._persist_last_state()
 
         if self._dns_enabled:
             import subprocess
@@ -1024,10 +1199,8 @@ class DashboardTab(ctk.CTkFrame):
             self._dns_enabled = not enable  # откатить состояние
             mb.showerror(
                 "FlowZap — DNS",
-                f"Не удалось {'установить' if enable else 'сбросить'} DNS.\n\n"
-                f"Интерфейс: {interface}\n"
-                f"Ошибка: {error}\n\n"
-                f"Убедитесь что приложение запущено от администратора."
+                "Ошибка подключения DNS.\n\n"
+                "Убедитесь что приложение запущено от администратора."
             )
             self._btn_dns.configure(**self._btn_style_off())
         elif enable:
@@ -1036,6 +1209,8 @@ class DashboardTab(ctk.CTkFrame):
             self._btn_dns.configure(**self._btn_style_off())
             # DNS выключен — убираем предупреждение
             self._ping_status_lbl.configure(text="")
+
+        self._persist_last_state()
 
     # ──────────────────────────────────────────────
     #  Восстановление состояния при запуске

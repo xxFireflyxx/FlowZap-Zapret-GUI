@@ -10,12 +10,14 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 import customtkinter as ctk
 import tkinter as tk
 import tkinter.messagebox as mb
 
 from ui.theme import theme
+from ui.help_tooltip import add_help_icon
 from core.manager import ZapretManager
 
 CUSTOM_DNS_1 = ""
@@ -177,12 +179,19 @@ class ParametersTab(ctk.CTkFrame):
         dns_card.grid(row=1, column=0, sticky="ew", padx=m.padding_lg, pady=(0, m.padding_md))
         dns_card.grid_columnconfigure(0, weight=1)
 
+        dns_header_row = ctk.CTkFrame(dns_card, fg_color="transparent")
+        dns_header_row.grid(row=0, column=0, sticky="w", padx=m.padding_md, pady=(m.padding_md, 6))
         ctk.CTkLabel(
-            dns_card,
+            dns_header_row,
             text="DNS-серверы",
             font=(t.family_ui, t.size_md, "bold"),
             text_color=p.text_primary,
-        ).grid(row=0, column=0, sticky="w", padx=m.padding_md, pady=(m.padding_md, 6))
+        ).pack(side="left")
+        add_help_icon(
+            dns_header_row,
+            "DNS-серверы, которые применяются кнопкой «DNS» на главном экране. "
+            "Можно добавить свои через «+ Добавить».",
+        )
 
         # ── row=1: строка с активным DNS (кликабельная) ───────────────────────
         self._dns_active_row = ctk.CTkFrame(
@@ -294,11 +303,17 @@ class ParametersTab(ctk.CTkFrame):
         top_row.grid(row=0, column=0, sticky="ew", padx=m.padding_md, pady=(m.padding_md, 8))
         top_row.grid_columnconfigure(1, weight=1)
 
+        lists_header = ctk.CTkFrame(top_row, fg_color="transparent")
+        lists_header.grid(row=0, column=0, sticky="w", padx=(0, 8))
         ctk.CTkLabel(
-            top_row, text="Списки zapret",
+            lists_header, text="Списки zapret",
             font=(t.family_ui, t.size_md, "bold"), text_color=p.text_primary,
-            width=100,
-        ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ).pack(side="left")
+        add_help_icon(
+            lists_header,
+            "Списки сайтов и IP, к которым применяется обход блокировок. "
+            "Если нужный вам сайт не работает — добавьте его сюда вручную.",
+        )
 
         self._list_file_var = ctk.StringVar(value=LIST_FILES[0][0])
         self._list_file_popup = None
@@ -389,13 +404,25 @@ class ParametersTab(ctk.CTkFrame):
         ).pack(side="left")
 
         # ── Статус (живой поиск + результаты) ─
+        status_frame = ctk.CTkFrame(card, fg_color="transparent")
+        status_frame.grid(row=3, column=0, sticky="ew",
+                          padx=m.padding_md, pady=(4, m.padding_md))
+
         self._lists_status = ctk.CTkLabel(
-            card, text="",
+            status_frame, text="",
             font=(t.family_ui, t.size_xs), text_color=p.text_muted,
             anchor="w", wraplength=560,
         )
-        self._lists_status.grid(row=3, column=0, sticky="ew",
-                                padx=m.padding_md, pady=(4, m.padding_md))
+        self._lists_status.pack(side="left")
+
+        # Второй лейбл — только для двухцветных сообщений (например
+        # "✓ Удалено: ..." зелёным + "не найдено: ..." жёлтым в одной строке)
+        self._lists_status_2 = ctk.CTkLabel(
+            status_frame, text="",
+            font=(t.family_ui, t.size_xs), text_color=p.warning,
+            anchor="w",
+        )
+        self._lists_status_2.pack(side="left")
 
         self._on_file_select(self._list_file_var.get())
 
@@ -455,18 +482,18 @@ class ParametersTab(ctk.CTkFrame):
 
         self._list_file_btn_frame.update_idletasks()
         x = self._list_file_btn_frame.winfo_rootx()
-        y = self._list_file_btn_frame.winfo_rooty() + self._list_file_btn_frame.winfo_height() + 2
+        btn_top = self._list_file_btn_frame.winfo_rooty()
+        btn_bottom = btn_top + self._list_file_btn_frame.winfo_height()
         w = self._list_file_btn_frame.winfo_width()
-
-        row_h = 36
-        popup_h = len(files) * row_h + 12
 
         popup = ctk.CTkToplevel(self)
         popup.wm_overrideredirect(True)
-        popup.geometry(f"{w}x{popup_h}+{x}+{y}")
+        # Временно ставим окно за пределы экрана — на overrideredirect-окне
+        # withdraw()+deiconify() на Windows ненадёжны (окно может не
+        # вернуться из withdraw), поэтому вместо скрытия просто отодвигаем
+        # его, пока не измерим реальную высоту содержимого.
+        popup.geometry(f"{w}x10+-2000+-2000")
         popup.configure(fg_color=p.bg_card)
-        popup.lift()
-        popup.focus_force()
         popup.bind("<FocusOut>", lambda e: self.after(100, self._close_list_file_popup))
 
         frame = ctk.CTkFrame(popup, fg_color=p.bg_card, corner_radius=0)
@@ -500,6 +527,22 @@ class ParametersTab(ctk.CTkFrame):
                 w_.bind("<Leave>", lambda e, r_=row, fn=filename:
                     r_.configure(fg_color=p.bg_hover if fn == self._list_file_var.get() else "transparent"))
 
+        # Реальная высота строк (шрифт + внутренние отступы CTkLabel) может
+        # отличаться от любой прикидки — меряем то, что фактически построено,
+        # вместо оценки "N * const", иначе нижняя строка обрезается внутри
+        # самого попапа (а не по краю экрана).
+        popup.update_idletasks()
+        popup_h = popup.winfo_reqheight()
+
+        screen_h = self.winfo_screenheight()
+        y = btn_bottom + 2
+        if y + popup_h > screen_h:
+            y = max(0, btn_top - popup_h - 2)
+
+        popup.geometry(f"{w}x{popup_h}+{x}+{y}")
+        popup.lift()
+        popup.focus_force()
+
         self._list_file_popup = popup
         self._list_file_arrow.configure(text="▲")
 
@@ -532,12 +575,26 @@ class ParametersTab(ctk.CTkFrame):
         try:
             subprocess.Popen(f'explorer "{self._lists_dir}"')
         except Exception as e:
-            mb.showerror("FlowZap", f"Не удалось открыть папку:\n{e}")
+            import logging
+            logging.getLogger(__name__).error(f"Не удалось открыть папку списков: {e}")
+            mb.showerror("FlowZap", "Не удалось открыть папку")
 
     def _parse_input(self) -> list:
         raw = self._list_entry.get().strip()
         parts = re.split(r"[,\n]+", raw)
-        return [p.strip().lower() for p in parts if p.strip()]
+        result = []
+        for p in parts:
+            v = p.strip()
+            if not v:
+                continue
+            if "://" in v:
+                # Вставили полную ссылку — берём только хост, без
+                # протокола, пути, порта и параметров.
+                host = urlparse(v).hostname
+                if host:
+                    v = host
+            result.append(v.lower())
+        return result
 
     def _validate_entries(self, entries: list) -> tuple:
         valid, invalid = [], []
@@ -564,6 +621,14 @@ class ParametersTab(ctk.CTkFrame):
             text=text,
             text_color=color or theme.palette.text_muted,
         )
+        if hasattr(self, "_lists_status_2"):
+            self._lists_status_2.configure(text="")
+
+    def _set_status_dual(self, text1: str, color1: str, text2: str, color2: str) -> None:
+        """Показать двухцветное сообщение: первая часть цветом color1,
+        вторая (например "не найдено: ...") — color2."""
+        self._lists_status.configure(text=text1, text_color=color1)
+        self._lists_status_2.configure(text=text2, text_color=color2)
 
     def _add_entries(self) -> None:
         p = theme.palette
@@ -638,10 +703,13 @@ class ParametersTab(ctk.CTkFrame):
 
         self._write_list(filename, [l for l in current if l not in set(found)])
 
-        parts = [f"✓ Удалено: {', '.join(found)}"]
         if not_found:
-            parts.append(f"не найдено: {', '.join(not_found)}")
-        self._set_status("  |  ".join(parts), p.success)
+            self._set_status_dual(
+                f"✓ Удалено: {', '.join(found)}", p.success,
+                f"  |  не найдено: {', '.join(not_found)}", p.warning,
+            )
+        else:
+            self._set_status(f"✓ Удалено: {', '.join(found)}", p.success)
         self._list_entry.delete(0, "end")
 
     # ──────────────────────────────────────────
@@ -819,7 +887,31 @@ class ParametersTab(ctk.CTkFrame):
         self._ov_card_frame_widgets = (p, t, m)  # сохраняем для ленивого построения
         self._ov_card_win = None   # tk.Toplevel с карточкой
         self._ov_dim_win  = None   # tk.Toplevel с затемнением
-        self._ov_escape_bind_id = None
+        self._ov_just_opened = False
+
+        # Глобальный перехват кликов — привязывается один раз навсегда.
+        # Сам себя игнорирует, когда оверлей закрыт (winfo_viewable() лжив),
+        # поэтому отдельно отвязывать не нужно. Надёжнее, чем FocusOut —
+        # тот срабатывал даже при переводе фокуса МЕЖДУ полями внутри самой
+        # карточки, закрывая её мгновенно после открытия.
+        root = self.winfo_toplevel()
+        root.bind_all("<Button-1>", self._on_global_click_check_overlay, add="+")
+
+    def _on_global_click_check_overlay(self, event) -> None:
+        if not self._ov_card_win or not self._ov_card_win.winfo_viewable():
+            return
+        if self._ov_just_opened:
+            # Защита от самозакрытия: сам клик по кнопке "Добавить DNS",
+            # открывающий карточку, физически происходит вне карточки
+            # (кнопка в основном окне) — без этой паузы обработчик тут же
+            # закрывает только что открытое окно в рамках того же клика.
+            return
+        try:
+            clicked_top = event.widget.winfo_toplevel()
+        except Exception:
+            return
+        if clicked_top is not self._ov_card_win:
+            self._close_add_dns_overlay()
 
     def _ensure_overlay_built(self) -> None:
         """Построить карточку один раз при первом открытии."""
@@ -831,6 +923,7 @@ class ParametersTab(ctk.CTkFrame):
         # ── Затемняющий фон ───────────────────────────────────────────────────
         dim = tk.Toplevel(root)
         dim.wm_overrideredirect(True)
+        dim.transient(root)
         dim.configure(bg="#000000")
         dim.wm_attributes("-alpha", 0.45)
         dim.withdraw()
@@ -839,6 +932,7 @@ class ParametersTab(ctk.CTkFrame):
         # ── Окно с карточкой ──────────────────────────────────────────────────
         win = tk.Toplevel(root)
         win.wm_overrideredirect(True)
+        win.transient(root)
         win.configure(bg=p.bg_card)
         win.withdraw()
         self._ov_card_win = win
@@ -967,33 +1061,46 @@ class ParametersTab(ctk.CTkFrame):
         self._ov_dim_win.deiconify()
         self._ov_dim_win.lift()
 
-        # Карточка — по центру root
-        self._ov_card_win.update_idletasks()
-        cw = self._ov_card_win.winfo_reqwidth()
-        ch = self._ov_card_win.winfo_reqheight()
-        cx = rx + (rw - cw) // 2
-        cy = ry + (rh - ch) // 2
-        self._ov_card_win.geometry(f"{cw}x{ch}+{cx}+{cy}")
-        self._ov_card_win.deiconify()
-        self._ov_card_win.lift()
-        self._ov_card_win.update()
+        # Карточку прячем прозрачностью на время построения/позиционирования —
+        # иначе видна волна построчной отрисовки виджетов при первом показе.
+        # try/finally гарантирует возврат видимости даже при сбое посередине
+        # (в отличие от прошлой попытки с окном приложения, где сбой без
+        # finally оставлял окно невидимым насовсем).
+        try:
+            self._ov_card_win.wm_attributes("-alpha", 0.0)
+        except Exception:
+            pass
+        try:
+            self._ov_card_win.update_idletasks()
+            cw = self._ov_card_win.winfo_reqwidth()
+            ch = self._ov_card_win.winfo_reqheight()
+            cx = rx + (rw - cw) // 2
+            cy = ry + (rh - ch) // 2
+            self._ov_card_win.geometry(f"{cw}x{ch}+{cx}+{cy}")
+            self._ov_card_win.deiconify()
+            self._ov_card_win.lift()
+            self._ov_card_win.update()
 
-        self._ov_escape_bind_id = root.bind("<Escape>", lambda e: self._close_add_dns_overlay(), add="+")
-        self._ov_name.focus_set()
+            self._ov_card_win.bind("<Escape>", lambda e: self._close_add_dns_overlay())
+            self._ov_name.focus_set()
+        finally:
+            try:
+                self._ov_card_win.wm_attributes("-alpha", 1.0)
+            except Exception:
+                pass
+
+        self._ov_just_opened = True
+        self.after(150, self._ov_clear_just_opened)
+
+    def _ov_clear_just_opened(self) -> None:
+        self._ov_just_opened = False
 
     def _close_add_dns_overlay(self) -> None:
         """Скрыть overlay и очистить поля."""
-        if self._ov_dim_win:
-            self._ov_dim_win.withdraw()
         if self._ov_card_win:
             self._ov_card_win.withdraw()
-        root = self.winfo_toplevel()
-        if self._ov_escape_bind_id:
-            try:
-                root.unbind("<Escape>", self._ov_escape_bind_id)
-            except Exception:
-                pass
-            self._ov_escape_bind_id = None
+        if self._ov_dim_win:
+            self._ov_dim_win.withdraw()
         for entry in (self._ov_name, self._ov_ipv4_main, self._ov_ipv4_backup,
                       self._ov_ipv6_main, self._ov_ipv6_backup):
             entry.delete(0, "end")
@@ -1008,7 +1115,7 @@ class ParametersTab(ctk.CTkFrame):
         ipv6_b = self._ov_ipv6_backup.get().strip()
 
         if not ipv4_m:
-            self._ov_status.configure(text="Введите хотя бы основной IPv4 адрес", text_color=p.error)
+            self._ov_status.configure(text="Введите IP-адрес DNS", text_color=p.error)
             return
         if not _valid_entry(ipv4_m):
             self._ov_status.configure(text=f"Некорректный IPv4: {ipv4_m}", text_color=p.error)
@@ -1040,12 +1147,23 @@ class ParametersTab(ctk.CTkFrame):
         self._dns_status.configure(text="✓ Добавлено", text_color=p.success)
         self._ping_dns_pair(len(self._dns_pairs) - 1)
 
-    def _ping_active_dns(self) -> None:
-        """Пинговать все DNS пары."""
-        self._ping_all_dns()
+    def on_activate(self) -> None:
+        """Вызывается при каждом переключении на эту вкладку (main_window.py
+        дёргает on_activate() у активной вкладки). Обновляем пинг DNS сразу,
+        не дожидаясь ручного нажатия "Обновить" — тогда при открытии списка
+        DNS результат уже готов."""
+        self._ping_all_dns(show_status=False)
 
-    def _ping_all_dns(self) -> None:
-        """Запустить DNS-проверку для всех пар параллельно."""
+    def _ping_active_dns(self) -> None:
+        """Пинговать все DNS пары (по кнопке "Обновить" — с итоговым статусом)."""
+        self._ping_all_dns(show_status=True)
+
+    def _ping_all_dns(self, show_status: bool = False) -> None:
+        """Запустить DNS-проверку для всех пар параллельно.
+        show_status=True — по завершении показать итоговое сообщение под
+        списком (только при ручном нажатии "Обновить"). При автообновлении
+        (on_activate) show_status=False — обновляются только цифры в самом
+        списке DNS, без сообщения внизу."""
         import threading
         if not hasattr(self, "_dns_ping_cache"):
             self._dns_ping_cache = {}
@@ -1078,8 +1196,8 @@ class ParametersTab(ctk.CTkFrame):
                 self.after(0, lambda d=display, l=lbl2: l.configure(text=d))
 
             results_done[0] += 1
-            # Когда все готовы — показываем итоговый статус
-            if results_done[0] >= total:
+            # Когда все готовы — показываем итоговый статус (только если попросили)
+            if results_done[0] >= total and show_status:
                 ok = [(m, v) for m, v in self._dns_ping_cache.items()
                       if v not in ("—", "…", "?") and "мс" in v]
                 if ok:
