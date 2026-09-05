@@ -768,12 +768,21 @@ def download_and_install_tg_proxy(
             exe_path = tgproxy_dir / "TgWsProxy_windows.exe"
             exe_path.write_bytes(data)
 
-            # Версия зашита в сам exe (FileVersion в PE-ресурсах) — читаем
-            # её оттуда напрямую как наиболее точный источник. Если не
-            # получилось — используем tag с GitHub, он уже гарантированно
-            # верен (URL зеркала пинует именно этот tag).
+            # Тег с GitHub — основной источник версии: URL зеркала уже
+            # пинуется к конкретному tag+имени файла, так что любая успешная
+            # загрузка (с GitHub или с зеркала) гарантированно соответствует
+            # этому тегу. Версию из ресурсов exe используем только для
+            # диагностики в логах — она иногда отстаёт от тега, если автор
+            # релиза забыл обновить её внутри файла, и НЕ должна перебивать
+            # тег (иначе апдейтер вечно считает, что доступно обновление,
+            # даже после успешной установки).
             actual_version = _get_exe_version(exe_path)
-            installed_version = actual_version or tag
+            if actual_version and actual_version != tag.lstrip("v"):
+                logger.info(
+                    f"Тег релиза {tag}, но версия в ресурсах exe: "
+                    f"{actual_version} (используем тег)"
+                )
+            installed_version = tag
             (tgproxy_dir / "version.txt").write_text(installed_version, encoding="utf-8")
 
             _log(f"✓ TG WS Proxy установлен ({installed_version})")
