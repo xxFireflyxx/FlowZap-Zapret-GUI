@@ -300,12 +300,6 @@ class PresetPingManager:
             logger.warning("Тесты уже запущены")
             return
 
-        if getattr(self, "_dns_active", False):
-            logger.warning("Тесты пропущены — DNS включён, результаты будут некорректными")
-            if self._on_tests_done:
-                self._on_tests_done(False, "Отключите DNS перед запуском тестов")
-            return
-
         if not self._winws_exe.exists():
             msg = f"winws.exe не найден: {self._winws_exe}"
             logger.error(msg)
@@ -322,10 +316,6 @@ class PresetPingManager:
             daemon=True,
             name="preset-tester",
         ).start()
-
-    def set_dns_active(self, active: bool) -> None:
-        """Сообщить менеджеру что DNS включён/выключен."""
-        self._dns_active = active
 
     def stop_tests(self) -> None:
         """Прервать текущее тестирование."""
