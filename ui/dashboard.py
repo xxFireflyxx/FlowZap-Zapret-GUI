@@ -3,6 +3,8 @@ ui/dashboard.py — Главная вкладка FlowZap.
 """
 
 import customtkinter as ctk
+import ctypes
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -14,6 +16,34 @@ from ui.help_tooltip import add_help_icon
 from core.tg_proxy import TgProxyManager
 
 
+
+
+# ─────────────────────────────────────────────
+#  Авто-проверка пресетов по простою системы
+# ─────────────────────────────────────────────
+_IDLE_CHECK_INTERVAL_MS  = 120_000  # опрашиваем простой раз в 2 минуты
+_IDLE_THRESHOLD_SECONDS  = 600      # 10 минут без ввода с клавиатуры/мыши
+_AUTO_TEST_MAX_AGE_HOURS = 168      # не чаще раза в неделю
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+
+def _system_idle_seconds() -> float:
+    """Секунд с последнего ввода с клавиатуры/мыши во всей системе —
+    в отличие от фокуса окна, работает и когда FlowZap свёрнут в трей."""
+    if os.name != "nt":
+        return 0.0
+    try:
+        info = _LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return 0.0
+        millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime
+        return max(millis, 0) / 1000.0
+    except Exception:
+        return 0.0
 
 
 _PING_COLOR = {
@@ -294,8 +324,9 @@ class DashboardTab(ctk.CTkFrame):
         self._load_presets()
         # Кэш загружаем через after() чтобы UI успел отрисоваться
         self.after(200, self._load_cache_silent)
-        # Автоматически запускаем тесты если кэш старше 24 часов
-        self.after(500, self._maybe_run_tests)
+        # Раз в неделю, но только когда пользователь бездействует —
+        # запускаем авто-проверку пресетов в фоне (не при старте приложения).
+        self.after(_IDLE_CHECK_INTERVAL_MS, self._idle_test_check)
 
     # ──────────────────────────────────────────────
     #  Построение UI
@@ -506,27 +537,32 @@ class DashboardTab(ctk.CTkFrame):
         """Загружает кэш тихо — без сообщений об ошибках если файла нет."""
         self._ping_mgr.load_cached()
 
-    def _maybe_run_tests(self) -> None:
-        """Запустить тесты автоматически если кэш устарел (>24 часов) или отсутствует."""
-        from core.ping_checker import find_latest_results
-        results_dir = self._ping_mgr._results_dir
-        latest = find_latest_results(results_dir)
-        if latest is None:
-            # Нет файла вообще — запускаем
-            self._run_auto_tests()
+    def _idle_test_check(self) -> None:
+        """Раз в _IDLE_CHECK_INTERVAL_MS проверяет, не пора ли прогнать
+        еженедельную авто-проверку пресетов: сначала — прошла ли неделя
+        с последнего теста, и только если да — смотрим на простой всей
+        системы (не зависит от фокуса окна — работает и когда FlowZap
+        свёрнут в трей). Плюс zapret не запущен и проверка ещё не идёт."""
+        self.after(_IDLE_CHECK_INTERVAL_MS, self._idle_test_check)
+
+        if self._ping_mgr.is_testing or self.manager.is_running:
             return
-        age_hours = (time.time() - latest.stat().st_mtime) / 3600
-        if age_hours > 168:  # раз в неделю
-            self._run_auto_tests()
+
+        from core.ping_checker import find_latest_results
+        latest = find_latest_results(self._ping_mgr._results_dir)
+        if latest is not None:
+            age_hours = (time.time() - latest.stat().st_mtime) / 3600
+            if age_hours < _AUTO_TEST_MAX_AGE_HOURS:
+                return
+
+        if _system_idle_seconds() < _IDLE_THRESHOLD_SECONDS:
+            return
+
+        self._run_auto_tests()
 
     def _run_auto_tests(self) -> None:
         """Запустить тесты в фоне. Если zapret запущен — сначала останавливаем."""
         if self._ping_mgr.is_testing:
-            return
-        if self._dns_enabled:
-            self._ping_status_lbl.configure(
-                text="⚠ Отключите DNS для точной проверки",
-                text_color=theme.palette.warning)
             return
         if self.manager.is_running:
             # Останавливаем zapret и ждём выгрузки WinDivert перед тестами
@@ -662,10 +698,7 @@ class DashboardTab(ctk.CTkFrame):
                 pass
 
     def _on_tests_done(self, success: bool, message: str) -> None:
-        def _clear():
-            if not self._dns_enabled:
-                self._ping_status_lbl.configure(text="")
-        self.after(0, _clear)
+        self.after(0, lambda: self._ping_status_lbl.configure(text=""))
 
     # ──────────────────────────────────────────────
     #  Управление процессом
@@ -681,12 +714,34 @@ class DashboardTab(ctk.CTkFrame):
         if self.manager.is_running:
             self.manager.stop()
             return
+        if self._ping_mgr.is_testing:
+            # Проверка пинга и реальный запуск zapret конкурируют за один
+            # и тот же драйвер WinDivert — если запустить поверх активной
+            # проверки, оба процесса ломаются. Прерываем проверку и ждём
+            # пока её winws.exe действительно завершится, потом запускаем.
+            self._ping_mgr.stop_tests()
+            self._btn_toggle.configure(state="disabled")
+            self._ping_status_lbl.configure(
+                text="Прерываем проверку пинга…",
+                text_color=theme.palette.text_muted)
+            self.after(300, self._wait_ping_stop_then_toggle)
+            return
         if not self._selected_preset:
             # Пресетов нет — скорее всего core (zapret) ещё не установлен.
             # Устанавливаем и запускаем сразу, не отправляя на вкладку «Обновления».
             self._install_core_then_start()
             return
         self.manager.start(bat_path=self._get_current_bat())
+
+    def _wait_ping_stop_then_toggle(self) -> None:
+        """Ждёт пока проверка пинга полностью остановится (winws.exe
+        завершён в её фоновом потоке), затем повторяет _on_toggle()."""
+        if self._ping_mgr.is_testing:
+            self.after(300, self._wait_ping_stop_then_toggle)
+            return
+        self._btn_toggle.configure(state="normal")
+        self._ping_status_lbl.configure(text="")
+        self._on_toggle()
 
     def _install_core_then_start(self) -> None:
         from core.updater import download_and_install_core
@@ -1191,10 +1246,6 @@ class DashboardTab(ctk.CTkFrame):
         p = theme.palette
         self._btn_dns.configure(text="DNS", state="normal")
 
-        # Сообщаем ping_mgr об актуальном состоянии DNS
-        if hasattr(self, "_ping_mgr"):
-            self._ping_mgr.set_dns_active(enable and not bool(error))
-
         if error:
             self._dns_enabled = not enable  # откатить состояние
             mb.showerror(
@@ -1207,8 +1258,6 @@ class DashboardTab(ctk.CTkFrame):
             self._btn_dns.configure(**self._btn_style_on())
         else:
             self._btn_dns.configure(**self._btn_style_off())
-            # DNS выключен — убираем предупреждение
-            self._ping_status_lbl.configure(text="")
 
         self._persist_last_state()
 

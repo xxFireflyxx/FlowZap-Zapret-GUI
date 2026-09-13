@@ -253,6 +253,7 @@ class ServiceManager:
 
         threading.Thread(
             target=self._watch_process,
+            args=(self._process,),
             daemon=True,
             name=f"{self.name}-watcher",
         ).start()
@@ -342,11 +343,20 @@ class ServiceManager:
             self._emit_log(f"[WARN] tasklist error: {e}")
         return None
 
-    def _watch_process(self) -> None:
-        """Фоновый поток: ждёт завершения процесса и меняет состояние."""
-        if not self._process:
+    def _watch_process(self, process: subprocess.Popen) -> None:
+        """Фоновый поток: ждёт завершения процесса и меняет состояние.
+        process передаётся явным аргументом (а не читается через
+        self._process), чтобы поток, следящий за СТАРЫМ процессом при
+        restart(), не мог перезаписать состояние уже запущенного НОВОГО
+        процесса — раньше оба потока обращались к self._process по
+        ссылке, и после переприсвоения в start() устаревшее завершение
+        старого процесса откатывало RUNNING обратно в ERROR/STOPPED."""
+        return_code = process.wait()
+
+        # self._process уже не тот процесс, за которым следил этот поток —
+        # start() успел запустить новый. Событие устарело, игнорируем.
+        if self._process is not process:
             return
-        return_code = self._process.wait()
 
         if not self._stop_event.is_set():
             if return_code != 0:
