@@ -5,7 +5,7 @@
 
 ## Безопасность
 
-[![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/cc1f920dc655e70fbc5f3924b597f28a281286e400185dc74b9b0befb98661f7/detection)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/250917ecf8454c4fe50a20ab6bec8cb416b1ed52a3161577778e2c4218f2dcfd?nocache=1)
 
 - 🔒 Исходный код полностью открыт — вы можете проверить его самостоятельно
 
