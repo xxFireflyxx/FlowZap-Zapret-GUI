@@ -16,6 +16,30 @@ FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
 FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
 
+_ssl_ctx = None
+
+
+def _ssl_context():
+    """SSL-контекст с сертификатами certifi для urlopen.
+
+    На части систем (особенно Windows 11 в изолированном окружении
+    PyInstaller) отсутствует нужное системное хранилище CA-сертификатов,
+    и urlopen падает с CERTIFICATE_VERIFY_FAILED. certifi — обязательная
+    зависимость (requirements.txt), поэтому fallback ниже — просто на
+    случай, если её всё же не окажется в окружении.
+    """
+    global _ssl_ctx
+    if _ssl_ctx is None:
+        import ssl
+        try:
+            import certifi
+            _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception as e:
+            logger.warning(f"certifi недоступен ({e}), используем системный SSL-контекст")
+            _ssl_ctx = ssl.create_default_context()
+    return _ssl_ctx
+
+
 _github_token: Optional[str] = None
 
 
@@ -65,7 +89,7 @@ def _download_with_grace(
     def _connect() -> None:
         try:
             req = urllib.request.Request(url, headers=headers)
-            result["response"] = urllib.request.urlopen(req, timeout=transfer_timeout)
+            result["response"] = urllib.request.urlopen(req, timeout=transfer_timeout, context=_ssl_context())
         except Exception as e:
             result["error"] = e
 
@@ -91,7 +115,7 @@ def _get_from_gitlab() -> Optional[dict]:
         import urllib.request, json
         url = f"https://gitlab.com/api/v4/projects/{FLOWZAP_GITLAB_ID}/releases"
         req = urllib.request.Request(url, headers={"User-Agent": "FlowZap/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as r:
             releases = json.load(r)
         if not releases:
             return None
@@ -133,7 +157,7 @@ def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optiona
     try:
         url = f"https://api.github.com/repos/{repo}/releases/latest"
         req = urllib.request.Request(url, headers=_github_headers())
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as r:
             result = json.load(r)
         _release_cache[repo] = (time.time(), result)
         return result
@@ -296,7 +320,7 @@ def download_and_install_exe(
                         gitlab_asset["browser_download_url"],
                         headers={"User-Agent": "FlowZap/1.0"},
                     )
-                    with urllib.request.urlopen(mirror_req, timeout=120) as r:
+                    with urllib.request.urlopen(mirror_req, timeout=120, context=_ssl_context()) as r:
                         data = r.read()
                     asset_name = gitlab_asset["name"]
                     tag = gitlab_release.get("tag_name", tag)
@@ -511,7 +535,7 @@ def download_and_install_core(
                         mirror_url,
                         headers={"User-Agent": "FlowZap/1.0"},
                     )
-                    with urllib.request.urlopen(mirror_req, timeout=120) as r:
+                    with urllib.request.urlopen(mirror_req, timeout=120, context=_ssl_context()) as r:
                         data = r.read()
                     logger.info(f"Зеркало SourceForge: скачано {len(data)} байт")
                 except Exception as mirror_error:
@@ -742,7 +766,7 @@ def download_and_install_tg_proxy(
                         mirror_url,
                         headers={"User-Agent": "FlowZap/1.0"},
                     )
-                    with urllib.request.urlopen(mirror_req, timeout=120) as r:
+                    with urllib.request.urlopen(mirror_req, timeout=120, context=_ssl_context()) as r:
                         data = r.read()
                     logger.info(f"Зеркало SourceForge: скачано {len(data)} байт")
                 except Exception as mirror_error:
@@ -845,7 +869,7 @@ def update_gaming_lists(
                 url = f"{GAMING_LISTS_REPO_RAW}/{remote}"
                 logger.info(f"Обновление игрового списка: {remote} -> {local}")
                 req = urllib.request.Request(url, headers={"User-Agent": "FlowZap/1.0"})
-                with urllib.request.urlopen(req, timeout=30) as r:
+                with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as r:
                     data = r.read()
                 (lists_dir / local).write_bytes(data)
                 logger.info(f"Сохранён: {local} ({len(data)} байт)")

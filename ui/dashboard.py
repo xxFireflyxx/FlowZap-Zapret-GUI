@@ -651,7 +651,15 @@ class DashboardTab(ctk.CTkFrame):
     # ──────────────────────────────────────────────
 
     def _on_ping_update(self, preset_name: str, status: PingStatus) -> None:
-        self.after(0, self._apply_ping_update, preset_name, status)
+        # Вызывается из фонового потока PresetPingManager._worker — окно
+        # может быть уже закрыто/уничтожено (daemon-поток не успевает
+        # остановиться синхронно), тогда self.after() падает с
+        # "main thread is not in main loop". Это ожидаемая гонка при
+        # закрытии, а не реальная ошибка — молча игнорируем.
+        try:
+            self.after(0, self._apply_ping_update, preset_name, status)
+        except Exception:
+            pass
 
     def _apply_ping_update(self, preset_name: str, status: PingStatus) -> None:
         # Обновляем только конкретный элемент в списке — не перестраиваем весь список
@@ -698,7 +706,11 @@ class DashboardTab(ctk.CTkFrame):
                 pass
 
     def _on_tests_done(self, success: bool, message: str) -> None:
-        self.after(0, lambda: self._ping_status_lbl.configure(text=""))
+        # См. комментарий в _on_ping_update — тот же фоновый поток, та же гонка.
+        try:
+            self.after(0, lambda: self._ping_status_lbl.configure(text=""))
+        except Exception:
+            pass
 
     # ──────────────────────────────────────────────
     #  Управление процессом
@@ -1170,6 +1182,9 @@ class DashboardTab(ctk.CTkFrame):
     def on_close(self) -> None:
         """Вызывается при закрытии приложения — сохраняем состояние
         и сбрасываем DNS если включён."""
+        if self._ping_mgr.is_testing:
+            self._ping_mgr.stop_tests()
+
         self._persist_last_state()
 
         if self._dns_enabled:
