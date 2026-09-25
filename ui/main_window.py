@@ -602,34 +602,50 @@ class MainWindow(ctk.CTk):
     def show_tab(self, tab_id: str) -> None:
         if tab_id not in self._tabs:
             return
-
-        from ui.help_tooltip import HelpIcon
-        HelpIcon.close_all()
-
-        if self._active_tab and self._active_tab in self._tabs:
-            self._nav_buttons[self._active_tab].set_active(False)
-
-        # "Занавеска" цвета фона поверх контента на время перерисовки —
-        # прячет волну построчной отрисовки виджетов вкладки. В отличие
-        # от прозрачности всего окна (пробовали — рискованно, окно могло
-        # пропасть насовсем при сбое), тут худший исход при ошибке —
-        # просто пустой фон, а не исчезнувшее окно, и try/finally
-        # гарантирует, что занавеска в любом случае будет убрана.
-        veil = ctk.CTkFrame(self._content, fg_color=theme.palette.bg_root, corner_radius=0)
-        veil.place(relx=0, rely=0, relwidth=1, relheight=1)
-        veil.lift()
+        # Guard от реентрантности: self.update() ниже обрабатывает всю
+        # очередь событий Tk, включая клики по другим кнопкам нав-меню,
+        # сделанные пока эта вкладка ещё грузится. Без guard'а такой клик
+        # запускает show_tab() повторно ДО завершения текущего вызова —
+        # оба вызова гоняют одни и те же self._active_tab/кнопки/занавеску,
+        # отсюда мигающие кнопки и на миг видимые "наложенные" вкладки.
+        #
+        # try/finally оборачивает ВСЮ функцию целиком — если flag сбрасывать
+        # только в хвосте (после создания занавески), а исключение прилетит
+        # раньше (например, в HelpIcon.close_all() или set_active()), flag
+        # останется True навсегда и переключение вкладок перестанет работать.
+        if getattr(self, "_switching_tab", False):
+            return
+        self._switching_tab = True
         try:
-            self._tabs[tab_id].tkraise()
-            self.update()
-            self._nav_buttons[tab_id].set_active(True)
-            self._active_tab = tab_id
+            from ui.help_tooltip import HelpIcon
+            HelpIcon.close_all()
 
-            tab = self._tabs[tab_id]
-            if hasattr(tab, "on_activate"):
-                tab.on_activate()
+            if self._active_tab and self._active_tab in self._tabs:
+                self._nav_buttons[self._active_tab].set_active(False)
+
+            # "Занавеска" цвета фона поверх контента на время перерисовки —
+            # прячет волну построчной отрисовки виджетов вкладки. В отличие
+            # от прозрачности всего окна (пробовали — рискованно, окно могло
+            # пропасть насовсем при сбое), тут худший исход при ошибке —
+            # просто пустой фон, а не исчезнувшее окно, и try/finally
+            # гарантирует, что занавеска в любом случае будет убрана.
+            veil = ctk.CTkFrame(self._content, fg_color=theme.palette.bg_root, corner_radius=0)
+            veil.place(relx=0, rely=0, relwidth=1, relheight=1)
+            veil.lift()
+            try:
+                self._tabs[tab_id].tkraise()
                 self.update()
+                self._nav_buttons[tab_id].set_active(True)
+                self._active_tab = tab_id
+
+                tab = self._tabs[tab_id]
+                if hasattr(tab, "on_activate"):
+                    tab.on_activate()
+                    self.update()
+            finally:
+                veil.destroy()
         finally:
-            veil.destroy()
+            self._switching_tab = False
 
     # ─────────────────────────────────────────
     #  Коллбэки

@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.5.1"
+GUI_VERSION = "0.5.2 beta 11 win"
 FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
 FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
@@ -238,32 +238,234 @@ def find_exe_asset(release: dict) -> Optional[dict]:
     return None
 
 
-def _extract_exe_from_zip(data: bytes) -> Optional[tuple]:
-    """Извлечь главный exe из zip архива. Возвращает (имя, байты) или None."""
-    import zipfile, io
+def _extract_update_payload(data: bytes) -> Optional[Path]:
+    """Распаковать архив обновления во временную папку.
+
+    Белый список — только FlowZap.exe и, если он есть в архиве, папка
+    _internal/, где бы они ни лежали внутри архива (обычно под префиксом
+    FlowZap/). Всё остальное содержимое архива (config.toml-шаблон,
+    случайные файлы) игнорируется и никогда не попадает на диск — так
+    обновление не может затереть zapret/, tgproxy/, logs/ или config.toml
+    пользователя.
+
+    Возвращает временную папку с FlowZap.exe (и, если был в архиве,
+    подпапкой _internal/) или None, если exe в архиве не нашёлся.
+    """
+    import zipfile, io, tempfile
+
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            candidates = []
-            for member in zf.namelist():
-                name_lower = member.lower()
-                if (name_lower.endswith(".exe") and
-                        "__pycache__" not in name_lower and
-                        "/lib/" not in name_lower and
-                        "\\lib\\" not in name_lower):
-                    candidates.append(member)
-
-            if not candidates:
+            names = zf.namelist()
+            exe_member = next(
+                (m for m in names if Path(m).name.lower() == "flowzap.exe"),
+                None,
+            )
+            if exe_member is None:
+                logger.error("FlowZap.exe не найден в архиве обновления")
                 return None
 
-            root_exe = next(
-                (m for m in candidates if "/" not in m and "\\" not in m),
-                candidates[0]
-            )
-            logger.info(f"Найден exe в архиве: {root_exe}")
-            return Path(root_exe).name, zf.read(root_exe)
+            root = Path(exe_member).parent.as_posix()
+            internal_prefix = f"{root}/_internal/" if root not in ("", ".") else "_internal/"
+
+            temp_dir = Path(tempfile.mkdtemp(prefix="flowzap_update_"))
+            (temp_dir / "FlowZap.exe").write_bytes(zf.read(exe_member))
+
+            internal_members = [
+                m for m in names
+                if m.replace("\\", "/").startswith(internal_prefix) and not m.endswith("/")
+            ]
+            for member in internal_members:
+                rel = member.replace("\\", "/")[len(internal_prefix):]
+                # Защита от zip-slip: ни один элемент не должен выходить за
+                # пределы temp_dir/_internal через "..".
+                if not rel or ".." in Path(rel).parts:
+                    logger.warning(f"Пропущен подозрительный путь в архиве: {member}")
+                    continue
+                dest = temp_dir / "_internal" / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(zf.read(member))
+
+            if not internal_members:
+                logger.warning("В архиве обновления нет _internal/ — будет заменён только exe")
+
+            return temp_dir
     except Exception as e:
-        logger.error(f"Ошибка распаковки zip: {e}")
+        logger.error(f"Ошибка распаковки обновления: {e}")
     return None
+
+
+def _check_disk_space(paths: list, required_bytes: int) -> Optional[str]:
+    """Проверить, что на дисках всех путей есть required_bytes байт свободно.
+
+    Возвращает текст ошибки, если места где-то не хватает, иначе None.
+    Если для какого-то пути место проверить не удалось (сетевой диск,
+    ошибка ОС), проверка для него пропускается — это не повод прерывать
+    обновление из-за неполадки самой проверки.
+    """
+    checked_drives = set()
+    for p in paths:
+        drive = p.anchor or str(p)
+        if drive in checked_drives:
+            continue
+        checked_drives.add(drive)
+        existing = p
+        while not existing.exists() and existing != existing.parent:
+            existing = existing.parent
+        try:
+            free = shutil.disk_usage(existing).free
+        except Exception as e:
+            logger.warning(f"Не удалось проверить свободное место для {existing}: {e}")
+            continue
+        if free < required_bytes:
+            return (
+                f"Недостаточно места на диске {drive}: свободно "
+                f"{free / 1024**2:.0f} МБ, нужно ~{required_bytes / 1024**2:.0f} МБ"
+            )
+    return None
+
+
+def _build_swap_script(
+    current_exe: Path,
+    current_internal: Path,
+    new_exe: Path,
+    new_internal: Optional[Path],
+    payload_dir: Path,
+    update_log: Path,
+    max_wait_attempts: int = 20,
+) -> str:
+    """Собрать .bat, который меняет FlowZap.exe (+ _internal/) после
+    закрытия приложения, с опросом вместо слепого ожидания и полным
+    откатом при любой ошибке.
+
+    Схема:
+      1. Опрашивать (move поверх самого себя как переименование) CUR_EXE,
+         пока файл не освободится — это и есть признак, что приложение
+         закрылось. До max_wait_attempts попыток по 1 сек.
+      2. Если внутри архива был _internal — убрать старый в сторону
+         (CUR_INTERNAL -> .old), поставить новый на его место.
+      3. Поставить новый exe на место старого.
+      4. Если что-то на шаге 2 или 3 не удалось — откатить сделанное
+         (вернуть .old-копии на место) и перезапустить старую версию.
+      5. При успехе удалить .old-копии, временную папку и сам bat,
+         запустить новую версию.
+
+    Все пути передаются через переменные окружения bat и везде
+    используются в кавычках, поэтому пробелы, кириллица и спецсимволы
+    вида ^ или & в пути безопасны.
+    """
+    has_internal = new_internal is not None
+
+    lines = [
+        "@echo off",
+        "setlocal EnableExtensions",
+        "",
+        f'set "CUR_EXE={current_exe}"',
+        f'set "CUR_INTERNAL={current_internal}"',
+        f'set "NEW_EXE={new_exe}"',
+        f'set "NEW_INTERNAL={new_internal if has_internal else ""}"',
+        f'set "PAYLOAD_DIR={payload_dir}"',
+        f'set "UPDATE_LOG={update_log}"',
+        "",
+        "set /a attempts=0",
+        ":wait_loop",
+        'move /y "%CUR_EXE%" "%CUR_EXE%.old" >nul 2>&1',
+        "if not errorlevel 1 goto exe_parked",
+        "set /a attempts+=1",
+        f"if %attempts% geq {max_wait_attempts} goto timeout_abort",
+        "timeout /t 1 /nobreak >nul",
+        "goto wait_loop",
+        "",
+        ":exe_parked",
+    ]
+
+    if has_internal:
+        lines += [
+            'if exist "%CUR_INTERNAL%.old" rmdir /s /q "%CUR_INTERNAL%.old" >nul 2>&1',
+            'if not exist "%CUR_INTERNAL%" goto move_new_internal',
+            'move /y "%CUR_INTERNAL%" "%CUR_INTERNAL%.old" >nul 2>&1',
+            "if errorlevel 1 goto rollback_exe_only",
+            "",
+            ":move_new_internal",
+            'move /y "%NEW_INTERNAL%" "%CUR_INTERNAL%" >nul 2>&1',
+            "if errorlevel 1 goto rollback_internal_and_exe",
+            "",
+        ]
+
+    lines += [
+        ":place_exe",
+        'move /y "%NEW_EXE%" "%CUR_EXE%" >nul 2>&1',
+        "if errorlevel 1 goto rollback_full",
+        "",
+        'if exist "%CUR_INTERNAL%.old" rmdir /s /q "%CUR_INTERNAL%.old" >nul 2>&1',
+        'del "%CUR_EXE%.old" >nul 2>&1',
+        'echo %date% %time% Update applied: %CUR_EXE% >> "%UPDATE_LOG%" 2>nul',
+        'rmdir /s /q "%PAYLOAD_DIR%" >nul 2>&1',
+        'start "" "%CUR_EXE%"',
+        'del "%~f0"',
+        "exit /b 0",
+        "",
+    ]
+
+    if has_internal:
+        lines += [
+            ":rollback_internal_and_exe",
+            'if exist "%CUR_INTERNAL%" rmdir /s /q "%CUR_INTERNAL%" >nul 2>&1',
+            'if exist "%CUR_INTERNAL%.old" move /y "%CUR_INTERNAL%.old" "%CUR_INTERNAL%" >nul 2>&1',
+            "",
+            ":rollback_exe_only",
+            'move /y "%CUR_EXE%.old" "%CUR_EXE%" >nul 2>&1',
+            'echo %date% %time% Update rollback: _internal swap failed >> "%UPDATE_LOG%" 2>nul',
+            "goto abort_relaunch",
+            "",
+        ]
+
+    lines += [
+        ":rollback_full",
+    ]
+    if has_internal:
+        lines += [
+            'if exist "%CUR_INTERNAL%.old" (',
+            '  if exist "%CUR_INTERNAL%" rmdir /s /q "%CUR_INTERNAL%" >nul 2>&1',
+            '  move /y "%CUR_INTERNAL%.old" "%CUR_INTERNAL%" >nul 2>&1',
+            ")",
+        ]
+    lines += [
+        'move /y "%CUR_EXE%.old" "%CUR_EXE%" >nul 2>&1',
+        'echo %date% %time% Update rollback: exe swap failed >> "%UPDATE_LOG%" 2>nul',
+        "goto abort_relaunch",
+        "",
+        ":timeout_abort",
+        f'echo %date% %time% Update cancelled: app did not close after {max_wait_attempts} tries >> "%UPDATE_LOG%" 2>nul',
+        "",
+        ":abort_relaunch",
+        'rmdir /s /q "%PAYLOAD_DIR%" >nul 2>&1',
+        'if exist "%CUR_EXE%" start "" "%CUR_EXE%"',
+        'del "%~f0"',
+        "exit /b 1",
+    ]
+
+    return "\r\n".join(lines) + "\r\n"
+
+
+def cleanup_old_update_leftovers(root: Path) -> None:
+    """Удалить FlowZap.exe.old и _internal.old, оставшиеся после
+    обновления. Вызывается один раз при следующем успешном старте
+    приложения — если .old-файлы ещё существуют, значит предыдущий
+    запуск дошёл до конца благополучно и откат больше не понадобится.
+    """
+    exe_old = root / "FlowZap.exe.old"
+    internal_old = root / "_internal.old"
+    for path in (exe_old, internal_old):
+        if not path.exists():
+            continue
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            logger.info(f"Удалён хвост предыдущего обновления: {path.name}")
+        except Exception as e:
+            logger.warning(f"Не удалось удалить {path.name}: {e}")
 
 
 def download_and_install_exe(
@@ -339,46 +541,58 @@ def download_and_install_exe(
                 else install_dir / "FlowZap.exe"
             )
             target_dir = current_exe.parent
+            current_internal = target_dir / "_internal"
             asset_lower = asset_name.lower()
 
-            # Извлекаем новый exe
+            # Извлекаем во временную папку. Белый список — только
+            # FlowZap.exe и _internal/, что бы ещё ни лежало в архиве
+            # (см. _extract_update_payload).
+            import tempfile as _tempfile, zipfile as _zipfile, io as _io
+
             if asset_lower.endswith(".zip"):
+                total_size = 0
+                try:
+                    with _zipfile.ZipFile(_io.BytesIO(data)) as _zf:
+                        total_size = sum(i.file_size for i in _zf.infolist())
+                except Exception:
+                    total_size = len(data) * 3  # архив не читается — грубая оценка
+
+                space_error = _check_disk_space(
+                    [Path(_tempfile.gettempdir()), target_dir],
+                    required_bytes=total_size * 2,
+                )
+                if space_error:
+                    raise ValueError(space_error)
+
                 _log("Распаковываем...")
-                result = _extract_exe_from_zip(data)
-                if not result:
-                    raise ValueError("exe не найден внутри zip архива")
-                exe_name, exe_data = result
+                payload_dir = _extract_update_payload(data)
+                if not payload_dir:
+                    raise ValueError("FlowZap.exe не найден внутри zip архива")
             else:
-                exe_name = asset_name
-                exe_data = data
+                payload_dir = Path(_tempfile.mkdtemp(prefix="flowzap_update_"))
+                (payload_dir / "FlowZap.exe").write_bytes(data)
 
-            # Сохраняем во временную папку системы
-            import tempfile as _tempfile
-            tmp_dir = Path(_tempfile.gettempdir())
-            temp_exe = tmp_dir / "_flowzap_update_tmp.exe"
-            temp_exe.write_bytes(exe_data)
+            new_exe = payload_dir / "FlowZap.exe"
+            new_internal = payload_dir / "_internal"
+            if not new_internal.is_dir():
+                new_internal = None
 
-            # Создаём bat с повторными попытками замены
-            bat_path = tmp_dir / "_flowzap_update.bat"
-            lines = [
-                "@echo off",
-                # Ждём закрытия приложения (до 15 сек, по 1 сек)
-                "set /a attempts=0",
-                ":wait_loop",
-                "timeout /t 1 /nobreak >nul",
-                'move /y "' + str(temp_exe) + '" "' + str(current_exe) + '" >nul 2>&1',
-                "if errorlevel 1 (",
-                "  set /a attempts+=1",
-                "  if %attempts% lss 15 goto wait_loop",
-                "  echo Failed to replace exe after 15 attempts",
-                "  goto cleanup",
-                ")",
-                # Успешно заменили — запускаем новую версию
-                'start "" "' + str(current_exe) + '"',
-                ":cleanup",
-                'del "%~f0"',
-            ]
-            bat_path.write_text("\r\n".join(lines), encoding="utf-8")
+            # Bat с опросом вместо слепого ожидания и полным откатом при
+            # любой ошибке (см. _build_swap_script).
+            update_log = target_dir / "logs" / "update.log"
+            update_log.parent.mkdir(parents=True, exist_ok=True)
+            bat_path = payload_dir / "_flowzap_update.bat"
+            bat_path.write_text(
+                _build_swap_script(
+                    current_exe=current_exe,
+                    current_internal=current_internal,
+                    new_exe=new_exe,
+                    new_internal=new_internal,
+                    payload_dir=payload_dir,
+                    update_log=update_log,
+                ),
+                encoding="utf-8",
+            )
 
             # Запускаем bat с правами администратора через ShellExecute runas
             import subprocess as _sp, ctypes as _ct
@@ -885,3 +1099,111 @@ def update_gaming_lists(
                 on_done(False, str(exc))
 
     threading.Thread(target=_worker, daemon=True, name="gaming-lists-updater").start()
+
+
+# ── Xbox DNS — автообновление адреса с GitHub ──
+
+XBOX_DNS_URL = (
+    "https://raw.githubusercontent.com/xxFireflyxx/FlowZap-Zapret-GUI/"
+    "main/core/xbox-dns.toml"
+)
+
+# Адрес, который был зашит дефолтом до появления автообновления. Нужен
+# как база для сравнения на самом первом запуске приложения, у которого
+# в config.toml ещё нет "_last_official" (т.е. обновление ни разу не
+# применялось) — не пустое значение, а именно то, что реально стоит у
+# всех, кто ни разу не трогал этот пресет руками.
+XBOX_DNS_ORIGINAL_DEFAULT = {
+    "ipv4_main":   "111.88.96.50",
+    "ipv4_backup": "111.88.96.51",
+    "ipv6_main":   "2a00:ab00:1233:26::50",
+    "ipv6_backup": "2a00:ab00:1233:26::51",
+}
+_XBOX_DNS_FIELDS = ("ipv4_main", "ipv4_backup", "ipv6_main", "ipv6_backup")
+
+_xbox_dns_cache: Optional[dict] = None
+_xbox_dns_cache_ts: float = 0.0
+_XBOX_DNS_CACHE_TTL = 6 * 3600  # 6 часов
+
+
+def get_xbox_dns(force: bool = False) -> Optional[dict]:
+    """Скачать актуальный адрес xbox-dns с GitHub (raw-файл, без лимитов
+    GitHub API), с in-memory кэшем на 6 часов. None — если сеть недоступна
+    или файл не читается: тогда обновление в этот раз просто не происходит,
+    это не ошибка приложения."""
+    import time, urllib.request, tomllib
+
+    global _xbox_dns_cache, _xbox_dns_cache_ts
+
+    if not force and _xbox_dns_cache is not None:
+        if time.time() - _xbox_dns_cache_ts < _XBOX_DNS_CACHE_TTL:
+            logger.debug("xbox-dns из кэша")
+            return _xbox_dns_cache
+
+    try:
+        req = urllib.request.Request(XBOX_DNS_URL, headers={"User-Agent": "FlowZap/1.0"})
+        with urllib.request.urlopen(req, timeout=10, context=_ssl_context()) as r:
+            raw = r.read()
+        data = tomllib.loads(raw.decode("utf-8"))
+        if not all(data.get(k) for k in _XBOX_DNS_FIELDS):
+            logger.warning("xbox-dns.toml на GitHub неполный, пропускаем")
+            return None
+        result = {k: data[k] for k in _XBOX_DNS_FIELDS}
+        _xbox_dns_cache = result
+        _xbox_dns_cache_ts = time.time()
+        return result
+    except Exception as e:
+        logger.warning(f"Не удалось скачать xbox-dns.toml: {e}")
+        return None
+
+
+def sync_xbox_dns(config: dict, force: bool = False) -> bool:
+    """Подставить в config адрес xbox-dns из GitHub, если пользователь
+    не менял его руками с прошлого автообновления. Возвращает True, если
+    config был изменён и его нужно сохранить на диск (config.save_config()
+    у вызывающего кода) — сама эта функция ничего не пишет на диск.
+
+    Правило: сравниваем текущий адрес в пресете "xbox-dns" с тем, что
+    приложение само подставило в прошлый раз (config["dns"]["_last_official"],
+    а до первого автообновления — с исходным дефолтом). Если он изменился —
+    значит пользователь вписал что-то своё, и мы его не трогаем.
+    """
+    new = get_xbox_dns(force=force)
+    if new is None:
+        return False
+
+    dns = config.setdefault("dns", {})
+    pairs = dns.get("pairs") or []
+    pair = next(
+        (p for p in pairs if isinstance(p, dict) and p.get("name") == "xbox-dns"),
+        None,
+    )
+    if pair is None:
+        return False
+
+    baseline = dns.get("_last_official") or XBOX_DNS_ORIGINAL_DEFAULT
+    current = {k: pair.get(k, "") for k in _XBOX_DNS_FIELDS}
+
+    if current != baseline:
+        logger.debug("xbox-dns изменён пользователем вручную, автообновление пропущено")
+        return False
+
+    if current == new:
+        return False  # уже актуально
+
+    pair["ipv4_main"] = new["ipv4_main"]
+    pair["ipv4_backup"] = new["ipv4_backup"]
+    pair["ipv6_main"] = new["ipv6_main"]
+    pair["ipv6_backup"] = new["ipv6_backup"]
+    # legacy-поля, которые читает dashboard как fallback (см. parameters.py)
+    pair["main"] = new["ipv4_main"]
+    pair["backup"] = new["ipv4_backup"]
+
+    if pairs and pairs[0] is pair:
+        # это активная пара — пересобираем плоский список servers так же,
+        # как это делает parameters.py::_build_flat_servers()
+        dns["servers"] = [new["ipv4_main"], new["ipv4_backup"]]
+
+    dns["_last_official"] = dict(new)
+    logger.info("Адрес xbox-dns обновлён автоматически")
+    return True
