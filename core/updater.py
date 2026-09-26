@@ -11,7 +11,7 @@ from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-GUI_VERSION = "0.5.2 beta 11 win"
+GUI_VERSION = "0.5.2"
 FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
 FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
 
