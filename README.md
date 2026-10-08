@@ -120,7 +120,15 @@
 
 ## Лицензия
 
-MIT License — делай что хочешь, упоминание автора приветствуется.
+Все права защищены — полные условия в файле [LICENSE](LICENSE).
+
+- ✅ Можно бесплатно скачивать FlowZap отсюда или с [GitLab](https://gitlab.com/xx_firefly_xx/flowzap), пользоваться им и делиться ссылкой
+- ✅ Можно смотреть код и изучать, как всё устроено
+- ❌ Нельзя без разрешения автора копировать код, выкладывать свои сборки и изменённые версии, зарабатывать на программе
+
+Вдохновились идеей и пишете своё? Будет приятно, если упомянете FlowZap в своём README 🙂
+
+Версии, опубликованные до смены лицензии, остаются под MIT.
 
 ---
 
@@ -231,4 +239,12 @@ Developed by [xxFireflyxx](https://github.com/xxFireflyxx)
 
 ## License
 
-MIT License — free to use, attribution appreciated.
+All rights reserved — see [LICENSE](LICENSE) for the full terms.
+
+- ✅ You may download FlowZap for free from here or from [GitLab](https://gitlab.com/xx_firefly_xx/flowzap), use it and share the link
+- ✅ You may view the code and study how it works
+- ❌ Without the author's permission you may not copy the code, publish your own builds or modified versions, or make money from the program
+
+Inspired by the idea and building your own? A mention of FlowZap in your README would be appreciated 🙂
+
+Versions published before the license change remain under the MIT License.

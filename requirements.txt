@@ -1,16 +1,13 @@
 # UI
-customtkinter==5.2.2
-Pillow==12.2.0
-
-# Системный трей
-pystray==0.19.5
+PySide6==6.11.2
 
 # Конфиг (tomllib для чтения — встроен в Python 3.11+, tomli_w нужен для записи)
 tomli_w==1.2.0
 
-# Сеть
-requests==2.33.1
+# Сеть (updater ходит через urllib; certifi даёт CA-сертификаты для SSL)
 certifi==2026.7.22
 
-# Windows API (перехват завершения сеанса, автозапуск через Планировщик заданий)
-pywin32==311
+# Только для release/publish_release.py (публикация на GitHub/GitLab) — самому
+# приложению не нужен. Сборка релиза (release.py) требует ещё PyInstaller — он тут
+# намеренно не указан, чтобы run_admin.bat не ставил его при каждом запуске.
+requests==2.33.1

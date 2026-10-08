@@ -1,0 +1,305 @@
+"""
+core/updates/releases.py
+------------------------
+Общее для всех обновлений: последний релиз с GitHub (кэш, токен, GitLab —
+запасной источник для самого FlowZap), скачивание файла релиза с проверкой
+размера и sha256 (зеркало — если GitHub недоступен) и фоновая обвязка
+download_and_install_* (run_install).
+"""
+import hashlib
+import json
+import logging
+import threading
+import time
+import urllib.error
+import urllib.request
+from typing import Callable, Optional
+
+logger = logging.getLogger(__name__)
+
+FLOWZAP_REPO      = "xxFireflyxx/FlowZap-Zapret-GUI"
+FLOWZAP_GITLAB_ID = "xx_firefly_xx%2Fflowzap"
+
+
+_ssl_ctx = None
+
+
+def ssl_context():
+    """SSL-контекст с сертификатами certifi для urlopen.
+
+    На части систем (особенно Windows 11 в изолированном окружении
+    PyInstaller) отсутствует нужное системное хранилище CA-сертификатов,
+    и urlopen падает с CERTIFICATE_VERIFY_FAILED. certifi — обязательная
+    зависимость (requirements.txt), поэтому fallback ниже — просто на
+    случай, если её всё же не окажется в окружении.
+    """
+    global _ssl_ctx
+    if _ssl_ctx is None:
+        import ssl
+        try:
+            import certifi
+            _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        except Exception as e:
+            logger.warning(f"certifi недоступен ({e}), используем системный SSL-контекст")
+            _ssl_ctx = ssl.create_default_context()
+    return _ssl_ctx
+
+
+_github_token: Optional[str] = None
+
+
+def set_github_token(token: str) -> None:
+    """Установить GitHub токен для API запросов."""
+    global _github_token
+    _github_token = token.strip() if token else None
+
+
+def github_headers() -> dict:
+    """Заголовки для GitHub API с токеном если задан."""
+    headers = {"User-Agent": "FlowZap/1.0"}
+    if _github_token:
+        headers["Authorization"] = f"token {_github_token}"
+    return headers
+
+
+# Специальное исключение для rate limit
+class RateLimitError(Exception):
+    pass
+
+
+def _verify_download(data: bytes, asset: dict, what: str) -> None:
+    """Сверить скачанный файл с данными GitHub API: размер и sha256 (поле
+    digest). Годится и для зеркал — там тот же файл того же релиза.
+    Нет данных (релиз из GitLab-fallback) — проверка пропускается.
+    Несовпадение — ValueError: повреждённый файл не ставим, тем более что
+    он запускается с правами администратора."""
+    size = asset.get("size") or 0
+    if size and len(data) != size:
+        logger.error(f"{what}: размер {len(data)} вместо {size}")
+        raise ValueError("Файл скачался не полностью — попробуйте ещё раз")
+    digest = (asset.get("digest") or "").lower()
+    if not digest.startswith("sha256:"):
+        logger.info(f"{what}: контрольной суммы в релизе нет — проверка пропущена")
+        return
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != digest[len("sha256:"):]:
+        logger.error(f"{what}: sha256 {actual} не совпадает с {digest}")
+        raise ValueError("Скачанный файл повреждён (не совпала контрольная сумма) — попробуйте ещё раз")
+    logger.info(f"{what}: sha256 совпадает")
+
+
+def _download_with_grace(
+    url: str,
+    headers: dict,
+    connect_timeout: float = 15,
+    transfer_timeout: float = 120,
+) -> bytes:
+    """
+    Качает файл по url с раздельными таймаутами:
+    - connect_timeout — сколько ждём ОТВЕТА сервера целиком (не одну попытку
+      соединения — если DNS вернул несколько адресов или сервер сначала
+      редиректит на другой хост, urlopen(timeout=X) ограничивает только
+      КАЖДУЮ такую попытку по отдельности, и они суммируются). Поэтому
+      соединение выполняется в отдельном демон-потоке: не уложились в
+      connect_timeout секунд — сразу TimeoutError, не дожидаясь, пока сокет
+      переберёт все адреса. Поток-неудачник просто тихо доживает и
+      завершается сам, ничего не блокируя.
+    - transfer_timeout — таймаут сокета в urlopen: действует на каждое
+      чтение, поэтому обрывает только реальное зависание передачи (нет новых
+      байт дольше transfer_timeout секунд), а не общий лимит на весь файл.
+    """
+    result: dict = {}
+
+    def _connect() -> None:
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            result["response"] = urllib.request.urlopen(req, timeout=transfer_timeout, context=ssl_context())
+        except Exception as e:
+            result["error"] = e
+
+    t = threading.Thread(target=_connect, daemon=True)
+    t.start()
+    t.join(connect_timeout)
+    if t.is_alive():
+        raise TimeoutError(f"Нет ответа от сервера за {connect_timeout} сек")
+    if "error" in result:
+        raise result["error"]
+
+    with result["response"] as r:
+        return r.read()
+
+
+def _fetch(url: str, timeout: float = 120) -> bytes:
+    """Скачать файл с зеркала (без токена GitHub)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "FlowZap/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_context()) as r:
+        return r.read()
+
+
+def get_from_gitlab() -> Optional[dict]:
+    """GitLab fallback - возвращает данные в GitHub-совместимом формате."""
+    try:
+        url = f"https://gitlab.com/api/v4/projects/{FLOWZAP_GITLAB_ID}/releases"
+        req = urllib.request.Request(url, headers={"User-Agent": "FlowZap/1.0"})
+        with urllib.request.urlopen(req, timeout=10, context=ssl_context()) as r:
+            releases = json.load(r)
+        if not releases:
+            return None
+        rel = releases[0]
+        assets = []
+        for link in rel.get("assets", {}).get("links", []):
+            assets.append({
+                "name": link.get("name", ""),
+                "browser_download_url": link.get("url", ""),
+                "size": 0,
+            })
+        logger.info(f"GitLab fallback: {rel.get('tag_name')}")
+        return {
+            "tag_name": rel.get("tag_name", ""),
+            "name":     rel.get("name", ""),
+            "assets":   assets,
+            "_source":  "gitlab",
+        }
+    except Exception as e:
+        logger.error(f"GitLab fallback error: {e}")
+        return None
+
+
+# Кэш релизов: repo -> (timestamp, release_dict)
+_release_cache: dict = {}
+_CACHE_TTL = 3 * 3600  # 3 часа
+
+
+def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optional[dict]:
+    """Последний релиз с GitHub (кэш на 3 часа). Для самого FlowZap при
+    любой ошибке GitHub (лимит запросов, блокировка, 404) — релиз с GitLab."""
+    if not force and repo in _release_cache:
+        ts, cached = _release_cache[repo]
+        if time.time() - ts < _CACHE_TTL:
+            logger.debug(f"Релиз из кэша: {repo}")
+            return cached
+
+    try:
+        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        req = urllib.request.Request(url, headers=github_headers())
+        with urllib.request.urlopen(req, timeout=10, context=ssl_context()) as r:
+            result = json.load(r)
+    except Exception as e:
+        if isinstance(e, urllib.error.HTTPError) and e.code == 403:
+            logger.warning(f"GitHub: лимит запросов ({repo})")
+        else:
+            logger.error(f"Ошибка проверки обновлений {repo}: {e}")
+        if repo != FLOWZAP_REPO:
+            return None
+        logger.info("Пробуем GitLab...")
+        result = get_from_gitlab()
+        if not result:
+            return None
+    _release_cache[repo] = (time.time(), result)
+    return result
+
+
+def check_release_async(
+    repo: str,
+    on_done: Callable[[Optional[dict]], None],
+) -> None:
+    """
+    Проверить последний релиз в фоновом потоке — get_latest_release() блокирующий
+    (до ~20 с с учётом GitLab-fallback). Сам создаёт поток и зовёт on_done(release | None),
+    как download_and_install_*: вызывающий UI-код только оборачивает on_done в Signal.emit.
+    """
+    def _worker() -> None:
+        on_done(get_latest_release(repo))
+
+    threading.Thread(target=_worker, daemon=True, name="release-check").start()
+
+
+def sourceforge_url(project: str, tag: str, filename: str) -> str:
+    """
+    Точная ссылка на конкретный файл конкретного релиза на SourceForge.
+    /files/latest/download НЕ годится — SourceForge отдаёт по ней первый
+    файл в списке релиза (часто это "Source code.tar.gz", а не нужный
+    exe/zip), независимо от того, какая версия реально нужна.
+    """
+    return f"https://sourceforge.net/projects/{project}/files/{tag}/{filename}/download"
+
+
+_DOWNLOAD_FAILED = ("Не удалось скачать обновление с GitHub. Резервный "
+                    "источник тоже не дал результата. Попробуйте позже.")
+
+
+def download_asset(
+    asset: dict,
+    mirror: Optional[Callable[[], tuple[str, bool]]] = None,
+    mirror_name: str = "зеркало",
+) -> bytes:
+    """Скачать файл релиза: GitHub, при неудаче — зеркало (молча, без ошибки
+    пользователю). mirror() → (url, тот же ли это файл того же релиза);
+    тот же — сверяем с размером и sha256 из GitHub, как и загрузку с GitHub."""
+    name = asset["name"]
+    try:
+        # 15 с ждём ответа, дальше таймаут шире — обрывает только зависание закачки
+        data = _download_with_grace(asset["browser_download_url"], github_headers())
+        _verify_download(data, asset, name)
+        return data
+    except Exception as e:
+        github_error = e
+        logger.warning(f"Скачивание {name} с GitHub не удалось: {e}")
+    if mirror is not None:
+        logger.info(f"Пробуем {mirror_name}...")
+        try:
+            url, same_file = mirror()
+            data = _fetch(url)
+            logger.info(f"{mirror_name}: скачано {len(data)} байт")
+            if same_file:
+                _verify_download(data, asset, f"{name} ({mirror_name})")
+            return data
+        except Exception as e:
+            logger.error(f"GitHub: {github_error}. {mirror_name}: {e}")
+    raise ValueError(_DOWNLOAD_FAILED)
+
+
+def latest_asset(repo: str, find: Callable[[dict], Optional[dict]], what: str,
+                  log: Callable[[str], None]) -> tuple[str, dict]:
+    """(тег, файл) последнего релиза; ValueError с текстом для пользователя."""
+    log("Проверяем обновления...")
+    release = get_latest_release(repo)
+    if not release:
+        raise ValueError("Не удалось получить информацию о релизе")
+    tag = release.get("tag_name", "unknown")
+    asset = find(release)
+    if not asset:
+        raise ValueError(f"{what} не найден в релизе {tag}")
+    log("Скачивается...")
+    return tag, asset
+
+
+def run_install(
+    thread_name: str,
+    error_label: str,
+    body: Callable[[Callable[[str], None]], str],
+    on_progress: Optional[Callable[[str], None]],
+    on_done: Optional[Callable[[bool, str], None]],
+) -> None:
+    """Общая обвязка download_and_install_*: body(log) в фоновом потоке,
+    возвращает текст успеха; исключение — ошибка. on_progress/on_done
+    зовутся из фонового потока — UI маршалит их через Signal."""
+
+    def _log(msg: str) -> None:
+        logger.info(msg)
+        if on_progress:
+            on_progress(msg)
+
+    def _worker() -> None:
+        try:
+            message = body(_log)
+        except Exception as exc:
+            logger.error(f"{error_label}: {exc}")
+            _log(f"✗ Ошибка: {exc}")
+            if on_done:
+                on_done(False, str(exc))
+            return
+        if on_done:
+            on_done(True, message)
+
+    threading.Thread(target=_worker, daemon=True, name=thread_name).start()

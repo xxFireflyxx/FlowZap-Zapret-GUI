@@ -1,6 +1,6 @@
 """
-core/bat_parser.py
-------------------
+core/zapret/presets.py
+----------------------
 Читает .bat файлы zapret и извлекает аргументы для winws.exe.
 
 Типичный .bat выглядит так:
