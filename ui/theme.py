@@ -443,6 +443,7 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     QLineEdit:hover, QComboBox:hover {{ border-color: {p.border_strong}; }}
     QLineEdit:focus, QComboBox:focus {{ border-color: {p.accent}; }}
     QLineEdit[readOnly="true"] {{ color: {p.text_secondary}; }}
+    QLineEdit[error="true"] {{ border: 1px solid {p.error}; }}
     QComboBox::drop-down {{ border: none; width: 30px; }}
     QComboBox::down-arrow {{ image: none; width: 0; height: 0; }}
     QComboBox QAbstractItemView {{
