@@ -19,13 +19,14 @@ tgStatusChanged).
 import logging
 import subprocess
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLineEdit,
+    QToolTip,
     QMessageBox,
     QVBoxLayout,
     QWidget,
@@ -33,7 +34,7 @@ from PySide6.QtWidgets import (
 
 from core.tgproxy import settings as tg_settings
 from ui.tabs.dashboard import TG_DOT_COLORS
-from ui.widgets.base import AutoHideLabel, button, divider, label, set_tone
+from ui.widgets.base import AutoHideLabel, button, divider, label, restyle, set_tone
 from ui.widgets.controls import StatusDot, Switch
 from ui.widgets.layout import SettingRow
 
@@ -326,6 +327,24 @@ class TgProxyCard(QFrame):
         self._status.setText(text)
         set_tone(self._status, tone)
 
+    def _field_error(self, edit: QLineEdit, text: str) -> None:
+        """Ошибка — у самого поля: красная рамка и подсказка под ним. Строка
+        статуса внизу карточки остаётся, но до неё часто не долистывают."""
+        edit.setProperty("error", True)
+        restyle(edit)
+        QToolTip.showText(edit.mapToGlobal(QPoint(0, edit.height() + 2)), text, edit)
+        self._set_status(text, "error")
+        if not edit.property("_error_hooked"):
+            edit.setProperty("_error_hooked", True)
+            edit.textEdited.connect(lambda _t, e=edit: self._clear_field_error(e))
+
+    @staticmethod
+    def _clear_field_error(edit: QLineEdit) -> None:
+        if edit.property("error"):
+            edit.setProperty("error", False)
+            restyle(edit)
+            QToolTip.hideText()
+
     def _apply_port(self) -> None:
         text = self._port.text().strip()
         try:
@@ -333,7 +352,7 @@ class TgProxyCard(QFrame):
         except ValueError:
             port = 0
         if not tg_settings.valid_port(port):
-            self._set_status("Порт — число от 1 до 65535", "error")
+            self._field_error(self._port, "Порт — число от 1 до 65535")
             self._port.setText(str(self._tg["port"]))
             return
         if port == self._tg["port"]:
@@ -373,7 +392,7 @@ class TgProxyCard(QFrame):
         try:
             domains = tg_settings.parse_domains(edit.text())
         except ValueError as e:
-            self._set_status(str(e), "error")
+            self._field_error(edit, str(e))
             return
         edit.setText(", ".join(domains))
         edit.setCursorPosition(0)
@@ -386,7 +405,7 @@ class TgProxyCard(QFrame):
         try:
             entries = tg_settings.parse_dc_ip(self._dc.text())
         except ValueError as e:
-            self._set_status(str(e), "error")
+            self._field_error(self._dc, str(e))
             return
         self._dc.setText(", ".join(entries))
         self._dc.setCursorPosition(0)
@@ -401,7 +420,7 @@ class TgProxyCard(QFrame):
         except ValueError:
             value = None
         if value is None or not low <= value <= high:
-            self._set_status(f"Нужно число от {low} до {high}", "error")
+            self._field_error(edit, f"Нужно число от {low} до {high}")
             edit.setText(str(self._tg[key]))
             return
         if value == self._tg[key]:
