@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from ui.theme import DEFAULT_THEME, theme
 from ui.widgets.animation import IntroSplash, cascade_hide, cascade_in, page_steps
-from ui.widgets.base import Glyph, label
+from ui.widgets.base import Glyph, label, set_tone
 from ui.widgets.navigation import TabBar
 from ui.widgets.aurora import AuroraBackground
 from core.updates.app import find_exe_asset
@@ -317,20 +317,41 @@ class MainWindow(QMainWindow):
         right_l.setContentsMargins(0, 0, 0, 0)
         right_l.setSpacing(6)
         right_l.addStretch(1)
-        admin = _is_admin()
+        self._mode_icon = label("", role="glyph")
+        self._mode_text = label("", role="hint")
+        right_l.addWidget(self._mode_icon)
+        right_l.addWidget(self._mode_text)
+        self._mode_box = right
+        layout.addWidget(right)
+        # Пока службы нет, проверяем раз в 3 с: её ставят по первому включению
+        # обхода или DNS, и надпись должна смениться сразу, а не после перезапуска.
+        self._mode_timer = QTimer(self)
+        self._mode_timer.setInterval(3000)
+        self._mode_timer.timeout.connect(self._refresh_mode)
+        self._refresh_mode()
+        return bar
+
+    def _refresh_mode(self) -> None:
+        """Надпись в правом углу шапки: как FlowZap получает права для обхода и DNS."""
         from core.service import client as service_client
+        admin = _is_admin()
         via_service = not admin and service_client.service_installed()
         ok = admin or via_service
-        right_l.addWidget(label(Glyph.SHIELD if ok else Glyph.WARNING, role="glyph",
-                                tone="muted" if ok else "warning"))
-        text = "Администратор" if admin else ("Фоновая служба" if via_service else "Без прав администратора")
-        right_l.addWidget(label(text, role="hint", tone=None if ok else "warning"))
+        self._mode_icon.setText(Glyph.SHIELD if ok else Glyph.WARNING)
+        set_tone(self._mode_icon, "muted" if ok else "warning")
+        self._mode_text.setText("Администратор" if admin else ("Фоновая служба" if via_service
+                                                                else "Без прав администратора"))
+        set_tone(self._mode_text, None if ok else "warning")
         if via_service:
-            right.setToolTip("Обход и DNS работают через фоновую службу FlowZap — права администратора не нужны.")
+            self._mode_box.setToolTip("Обход и DNS работают через фоновую службу FlowZap — права администратора не нужны.")
         elif not admin:
-            right.setToolTip("Нужна фоновая служба FlowZap: «Настройки» → «Фоновая служба» → «Установить».")
-        layout.addWidget(right)
-        return bar
+            self._mode_box.setToolTip("Нужна фоновая служба FlowZap: «Настройки» → «Фоновая служба» → «Установить».")
+        else:
+            self._mode_box.setToolTip("")
+        if ok:
+            self._mode_timer.stop()
+        elif not self._mode_timer.isActive():
+            self._mode_timer.start()
 
     def show_tab(self, index: int):
         changed = index != self.stack.currentIndex()
