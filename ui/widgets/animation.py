@@ -1,20 +1,142 @@
 """
 ui/widgets/animation.py
 -----------------------
-Анимации интерфейса (выключаются в «Настройках»): волна по клику, каскад
-«блоки всплывают» при открытии вкладки, встряска при ошибке, полоса проверки.
+Анимации интерфейса (выключаются в «Настройках»): заставка при запуске,
+волна по клику, каскад «блоки всплывают» при открытии вкладки, встряска при
+ошибке, полоса проверки.
 """
 
 import math
 import time
 
 from PySide6.QtCore import (
-    QEasingCurve, QPoint, QPointF, QRectF, QSequentialAnimationGroup, Qt, QTimer, QVariantAnimation,
+    QEasingCurve, QEvent, QPoint, QPointF, QRectF, QSequentialAnimationGroup, QSize, Qt, QTimer,
+    QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
+from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QFrame, QGraphicsEffect, QWidget
 
 from ui.theme import theme
+
+
+class IntroSplash(QWidget):
+    """Заставка при запуске: значок и «FlowZap» по центру окна проявляются,
+    держатся и растворяются, чуть поднимаясь. on_fade_out зовётся в начале
+    растворения — блоки страницы начинают всплывать, пока логотип тает.
+    Прозрачна для мыши; закрывает собой parent и следит за его размером."""
+
+    # Пауза — сначала видно само окно с сиянием, потом рождается логотип
+    DELAY_MS, FADE_IN_MS, HOLD_MS, FADE_OUT_MS = 250, 1200, 900, 650
+    SCALE_FROM = 0.90
+    ICON = 84
+    RISE = 16          # на сколько px логотип поднимается, растворяясь
+
+    def __init__(self, parent: QWidget, icon: QIcon, on_fade_out) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._icon = icon
+        self._pix = None            # картинка логотипа (_logo) — один раз
+        self._on_fade_out = on_fade_out
+        self._opacity = 0.0
+        self._scale = self.SCALE_FROM
+        self._lift = 0.0
+        parent.installEventFilter(self)
+        self.setGeometry(parent.rect())
+
+        fade_in = QVariantAnimation(self)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.setDuration(self.FADE_IN_MS)
+        fade_in.valueChanged.connect(self._step_in)      # линейно; кривые — в _step_in
+        self._ease_opacity = QEasingCurve(QEasingCurve.InOutSine)
+        self._ease_scale = QEasingCurve(QEasingCurve.OutCubic)
+        fade_out = QVariantAnimation(self)
+        fade_out.setStartValue(0.0)
+        fade_out.setEndValue(1.0)
+        fade_out.setDuration(self.FADE_OUT_MS)
+        fade_out.setEasingCurve(QEasingCurve.InOutCubic)
+        fade_out.valueChanged.connect(self._step_out)
+        self._group = QSequentialAnimationGroup(self)
+        self._group.addPause(self.DELAY_MS)
+        self._group.addAnimation(fade_in)
+        self._group.addPause(self.HOLD_MS)
+        self._group.addAnimation(fade_out)
+        self._group.currentAnimationChanged.connect(
+            lambda a: a is fade_out and self._on_fade_out and self._on_fade_out())
+        self._group.finished.connect(self._finish)
+
+    def start(self) -> None:
+        self.raise_()
+        self.show()
+        self._group.start()
+
+    def _step_in(self, t) -> None:
+        """Прозрачность — мягко с обоих концов (логотип не «вспыхивает» в
+        первые доли секунды), приближение — быстрее в начале и плавно в конце."""
+        t = float(t)
+        self._opacity = self._ease_opacity.valueForProgress(t)
+        self._scale = self.SCALE_FROM + (1.0 - self.SCALE_FROM) * self._ease_scale.valueForProgress(t)
+        self.update()
+
+    def _step_out(self, t) -> None:
+        t = float(t)
+        self._opacity, self._lift = 1.0 - t, self.RISE * t
+        self.update()
+
+    def _finish(self) -> None:
+        self.parentWidget().removeEventFilter(self)
+        self.hide()
+        self.deleteLater()
+
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Resize:
+            self.setGeometry(obj.rect())
+        return False
+
+    GAP, TEXT_H, TEXT_W = 14, 40, 220
+    SUPERSAMPLE = 2    # картинка логотипа с запасом чёткости — на экране она всегда уменьшается
+
+    def _logo(self) -> QPixmap:
+        """Значок и надпись — одной картинкой, один раз. Все кадры масштабируют
+        эту картинку одинаково: если рисовать текст на каждом кадре, Qt на
+        масштабе ровно 100 % переключается на текст с привязкой к пикселям, и
+        в последний момент приближения надпись дёргается (а до этого кегль
+        округлялся до целых пикселей — 28 → 29 → 30)."""
+        k = self.devicePixelRatioF() * self.SUPERSAMPLE
+        if self._pix is not None and self._pix.devicePixelRatio() == k:
+            return self._pix
+        w, h = self.TEXT_W, self.ICON + self.GAP + self.TEXT_H
+        pix = QPixmap(round(w * k), round(h * k))
+        pix.setDevicePixelRatio(k)
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        icon = self._icon.pixmap(QSize(self.ICON, self.ICON), k)
+        p.drawPixmap(QRectF((w - self.ICON) / 2, 0, self.ICON, self.ICON), icon, QRectF(icon.rect()))
+        title = QFont(theme.typography.family_ui)
+        title.setPixelSize(30)
+        title.setWeight(QFont.DemiBold)
+        p.setFont(title)
+        p.setPen(QColor(theme.palette.text_primary))
+        p.drawText(QRectF(0, self.ICON + self.GAP, w, self.TEXT_H), Qt.AlignHCenter | Qt.AlignTop, "FlowZap")
+        p.end()
+        self._pix = pix
+        return pix
+
+    def paintEvent(self, _event) -> None:
+        if self._opacity <= 0.0:
+            return
+        logo = self._logo()
+        w, h = self.TEXT_W * self._scale, (self.ICON + self.GAP + self.TEXT_H) * self._scale
+        # Центр значка — на 30 px выше середины окна; группа приближается вокруг своего центра
+        icon_cy = self.height() / 2 - 30 - self._lift
+        group_cy = icon_cy - self.ICON / 2 + (self.ICON + self.GAP + self.TEXT_H) / 2
+        p = QPainter(self)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.setOpacity(self._opacity)
+        p.drawPixmap(QRectF(self.width() / 2 - w / 2, group_cy - h / 2, w, h), logo, QRectF(logo.rect()))
+        p.end()
 
 
 class RippleOverlay(QWidget):
@@ -137,6 +259,23 @@ def page_steps(page: QWidget) -> list[list[QWidget]]:
             columns[key] = [w]
             steps.append(columns[key])
     return steps
+
+
+def cascade_hide(steps: list[list[QWidget]]) -> None:
+    """Спрятать блоки до первой отрисовки окна — иначе при запуске они на миг
+    видны на местах, а потом пропадают и «всплывают». Ступени тут нужны только
+    как список блоков: раскладка в showEvent ещё не окончательная, поэтому
+    сам каскад (cascade_in) считает их позже."""
+    if not theme.animations:
+        return
+    for w in (w for step in steps for w in step):
+        old = getattr(w, "_fz_rise", None)
+        if old is not None:
+            old.stop()
+            w._fz_rise = None
+        effect = _RiseEffect(w)
+        w._fz_rise_effect = effect          # без ссылки Python-обёртку соберёт GC
+        w.setGraphicsEffect(effect)
 
 
 def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: int = 90,

@@ -119,6 +119,22 @@ def _try_wake_existing_instance() -> bool:
     return reply == b"OK"
 
 
+def _just_updated_from_old_version() -> bool:
+    """Нас только что поставил скрипт обновления FlowZap до 1.0 (.bat): он
+    запускает новую версию сразу, не дожидаясь, пока старая закроется (она
+    выходит через ~2 с после «готово»). Будить старую нельзя — она вот-вот
+    закроется, и не останется ни одной. Признак — свежая запись «Update
+    applied» в logs/update.log: .bat пишет её прямо перед запуском."""
+    log = ROOT / "logs" / "update.log"
+    try:
+        if time.time() - log.stat().st_mtime > 60:
+            return False
+        lines = log.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+        return bool(lines) and "Update applied" in lines[-1]
+    except OSError:
+        return False
+
+
 def _acquire_single_instance() -> "QTcpServer | None":
     """None — этот процесс должен завершиться (либо разбудил уже
     запущенный экземпляр, либо порт занят кем-то ещё и достучаться не
@@ -131,7 +147,7 @@ def _acquire_single_instance() -> "QTcpServer | None":
     server = QTcpServer()
     if server.listen(QHostAddress.LocalHost, SINGLE_INSTANCE_PORT):
         return server
-    if "--relaunched" in sys.argv:
+    if "--relaunched" in sys.argv or _just_updated_from_old_version():
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             time.sleep(0.25)

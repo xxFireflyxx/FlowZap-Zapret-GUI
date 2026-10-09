@@ -3,7 +3,7 @@ import logging
 import sys
 import threading
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.theme import theme
-from ui.widgets.animation import cascade_in, page_steps
+from ui.widgets.animation import IntroSplash, cascade_hide, cascade_in, page_steps
 from ui.widgets.base import Glyph, label
 from ui.widgets.navigation import TabBar
 from ui.widgets.aurora import AuroraBackground
@@ -89,6 +89,12 @@ class MainWindow(QMainWindow):
         self.apply_theme(ui_cfg.get("theme", "earthy"))
         self.aurora.set_enabled(theme.aurora)
         self._build_tray()
+
+        # Окно появляется прозрачным и проявляется после первого кадра Qt
+        # (_reveal): иначе Windows ~0,25 с показывает белое окно, пока Qt
+        # готовит первую отрисовку.
+        self.setWindowOpacity(0.0)
+        self.aurora.installEventFilter(self)
 
         # Реальный выход (tray «Выход», закрытие без трея, QApplication.quit()) —
         # сбросить DNS, остановить zapret и TG Proxy. Сворачивание в трей сюда не попадает.
@@ -166,10 +172,46 @@ class MainWindow(QMainWindow):
         if not getattr(self, "_shown_once", False):
             self._shown_once = True
             if theme.animations:
-                # Приветствие при запуске — медленнее и мягче, чем при смене вкладок
-                QTimer.singleShot(60, lambda: cascade_in(
-                    page_steps(self.stack.currentWidget()),
-                    first_delay_ms=200, step_ms=280, duration_ms=1900, lift=42))
+                # Шапку и блоки прячем сразу, до первого кадра. Приветствие:
+                # заставка с логотипом по центру окна (только сияние вокруг),
+                # а пока она тает — проявляется шапка и всплывают блоки
+                # (медленнее и мягче, чем при смене вкладок). Ступени каскада
+                # считаем тогда же: к этому времени раскладка окончательная.
+                cascade_hide([[self._topbar]] + page_steps(self.stack.currentWidget()))
+                self._intro = IntroSplash(
+                    self.aurora, QIcon(str(_asset_path(self.root, "icon.ico"))),
+                    on_fade_out=self._intro_fade_out)
+                # Стартует в _reveal — когда окно станет видно
+
+    def _intro_fade_out(self) -> None:
+        """Заставка тает — собирается интерфейс: шапка, затем блоки страницы."""
+        cascade_in([[self._topbar]], first_delay_ms=0, duration_ms=1400, lift=10)
+        cascade_in(page_steps(self.stack.currentWidget()),
+                   first_delay_ms=280, step_ms=330, duration_ms=2300, lift=42)
+
+    def eventFilter(self, obj, event) -> bool:
+        if obj is self.aurora and event.type() == QEvent.Paint and self.windowOpacity() < 1.0                 and not getattr(self, "_revealing", False):
+            self._revealing = True
+            self.aurora.removeEventFilter(self)
+            QTimer.singleShot(0, self._reveal)      # после того, как этот кадр дорисуется
+        return super().eventFilter(obj, event)
+
+    def _reveal(self) -> None:
+        """Первый кадр готов — проявить окно и начать приветствие."""
+        intro = getattr(self, "_intro", None)
+        if intro is not None:
+            intro.start()
+        if not theme.animations:
+            self.setWindowOpacity(1.0)
+            return
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(160)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.valueChanged.connect(lambda v: self.setWindowOpacity(float(v)))
+        self._reveal_anim = anim
+        anim.start()
 
     def _apply_title_bar(self) -> None:
         """Тёмная системная рамка окна в тёмных темах (Windows 10 1809+ / 11).
@@ -192,7 +234,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        layout.addWidget(self._build_topbar())
+        self._topbar = self._build_topbar()
+        layout.addWidget(self._topbar)
 
         self.stack = QStackedWidget()
 
