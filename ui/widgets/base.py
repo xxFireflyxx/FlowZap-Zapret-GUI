@@ -10,7 +10,7 @@ role / tone / variant (см. ui/theme.build_stylesheet) — смена темы 
 перекрашивает всё без пересоздания окна.
 """
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QEvent, QRect, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QIcon
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QWidget
 
@@ -63,15 +63,54 @@ def set_tone(label: QWidget, tone: str | None) -> None:
     restyle(label)
 
 
+class WrapLabel(QLabel):
+    """Надпись с переносом строк, которая не обрезает последнюю строку.
+
+    Layout считает высоту такой надписи по её sizeHint (ширина «как в одну
+    строку»), а не по реальной ширине — в узкой колонке (например, в
+    SettingRow) строк выходит больше, и нижняя обрезалась. Здесь минимальная
+    высота подгоняется под настоящую ширину при каждом изменении размера и
+    шрифта (QSS по role меняет его уже после первой раскладки)."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.setWordWrap(True)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+
+    def _fit_height(self) -> None:
+        # Не heightForWidth(): у QLabel он даёт лишнюю строку (460 px — 4
+        # строки вместо 3), и под текстом оставалась пустота
+        m = self.contentsMargins()
+        width = self.width() - m.left() - m.right() - 2 * self.margin()
+        if width <= 0:
+            return
+        rect = self.fontMetrics().boundingRect(
+            QRect(0, 0, width, 100000), int(Qt.TextWordWrap | self.alignment()), self.text())
+        h = rect.height() + m.top() + m.bottom() + 2 * self.margin()
+        if self.minimumHeight() != h:
+            self.setMinimumHeight(h)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_height()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self._fit_height()
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        self._fit_height()
+
+
 def label(text: str = "", role: str | None = None, tone: str | None = None,
           wrap: bool = False) -> QLabel:
-    lbl = QLabel(text)
+    lbl = WrapLabel(text) if wrap else QLabel(text)
     if role:
         lbl.setProperty("role", role)
     if tone:
         lbl.setProperty("tone", tone)
-    if wrap:
-        lbl.setWordWrap(True)
     return lbl
 
 

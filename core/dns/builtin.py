@@ -29,14 +29,16 @@ _REPO_FILE = "core/dns/builtin-dns.toml"
 
 # Список этой версии FlowZap. Меняя его, поднимайте BUILTIN_DNS_VERSION
 # (и version в builtin-dns.toml рядом — не меньше этого номера).
-BUILTIN_DNS_VERSION = 1
+# Порядок важен только для нового пользователя: первая пара станет активной.
+# У остальных порядок их списка сохраняется — выбранный сервер не сменится.
+BUILTIN_DNS_VERSION = 2
 BUILTIN_DNS = [
-    {"id": "xbox", "name": "xbox-dns",
-     "ipv4_main": "111.88.96.54", "ipv4_backup": "111.88.96.55",
-     "ipv6_main": "2a00:ab00:1233:26::50", "ipv6_backup": "2a00:ab00:1233:26::51"},
     {"id": "by", "name": "Беларусский",
      "ipv4_main": "143.20.64.55", "ipv4_backup": "91.108.243.78",
      "ipv6_main": "", "ipv6_backup": ""},
+    {"id": "xbox", "name": "xbox-dns",
+     "ipv4_main": "111.88.96.54", "ipv4_backup": "111.88.96.55",
+     "ipv6_main": "2a00:ab00:1233:26::50", "ipv6_backup": "2a00:ab00:1233:26::51"},
     {"id": "reserve", "name": "Резерв",
      "ipv4_main": "159.94.200.33", "ipv4_backup": "193.233.112.67",
      "ipv6_main": "", "ipv6_backup": ""},

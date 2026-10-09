@@ -16,15 +16,17 @@ exe автора относятся к его окну (язык, тема, ав
 tgStatusChanged).
 """
 
+import io
 import logging
 import subprocess
 
 from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QIntValidator
+from PySide6.QtGui import QIntValidator, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QToolTip,
     QMessageBox,
@@ -37,6 +39,7 @@ from ui.tabs.dashboard import TG_DOT_COLORS
 from ui.widgets.base import AutoHideLabel, button, divider, label, restyle, set_tone
 from ui.widgets.controls import StatusDot, Switch
 from ui.widgets.layout import SettingRow
+from ui.widgets.popup import make_popup, show_popup_below
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +59,20 @@ def _line_edit(width: int, placeholder: str = "", validator=None) -> QLineEdit:
 
 def _mask(secret: str) -> str:
     return f"{secret[:4]}••••••••{secret[-4:]}" if len(secret) >= 8 else "—"
+
+
+def _qr_pixmap(text: str, size: int, dpr: float) -> QPixmap:
+    """QR-код примерно size×size логических пикселей, чёткий на HiDPI."""
+    import segno
+    qr = segno.make(text, error="m")
+    modules = qr.symbol_size(scale=1, border=0)[0]
+    scale = max(2, round(size * dpr / modules))
+    buf = io.BytesIO()
+    qr.save(buf, kind="png", scale=scale, border=0, dark="#111111", light="#ffffff")
+    pixmap = QPixmap()
+    pixmap.loadFromData(buf.getvalue(), "PNG")
+    pixmap.setDevicePixelRatio(dpr)
+    return pixmap
 
 
 class TgProxyCard(QFrame):
@@ -95,10 +112,6 @@ class TgProxyCard(QFrame):
         titles.addWidget(label("Настройки применяются сразу — работающий прокси перезапустится сам",
                                role="muted", wrap=True))
         head.addLayout(titles, stretch=1)
-        btn_log = button("Открыть лог", variant="ghost")
-        btn_log.setToolTip("logs/tgproxy.log — что делает прокси")
-        btn_log.clicked.connect(self._open_log)
-        head.addWidget(btn_log, alignment=Qt.AlignTop)
         outer.addLayout(head)
 
         # Состояние Telegram и действия
@@ -112,7 +125,16 @@ class TgProxyCard(QFrame):
         texts.addWidget(self._state)
         self._detail = label("", role="hint", wrap=True)
         texts.addWidget(self._detail)
+        # При ошибке прокси — ссылка на лог прямо под причиной
+        self._btn_log_error = button("Открыть лог →", variant="link")
+        self._btn_log_error.clicked.connect(self._open_log)
+        self._btn_log_error.hide()
+        texts.addWidget(self._btn_log_error, alignment=Qt.AlignLeft)
         status.addLayout(texts, stretch=1)
+        self._btn_qr = button("QR-код", variant="ghost")
+        self._btn_qr.setToolTip("Отсканируйте камерой телефона — Telegram предложит подключить прокси")
+        self._btn_qr.clicked.connect(self._show_qr)
+        status.addWidget(self._btn_qr, alignment=Qt.AlignVCenter)
         self._btn_copy = button("Скопировать ссылку", variant="ghost")
         self._btn_copy.clicked.connect(self._copy_link)
         status.addWidget(self._btn_copy, alignment=Qt.AlignVCenter)
@@ -176,7 +198,7 @@ class TgProxyCard(QFrame):
         col.addWidget(SettingRow(
             "Прокси для телефона",
             "Телефон в той же Wi-Fi сети сможет пользоваться прокси этого компьютера: "
-            "нажмите «Скопировать ссылку» и откройте её на телефоне. Windows может "
+            "нажмите «QR-код» вверху и отсканируйте его камерой телефона. Windows может "
             "спросить разрешение — разрешите для частных сетей",
             self._sw_lan))
         col.addWidget(divider())
@@ -269,7 +291,16 @@ class TgProxyCard(QFrame):
 
         self._sw_verbose = Switch()
         self._sw_verbose.clicked.connect(lambda: self._apply_flag("verbose", self._sw_verbose))
-        body.addWidget(SettingRow("Подробный лог", "Для поиска неполадок", self._sw_verbose))
+        log_box = QWidget()
+        log_row = QHBoxLayout(log_box)
+        log_row.setContentsMargins(0, 0, 0, 0)
+        log_row.setSpacing(12)
+        btn_log = button("Открыть лог")
+        btn_log.setToolTip("logs/tgproxy.log — что делает прокси, почему не подключается")
+        btn_log.clicked.connect(self._open_log)
+        log_row.addWidget(btn_log, alignment=Qt.AlignVCenter)
+        log_row.addWidget(self._sw_verbose, alignment=Qt.AlignVCenter)
+        body.addWidget(SettingRow("Подробный лог", "Для поиска неполадок", log_box))
         body.addWidget(divider())
 
         btn_reset = button("Вернуть по умолчанию", variant="ghost")
@@ -295,6 +326,7 @@ class TgProxyCard(QFrame):
         self._port.setText(str(tg["port"]))
         self._secret.setText(_mask(tg["secret"]))
         self._sw_lan.setChecked(tg["lan"])
+        self._btn_qr.setVisible(tg["lan"])
         self._sw_launch.setChecked(tg["launch_telegram"])
         self._sw_cf.setChecked(tg["cfproxy"])
         self._cf_domains.setText(", ".join(tg["cfproxy_domains"]))
@@ -373,7 +405,8 @@ class TgProxyCard(QFrame):
 
     def _apply_lan(self) -> None:
         self._tg["lan"] = self._sw_lan.isChecked()
-        self._saved("✓ Прокси для телефона включён — нажмите «Скопировать ссылку» и откройте её на телефоне"
+        self._btn_qr.setVisible(self._tg["lan"])
+        self._saved("✓ Прокси для телефона включён — нажмите «QR-код» и отсканируйте его телефоном"
                     if self._tg["lan"] else "✓ Прокси для телефона выключен")
 
     def _apply_launch(self) -> None:
@@ -441,6 +474,7 @@ class TgProxyCard(QFrame):
         self._state.setText(text)
         self._detail.setText(detail)
         set_tone(self._detail, tone)
+        self._btn_log_error.setVisible(tone == "error")
 
     def _copy_link(self) -> None:
         QApplication.clipboard().setText(self._ctl.tg_manager.share_link())
@@ -448,6 +482,33 @@ class TgProxyCard(QFrame):
             self._set_status("✓ Ссылка скопирована — откройте её на телефоне в той же сети", "success")
         else:
             self._set_status("✓ Ссылка скопирована — она для Telegram на этом компьютере", "success")
+
+    def _show_qr(self) -> None:
+        popup, layout = make_popup(self._btn_qr)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(8)
+        link = self._ctl.tg_manager.phone_link()
+        if not link:
+            text = label("Компьютер не подключён к сети — QR-код не построить. "
+                         "Подключитесь к Wi-Fi или по кабелю и попробуйте снова",
+                         role="muted", wrap=True)
+            text.setFixedWidth(260)
+            layout.addWidget(text)
+            show_popup_below(popup, self._btn_qr)
+            return
+        layout.addWidget(label("Отсканируйте камерой телефона", role="strong"))
+        code = QLabel()
+        code.setPixmap(_qr_pixmap(link, 220, self.devicePixelRatioF()))
+        # Всегда тёмное на белом: на тёмной теме инвертированный код читают не все камеры
+        code.setStyleSheet("background: #ffffff; border-radius: 10px; padding: 10px;")
+        layout.addWidget(code, alignment=Qt.AlignHCenter)
+        hints = ["Телефон должен быть в той же Wi-Fi сети, что и компьютер"]
+        if not self._ctl.tg_proxy_running:
+            hints.append("Прокси сейчас выключен — включите его на главной")
+        hint = label(". ".join(hints), role="hint", wrap=True)
+        hint.setFixedWidth(240)
+        layout.addWidget(hint, alignment=Qt.AlignHCenter)
+        show_popup_below(popup, self._btn_qr)
 
     def _open_log(self) -> None:
         path = self._ctl.tg_manager.log_file
