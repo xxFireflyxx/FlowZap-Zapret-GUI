@@ -198,6 +198,7 @@ THEMES: Dict[str, Palette] = {
         success="#2f8f6a",      warning="#b07840",
         error="#a0403a",
         aurora=("#2f8f6a", "#e3a1a1", "#c9b8e8"),     # изумруд, пыльная роза, лаванда
+        aurora_alpha=0.65,                             # пастель на кремовом еле видна при обычных 0.5
     ),
     "peach": Palette(
         is_dark=False,
