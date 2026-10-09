@@ -18,6 +18,7 @@ tgproxy/) — migrate_legacy() его останавливает и удаляе
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -71,6 +72,67 @@ def _last_log_line(log_file: Path) -> str:
         if "ERROR" in line or "Error" in line or "error" in line:
             return line.strip()
     return lines[-1].strip() if lines else ""
+
+
+_CLIENT_LINE = re.compile(r"\[(?P<host>[0-9a-fA-F.:]+):\d+\]\s+(?P<msg>.*)")
+REJECT_WINDOW_SEC = 20     # отказ «свежий», пока с него прошло меньше
+
+
+class _RejectWatch:
+    """Кому прокси отказывает. Таблица TCP показывает только, что клиент
+    открыл соединение, а не что его пустили: Telegram со старым секретом
+    подключается каждые несколько секунд, сервер пишет в лог «bad handshake»,
+    а FlowZap считал Telegram подключённым (2026-10-09 — часами).
+    Дочитывает новые строки tgproxy.log; для каждого адреса помнит время
+    последнего отказа и последнего нормального соединения."""
+
+    def __init__(self, log_file: Path) -> None:
+        self._log_file = log_file
+        self._offset = 0
+        self._tail = b""
+        self._bad: dict[str, float] = {}
+        self._good: dict[str, float] = {}
+
+    def reset(self) -> None:
+        """Перед запуском сервера: прошлые запуски не считаем."""
+        try:
+            self._offset = self._log_file.stat().st_size
+        except OSError:
+            self._offset = 0
+        self._tail = b""
+        self._bad.clear()
+        self._good.clear()
+
+    def _read(self) -> None:
+        try:
+            size = self._log_file.stat().st_size
+            if size < self._offset:          # лог начали заново
+                self._offset, self._tail = 0, b""
+            if size == self._offset:
+                return
+            with open(self._log_file, "rb") as f:
+                f.seek(self._offset)
+                data = f.read(size - self._offset)
+        except OSError:
+            return
+        self._offset += len(data)
+        *lines, self._tail = (self._tail + data).split(b"\n")
+        now = time.monotonic()
+        for raw in lines:
+            m = _CLIENT_LINE.search(raw.decode("utf-8", errors="replace"))
+            if not m:
+                continue
+            if "bad handshake" in m["msg"]:
+                self._bad[m["host"]] = now
+            elif "handshake" not in m["msg"]:    # «timeout during handshake» — ни то ни другое
+                self._good[m["host"]] = now
+
+    def rejected(self) -> set[str]:
+        """Адреса, которым прокси недавно отказал и с тех пор ни разу не пустил."""
+        self._read()
+        now = time.monotonic()
+        return {host for host, t in self._bad.items()
+                if now - t < REJECT_WINDOW_SEC and self._good.get(host, 0) < t}
 
 
 def _same_path(a: str, b: Path) -> bool:
@@ -130,6 +192,7 @@ class TgProxyManager:
     def __init__(self, app_root: Path, config: dict) -> None:
         self._dir = app_root / PROXY_DIR_NAME
         self._log_file = app_root / "logs" / "tgproxy.log"
+        self._rejects = _RejectWatch(self._log_file)
         self._config = config
         tg_settings.ensure_config(config)
         self._proc: Optional[subprocess.Popen] = None
@@ -215,6 +278,7 @@ class TgProxyManager:
                 return (f"Порт {port} занят ({who}). Закройте её или смените порт "
                         "в «Параметрах»")
 
+            self._rejects.reset()
             try:
                 self._proc = subprocess.Popen(
                     serve_command(src_dir(self._dir), self._log_file, args),
@@ -317,10 +381,11 @@ class TgProxyManager:
         known = TELEGRAM_APPS | ({self.settings.get("client", "").lower()} - {""})
         return next((pid for pid, name in names.items() if name.lower() in known), None)
 
-    def poll_clients(self) -> tuple[bool, list[str], bool, str]:
+    def poll_clients(self) -> tuple[bool, list[str], bool, str, set[str]]:
         """(жив ли сервер; exe клиентов, подключённых к нему — "" для
         соединений с других устройств; запущен ли на компьютере Telegram;
-        путь к его exe или ""). Telegram смотрим и при выключенном прокси —
+        путь к его exe или ""; адреса, которым сервер отказывает — неверный
+        секрет, см. _RejectWatch). Telegram смотрим и при выключенном прокси —
         точка на плитке показывает, идёт ли он мимо прокси. Синхронный,
         миллисекунды."""
         names = winproc.process_names()
@@ -330,12 +395,13 @@ class TgProxyManager:
 
         server_pid, port = self._server_pid, self._port
         if server_pid is None or port is None or not self.is_running:
-            return False, [], app_running, app_path
+            return False, [], app_running, app_path, set()
+        rejected = self._rejects.rejected()
         try:
             conns = tcp.connections()
         except OSError as e:
             logger.debug(f"Таблица соединений недоступна: {e}")
-            return True, [], app_running, app_path
+            return True, [], app_running, app_path, rejected
         # Соединение видно дважды: со стороны сервера (наш порт) и со стороны
         # клиента — по его адресу находим, чей это процесс
         owners = {c.local: c.pid for c in conns if c.state == tcp.ESTABLISHED}
@@ -344,9 +410,9 @@ class TgProxyManager:
             if c.state == tcp.ESTABLISHED and c.pid == server_pid and c.local[1] == port:
                 client_pid = owners.get(c.remote)
                 clients.append(names.get(client_pid, "") if client_pid is not None else "")
-        return True, clients, app_running, app_path
+        return True, clients, app_running, app_path, rejected
 
-    def poll_async(self, on_done: Callable[[bool, list[str], bool, str], None]) -> None:
+    def poll_async(self, on_done: Callable[[bool, list[str], bool, str, set[str]], None]) -> None:
         threading.Thread(target=lambda: on_done(*self.poll_clients()),
                          daemon=True, name="tgproxy-poll").start()
 
