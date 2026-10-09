@@ -57,7 +57,7 @@ FlowZap — приложение для Windows, которое возвраща
 
 ## 📥 Установка
 
-1. Скачайте архив `flowzap-full-vX.X.X.zip` со страницы **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)**.
+1. Скачайте архив `flowzap-vX.X.X.zip` со страницы **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)**.
 2. Распакуйте его в любую папку, например `C:\FlowZap` — не на рабочий стол внутри архива.
 3. Запустите **`FlowZap.exe`**. Права администратора не нужны.
 
@@ -294,7 +294,7 @@ FlowZap is a Windows app that brings back Discord and YouTube, connects Telegram
 
 ### Installation
 
-1. Download `flowzap-full-vX.X.X.zip` from **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)**.
+1. Download `flowzap-vX.X.X.zip` from **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)**.
 2. Extract it to any folder, e.g. `C:\FlowZap`.
 3. Run **`FlowZap.exe`** — no administrator rights needed.
 4. Turn on **«Обход блокировок»** (Block bypass). FlowZap downloads zapret and tests the presets (~1.5 min); accept the one-time background service prompt. Then click **«Использовать»** (Use) on the best preset and turn the switch on again.
