@@ -35,7 +35,10 @@ _VAR_RE = re.compile(r'%[^%]+%')
 _CARET_RE = re.compile(r'\^')
 
 
-def _get_game_filter(bat_dir: Path) -> tuple[str, str]:
+GAME_FILTER_OFF = "12"  # «пустой» порт, которым service.bat выключает Game Filter
+
+
+def game_filter_ports(bat_dir: Path) -> tuple[str, str]:
     """
     Читает utils/game_filter.enabled и возвращает (GameFilterTCP, GameFilterUDP).
     Если файл не существует — игровой фильтр выключен, возвращает ('12', '12').
@@ -98,7 +101,7 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
     args_raw = re.sub(r'%LISTS%', lambda m: lists_str, args_raw, flags=re.IGNORECASE)
 
     # Читаем игровой фильтр и подставляем реальные значения
-    game_tcp, game_udp = _get_game_filter(bat_dir)
+    game_tcp, game_udp = game_filter_ports(bat_dir)
     args_raw = re.sub(r'%GameFilterTCP%', lambda m: game_tcp, args_raw, flags=re.IGNORECASE)
     args_raw = re.sub(r'%GameFilterUDP%', lambda m: game_udp, args_raw, flags=re.IGNORECASE)
     args_raw = re.sub(r'%GameFilter%',    lambda m: game_tcp, args_raw, flags=re.IGNORECASE)
