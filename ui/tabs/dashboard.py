@@ -133,13 +133,15 @@ def _glyph_label(glyph: str, px: int = 13) -> QLabel:
 def _status_word(status: PingStatus, counts: tuple[int, int] | None,
                  ms: int | None = None) -> tuple[str, str | None]:
     """Короткое описание результата проверки пресета: (текст, tone).
-    ms — среднее время ответа сайтов, если известно."""
+    ms — среднее время ответа сайтов, если известно. Проверяются адреса
+    Discord и YouTube (preset_checker.DEFAULT_HTTP_TARGETS) — так и пишем,
+    а не «все сайты»: звучало, будто проверен весь интернет."""
     ok, total = counts or (0, 0)
     speed = f" · {ms} мс" if ms is not None else ""
     if status == PingStatus.OK:
-        return ("все сайты открываются" if total and ok == total else f"{ok} из {total} сайтов") + speed, None
+        return ("Discord и YouTube открываются" if total and ok == total else f"{ok} из {total} проверок") + speed, None
     if status == PingStatus.WARN:
-        return (f"частично · {ok} из {total} сайтов{speed}" if total else "работает нестабильно"), "warning"
+        return (f"частично · {ok} из {total} проверок{speed}" if total else "работает нестабильно"), "warning"
     if status == PingStatus.FAIL:
         return "не работает", "error"
     if status == PingStatus.CHECKING:
@@ -362,7 +364,9 @@ class _PresetRow(QFrame):
 
 
 class _ElideLabel(QLabel):
-    """Подпись в одну строку: не влезает — обрезается с «…», полный текст в подсказке."""
+    """Подпись в одну строку: не влезает — обрезается с «…», полный текст в
+    подсказке. Подсказка — только у обрезанной: подпись растянута на всё
+    свободное место шапки, и иначе она всплывала над пустым местом блока."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -372,7 +376,6 @@ class _ElideLabel(QLabel):
 
     def set_full_text(self, text: str) -> None:
         self._full = text
-        self.setToolTip(text)
         self._elide()
 
     def resizeEvent(self, event) -> None:
@@ -380,7 +383,9 @@ class _ElideLabel(QLabel):
         self._elide()
 
     def _elide(self) -> None:
-        super().setText(self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(0, self.width())))
+        shown = self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(0, self.width()))
+        super().setText(shown)
+        self.setToolTip(self._full if shown != self._full else "")
 
 
 class PresetsPanel(QFrame):
@@ -410,8 +415,8 @@ class PresetsPanel(QFrame):
         head.addWidget(label("Пресеты", role="section"))
         head.addWidget(HelpIcon(
             "Пресеты — стратегии обхода из Flowseal/zapret-discord-youtube. Проверка по очереди "
-            "запускает каждый пресет и смотрит, открываются ли Discord и YouTube. Лучший — тот, "
-            "с которым открылось больше всего сайтов.",
+            "запускает каждый пресет и смотрит, открываются ли Discord и YouTube (8 адресов). "
+            "Лучший — тот, с которым открылось больше всего адресов, а при равенстве — самый быстрый.",
             legend=_STATUS_LEGEND,
         ))
         head.addSpacing(6)
@@ -426,7 +431,7 @@ class PresetsPanel(QFrame):
         self._message_timer.setInterval(self.MESSAGE_MS)
         self._message_timer.timeout.connect(lambda: self.set_message(""))
         self.btn_check = button("Проверить заново", variant="ghost")
-        self.btn_check.setToolTip("По очереди запустить каждый пресет и проверить, открываются ли сайты")
+        self.btn_check.setToolTip("По очереди запустить каждый пресет и проверить, открываются ли Discord и YouTube")
         head.addWidget(self.btn_check)
         self.btn_game = button("Game Filter: выкл  ▾")
         self.btn_game.setToolTip("Обход для онлайн-игр")
@@ -469,6 +474,7 @@ class PresetsPanel(QFrame):
 
     def update_status(self, name: str, status: PingStatus) -> None:
         self._statuses[name] = status
+        self._update_all_item(name)
         # Во время проверки список не перестраиваем на каждый пресет — только в конце.
         if not self._ping.is_testing:
             self.render()
@@ -595,6 +601,24 @@ class PresetsPanel(QFrame):
         self._expanded = not self._expanded
         self.render()
 
+    def _all_item_view(self, preset: dict):
+        """(значок, текст) строки пресета в списке «Все пресеты»."""
+        status = self.status_of(preset["name"])
+        text, _tone = _status_word(status, self._ping.get_counts(preset["name"]),
+                                   self._ping.get_ms(preset["name"]))
+        return dot_icon(_status_color(status)), f"{preset['name']}   ·   {text}"
+
+    def _update_all_item(self, name: str) -> None:
+        """Открытый список «Все пресеты» — обновить строку пресета сразу
+        (во время проверки блок не перестраивается, а список открыт)."""
+        items = getattr(self, "_all_items", None)
+        if not items or name not in items:
+            return
+        item = items[name]
+        icon, text = self._all_item_view(item.data(Qt.UserRole))
+        item.setIcon(icon)
+        item.setText(text)
+
     def _open_all(self, anchor: QWidget) -> None:
         popup, layout = make_popup(anchor)
         list_widget = QListWidget()
@@ -602,14 +626,21 @@ class PresetsPanel(QFrame):
         list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         list_widget.setIconSize(QSize(10, 10))
         current = None
+        items = self._all_items = {}
+
+        def _forget() -> None:
+            # Список удаляется при закрытии (WA_DeleteOnClose) вместе со
+            # строками — обращаться к ним после этого нельзя
+            if self._all_items is items:
+                self._all_items = None
+
+        popup.destroyed.connect(_forget)
         for preset in self._presets:
-            status = self.status_of(preset["name"])
-            text, _tone = _status_word(status, self._ping.get_counts(preset["name"]),
-                                       self._ping.get_ms(preset["name"]))
-            item = QListWidgetItem(dot_icon(_status_color(status)), f"{preset['name']}   ·   {text}")
+            item = QListWidgetItem(*self._all_item_view(preset))
             item.setData(Qt.UserRole, preset)
             item.setToolTip(preset.get("desc", ""))
             list_widget.addItem(item)
+            self._all_items[preset["name"]] = item
             if self._selected and preset["name"] == self._selected["name"]:
                 current = item
         layout.addWidget(list_widget)
@@ -620,7 +651,7 @@ class PresetsPanel(QFrame):
             self.select_preset(preset)
 
         list_widget.itemClicked.connect(_pick)
-        popup.setFixedWidth(440)
+        popup.setFixedWidth(540)     # «general (FAKE TLS AUTO ALT3) · Discord и YouTube открываются · 212 мс»
         popup.setFixedHeight(min(34 * len(self._presets) + 16, 380))
         show_popup_below(popup, anchor)
         if current is not None:

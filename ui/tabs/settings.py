@@ -170,7 +170,7 @@ class SettingsTab(QWidget):
         self._on_tray_changed = on_tray_changed
         self._on_theme_changed = on_theme_changed
         self._on_effects_changed = on_effects_changed
-        self._app_dir = Path(self._config.get("_app_dir") or Path(__file__).parent.parent)
+        self._app_dir = Path(self._config.get("_app_dir") or Path(__file__).resolve().parents[2])
         self._win_target = False       # что просили при последнем щелчке по «запуск с Windows»
 
         # Слоты — методы, не лямбды: тогда доставка из потоков идёт через очередь GUI-потока.

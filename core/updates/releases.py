@@ -67,6 +67,21 @@ class RateLimitError(Exception):
     pass
 
 
+class NetworkError(ValueError):
+    """Не удалось связаться с GitHub или скачать файл — повод повторить без
+    своего DNS (core.dns.manager.retry_without_dns)."""
+
+
+def is_network_error(e: Exception) -> bool:
+    return isinstance(e, NetworkError)
+
+
+def retry_without_dns(attempt, should_retry=is_network_error, log=None):
+    """core.dns.manager.retry_without_dns (импорт здесь — без цикла импортов)."""
+    from core.dns.manager import retry_without_dns as retry
+    return retry(attempt, should_retry, log)
+
+
 def _verify_download(data: bytes, asset: dict, what: str) -> None:
     """Сверить скачанный файл с данными GitHub API: размер и sha256 (поле
     digest). Годится и для зеркал — там тот же файл того же релиза.
@@ -208,8 +223,18 @@ def check_release_async(
     (до ~20 с с учётом GitLab-fallback). Сам создаёт поток и зовёт on_done(release | None),
     как download_and_install_*: вызывающий UI-код только оборачивает on_done в Signal.emit.
     """
+    def _attempt() -> dict:
+        release = get_latest_release(repo)
+        if release is None:
+            raise NetworkError("Не удалось получить информацию о релизе")
+        return release
+
     def _worker() -> None:
-        on_done(get_latest_release(repo))
+        try:
+            release = retry_without_dns(_attempt)
+        except Exception:
+            release = None
+        on_done(release)
 
     threading.Thread(target=_worker, daemon=True, name="release-check").start()
 
@@ -256,7 +281,7 @@ def download_asset(
             return data
         except Exception as e:
             logger.error(f"GitHub: {github_error}. {mirror_name}: {e}")
-    raise ValueError(_DOWNLOAD_FAILED)
+    raise NetworkError(_DOWNLOAD_FAILED)
 
 
 def latest_asset(repo: str, find: Callable[[dict], Optional[dict]], what: str,
@@ -265,7 +290,7 @@ def latest_asset(repo: str, find: Callable[[dict], Optional[dict]], what: str,
     log("Проверяем обновления...")
     release = get_latest_release(repo)
     if not release:
-        raise ValueError("Не удалось получить информацию о релизе")
+        raise NetworkError("Не удалось получить информацию о релизе")
     tag = release.get("tag_name", "unknown")
     asset = find(release)
     if not asset:
@@ -292,7 +317,9 @@ def run_install(
 
     def _worker() -> None:
         try:
-            message = body(_log)
+            # Не скачалось при включённом DNS — повтор без него (см. retry_without_dns);
+            # пользователю это не показываем, только в лог
+            message = retry_without_dns(lambda: body(_log))
         except Exception as exc:
             logger.error(f"{error_label}: {exc}")
             _log(f"✗ Ошибка: {exc}")

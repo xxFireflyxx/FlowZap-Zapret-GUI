@@ -16,7 +16,9 @@ DNS ставится через PowerShell (модуль DnsClient), одним 
 
 Кто меняет DNS (как и winws, см. core/zapret/runner.py):
   * установлена фоновая служба FlowZap → она (FlowZap без прав
-    администратора); если FlowZap закроется или упадёт, служба сама сбросит DNS;
+    администратора); если FlowZap закроется или упадёт, служба сама сбросит DNS.
+    Служба (с версии 1.3.0) ставит DNS через Windows API, а этот же скрипт
+    PowerShell — только запасной путь, если API не сработал;
   * службы нет, FlowZap от администратора → напрямую этим же скриптом;
   * иначе — по действию пользователя предлагается установить службу.
 
@@ -29,7 +31,7 @@ import logging
 import subprocess
 import threading
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar
 
 from core.zapret import runner
 from core.service import client as service_client
@@ -38,6 +40,16 @@ from core.service.client import ServiceError
 logger = logging.getLogger(__name__)
 
 _PS_TIMEOUT = 30
+
+# Что включил пользователь (для retry_without_dns): пара или None — выключен;
+# _generation растёт при каждом переключении через apply_dns().
+_state_lock = threading.Lock()
+_active_pair: Optional[dict] = None
+_generation = 0
+_bypass_lock = threading.Lock()
+_bypass = threading.local()
+
+T = TypeVar("T")
 
 
 def get_active_pair(config: dict) -> dict | None:
@@ -131,6 +143,19 @@ def apply_dns(enable: bool, pair: dict | None, allow_install: bool = False,
     ещё не быть — служба встанет без winws).
 
     Выполняется синхронно — для UI есть apply_dns_async()."""
+    global _active_pair, _generation
+    error = _set_dns(enable, pair, allow_install, engine_dir)
+    if not error:
+        with _state_lock:
+            _active_pair = pair if enable else None
+            _generation += 1
+    return error
+
+
+def _set_dns(enable: bool, pair: dict | None, allow_install: bool = False,
+             engine_dir: Optional[Path] = None) -> str:
+    """apply_dns() без учёта состояния — им же retry_without_dns() временно
+    выключает DNS, не меняя того, что включил пользователь."""
     addresses = _pair_addresses(pair or {}) if enable else []
     if enable and not addresses:
         return "У выбранного сервера нет корректных IP-адресов"
@@ -144,11 +169,13 @@ def apply_dns(enable: bool, pair: dict | None, allow_install: bool = False,
 
 
 def _apply_via_service(enable: bool, pair: dict | None, addresses: list[str]) -> str:
+    # Служба ставит DNS через Windows API (доли секунды), а если не вышло —
+    # через PowerShell (до 30 с), поэтому ждём дольше обычных 20 с.
     try:
         if enable:
-            reply = service_client.session.request({"op": "dns-set", "servers": addresses})
+            reply = service_client.session.request({"op": "dns-set", "servers": addresses}, timeout=45)
         else:
-            reply = service_client.session.request({"op": "dns-reset"})
+            reply = service_client.session.request({"op": "dns-reset"}, timeout=45)
     except ServiceError as e:
         logger.error(f"DNS через службу: {e}")
         return str(e)
@@ -159,7 +186,8 @@ def _apply_via_service(enable: bool, pair: dict | None, addresses: list[str]) ->
     failed = [f.get("name", "?") for f in reply.get("failed") or []]
     for f in reply.get("failed") or []:
         logger.error(f"DNS: {f.get('name')}: {f.get('error')}")
-    return _summary(enable, pair, addresses, done, failed, "через службу")
+    via = "через службу (PowerShell)" if reply.get("method") == "powershell" else "через службу"
+    return _summary(enable, pair, addresses, done, failed, via)
 
 
 def _apply_direct(enable: bool, pair: dict | None, addresses: list[str]) -> str:
@@ -231,3 +259,43 @@ def apply_dns_async(
         on_done(not error, error)
 
     threading.Thread(target=_worker, daemon=True, name="dns-apply").start()
+
+
+def retry_without_dns(attempt: Callable[[], T], should_retry: Callable[[Exception], bool],
+                      log: Optional[Callable[[str], None]] = None) -> T:
+    """Загрузка с GitHub через сторонний DNS часто упирается в лимит
+    запросов: у DNS-прокси один IP на многих пользователей. Поэтому: сначала
+    attempt() как есть; не удалось (should_retry(ошибка)) и DNS включён
+    FlowZap — DNS на время повтора сбрасывается на автоматический (через
+    службу это доли секунды) и включается обратно. Если пользователь сам
+    переключил DNS за это время — обратно не включаем. Вложенный вызов
+    внутри повтора не повторяет ещё раз — DNS и так выключен."""
+    try:
+        return attempt()
+    except Exception as e:
+        if getattr(_bypass, "active", False) or not should_retry(e):
+            raise
+        with _state_lock:
+            pair, generation = _active_pair, _generation
+        if pair is None:
+            raise
+        first = e
+    with _bypass_lock:
+        (log or logger.info)("С включённым DNS не удалось скачать — повторяю без него")
+        error = _set_dns(False, None)
+        if error:
+            logger.error(f"DNS не выключился для повтора загрузки: {error}")
+            raise first
+        _bypass.active = True
+        try:
+            return attempt()
+        finally:
+            _bypass.active = False
+            with _state_lock:
+                untouched = _generation == generation
+            if untouched:
+                error = _set_dns(True, pair)
+                if error:
+                    logger.error(f"DNS не включился обратно после загрузки: {error}")
+                else:
+                    logger.info("DNS включён обратно после загрузки")

@@ -58,7 +58,7 @@ class ServiceError(RuntimeError):
 
 def bundled_service_exe() -> Path:
     """FlowZapService.exe, который идёт с этой версией FlowZap."""
-    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[2]))
     return base / "service" / "FlowZapService.exe"
 
 

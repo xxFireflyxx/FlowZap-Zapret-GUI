@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from core.system import winproc
-from core.updates.releases import download_asset, latest_asset, run_install, sourceforge_url
+from core.updates.releases import download_asset, latest_asset, retry_without_dns, run_install, sourceforge_url
 from core.zapret.winws import WINWS_EXE, ensure_user_lists, warmup_windivert
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,8 @@ def download_and_install_core(
             # и сверяет sha256 (без UAC). Не вышло — повторит перед запуском.
             log("Обновляю winws в фоновой службе…")
             try:
-                service_client.session.update_engine(tag)
+                retry_without_dns(lambda: service_client.session.update_engine(tag),
+                                  lambda e: isinstance(e, service_client.ServiceError))
             except service_client.ServiceError as e:
                 logger.warning(f"Служба не обновила winws: {e}")
         else:
