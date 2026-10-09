@@ -24,7 +24,7 @@ def _ps_quote(value) -> str:
 def create_desktop_shortcut(app_dir: Path) -> None:
     """Создаёт FlowZap.lnk на рабочем столе. Бросает RuntimeError при ошибке.
     Синхронная — вызывать из фонового потока (см. create_desktop_shortcut_async)."""
-    exe_path = Path(sys.executable) if getattr(sys, "frozen", False) else Path(__file__).parent.parent / "main.py"
+    exe_path = Path(sys.executable) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2] / "main.py"
     icon_path = Path(app_dir) / "assets" / "icon.ico"
     script = (
         "$s=(New-Object -COM WScript.Shell).CreateShortcut("

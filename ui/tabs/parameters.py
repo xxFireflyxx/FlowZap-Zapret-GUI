@@ -375,7 +375,7 @@ class ParametersTab(QWidget):
 
         # Path(x) всегда truthy (даже Path("")), поэтому `Path(...) or Path(...)`
         # никогда не уходил на запасной вариант — or применяем к строке ДО Path().
-        _app_dir = Path(self._config.get("_app_dir") or Path(__file__).parent.parent)
+        _app_dir = Path(self._config.get("_app_dir") or Path(__file__).resolve().parents[2])
         self._lists_dir: Path = _app_dir / "zapret" / "lists"
 
         self._pingUpdated.connect(self._on_ping_updated)

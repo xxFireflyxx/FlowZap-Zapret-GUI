@@ -38,7 +38,7 @@ def _command() -> str:
     # Из исходников — через pythonw, чтобы не было консоли
     pythonw = Path(sys.executable).parent / "pythonw.exe"
     exe = pythonw if pythonw.exists() else Path(sys.executable)
-    return f'"{exe}" "{Path(__file__).resolve().parent.parent / "main.py"}"'
+    return f'"{exe}" "{Path(__file__).resolve().parents[2] / "main.py"}"'
 
 
 def _run_value_exists() -> bool:

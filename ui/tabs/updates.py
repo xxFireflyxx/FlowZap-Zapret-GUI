@@ -242,7 +242,7 @@ class UpdatesTab(QWidget):
         self._manager = manager           # ZapretManager (или None)
         self._dashboard = dashboard       # DashboardTab: zapret_dir, TG Proxy, перечитывание пресетов
 
-        app_dir = Path(self._config.get("_app_dir") or Path(__file__).parent.parent)
+        app_dir = Path(self._config.get("_app_dir") or Path(__file__).resolve().parents[2])
         self._app_dir = app_dir
         self._tg_dir = app_dir / "tgproxy"
 

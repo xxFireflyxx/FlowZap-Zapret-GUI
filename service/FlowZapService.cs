@@ -22,8 +22,9 @@
 //   * свой winws служба обновляет только сама: скачивает релиз Flowseal с
 //     GitHub (или зеркала SourceForge) и сверяет sha256 из GitHub API; от
 //     клиента — лишь номер версии, файлов от него служба не берёт;
-//   * DNS — только IP-адреса (проверяются как IP), скрипт PowerShell свой,
-//     от клиента в него попадают лишь адреса;
+//   * DNS — только IP-адреса (проверяются как IP); ставятся через Windows
+//     API, запасной путь — свой скрипт PowerShell, от клиента в него
+//     попадают лишь адреса;
 //   * winws в job-объекте: падение службы гасит и его; отключение FlowZap,
 //     запустившего обход, — тоже. DNS, включённый FlowZap, при его
 //     отключении (закрыли, упал) сбрасывается на автоматический.
@@ -37,6 +38,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.IO.Compression;
 using System.Reflection;
@@ -53,8 +55,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyTitle("FlowZap Service")]
 [assembly: AssemblyDescription("Фоновая служба FlowZap: запуск обхода и системные настройки")]
 [assembly: AssemblyProduct("FlowZap")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 namespace FlowZap.Service
 {
@@ -62,7 +64,7 @@ namespace FlowZap.Service
     {
         public const string ServiceName = "FlowZapService";
         public const string DisplayName = "FlowZap Service";
-        public const string Version = "1.2.0";
+        public const string Version = "1.3.0";
         public const int Protocol = 1;
         public const int MaxRequestBytes = 64 * 1024 * 1024;
         public const int MaxLines = 300;
@@ -732,6 +734,10 @@ namespace FlowZap.Service
 
     // ── DNS ───────────────────────────────────────────────────────────────
 
+    // Сначала напрямую через Windows API (DnsApi — доли секунды). Не вышло
+    // (старая Windows без нужной функции, ошибка, Windows не приняла адреса) —
+    // то же действие через PowerShell: медленно (первый запуск после загрузки
+    // Windows — до 15 с), зато работает везде.
     sealed class DnsControl
     {
         // Адаптеры: при включении — через которые идёт интернет (есть маршрут по
@@ -774,7 +780,7 @@ try {
 
         public Dictionary<string, object> Set(object[] servers, int client)
         {
-            List<string> addresses = new List<string>();
+            List<IPAddress> addresses = new List<IPAddress>();
             if (servers != null)
                 foreach (object o in servers)
                 {
@@ -783,14 +789,14 @@ try {
                     if (text == null || text.IndexOf('%') >= 0 || !IPAddress.TryParse(text, out ip) ||
                         (ip.AddressFamily != AddressFamily.InterNetwork && ip.AddressFamily != AddressFamily.InterNetworkV6))
                         throw new ArgumentException("Не IP-адрес: " + text);
-                    addresses.Add("'" + ip.ToString() + "'");
+                    addresses.Add(ip);
                 }
             if (addresses.Count == 0 || addresses.Count > 8) throw new ArgumentException("Нужны IP-адреса DNS");
             lock (gate)
             {
-                Dictionary<string, object> result = Run(true, string.Join(", ", addresses.ToArray()));
+                Dictionary<string, object> result = Run(true, addresses);
                 owner = client;
-                Log.Write("DNS установлен: " + string.Join(", ", addresses.ToArray()) + " (клиент " + client + ")");
+                Log.Write("DNS установлен: " + string.Join(", ", addresses) + " (клиент " + client + ", " + result["method"] + ")");
                 return result;
             }
         }
@@ -799,9 +805,9 @@ try {
         {
             lock (gate)
             {
-                Dictionary<string, object> result = Run(false, "");
+                Dictionary<string, object> result = Run(false, new List<IPAddress>());
                 owner = 0;
-                Log.Write("DNS сброшен на автоматический" + (reason == null ? "" : " — " + reason));
+                Log.Write("DNS сброшен на автоматический (" + result["method"] + ")" + (reason == null ? "" : " — " + reason));
                 return result;
             }
         }
@@ -824,9 +830,33 @@ try {
             catch (Exception e) { Log.Write("Сброс DNS: " + e.Message); }
         }
 
-        static Dictionary<string, object> Run(bool enable, string addresses)
+        static Dictionary<string, object> Run(bool enable, List<IPAddress> addresses)
         {
-            string script = Script.Replace("__ENABLE__", enable ? "$true" : "$false").Replace("__ADDRESSES__", addresses);
+            try
+            {
+                Dictionary<string, object> result = DnsApi.Apply(enable, addresses);
+                int failed = ((List<object>)result["failed"]).Count;
+                if (!(bool)result["no_adapter"] && failed == 0)
+                {
+                    result["method"] = "api";
+                    return result;
+                }
+                Log.Write("DNS через API: " + (failed > 0 ? "не применился на адаптерах: " + failed : "не найдено включённых адаптеров") +
+                          " — пробую через PowerShell");
+            }
+            catch (Exception e)
+            {
+                Log.Write("DNS через API: " + e.Message + " — пробую через PowerShell");
+            }
+            Dictionary<string, object> fallback = RunPowerShell(enable, addresses);
+            fallback["method"] = "powershell";
+            return fallback;
+        }
+
+        static Dictionary<string, object> RunPowerShell(bool enable, List<IPAddress> addresses)
+        {
+            List<string> quoted = addresses.ConvertAll(ip => "'" + ip.ToString() + "'");
+            string script = Script.Replace("__ENABLE__", enable ? "$true" : "$false").Replace("__ADDRESSES__", string.Join(", ", quoted));
             ProcessStartInfo psi = new ProcessStartInfo(
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), @"WindowsPowerShell\v1.0\powershell.exe"),
                 "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " +
@@ -873,6 +903,208 @@ try {
             result["no_adapter"] = noAdapter;
             result["adapters"] = done;
             result["failed"] = failed;
+            return result;
+        }
+    }
+
+    // DNS напрямую через Windows API: SetInterfaceDnsSettings (iphlpapi,
+    // Windows 10 2004+; на более старых — EntryPointNotFoundException, и
+    // DnsControl повторит через PowerShell). Адаптеры — те же, что в скрипте
+    // DnsControl. После записи адреса читаются обратно: если Windows сказала
+    // «готово», а стоит другое, — это тоже ошибка (и тоже повтор через
+    // PowerShell). IPv4 и IPv6 ставятся раздельно; семейство, для которого у
+    // пары нет адресов, сбрасывается на автоматический — иначе при смене пары
+    // остались бы IPv6-адреса прошлой.
+    static class DnsApi
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        struct DNS_INTERFACE_SETTINGS
+        {
+            public uint Version;
+            public ulong Flags;
+            public IntPtr Domain;
+            public IntPtr NameServer;
+            public IntPtr SearchList;
+            public uint RegistrationEnabled;
+            public uint RegisterAdapterName;
+            public uint EnableLLMNR;
+            public uint QueryAdapterName;
+            public IntPtr ProfileNameServer;
+        }
+
+        const uint DNS_INTERFACE_SETTINGS_VERSION1 = 1;
+        const ulong DNS_SETTING_IPV6 = 0x1;
+        const ulong DNS_SETTING_NAMESERVER = 0x2;
+        const ushort AF_UNSPEC = 0;
+
+        // MIB_IPFORWARD_TABLE2: NumEntries, выравнивание до 8, затем строки
+        // MIB_IPFORWARD_ROW2 по 104 байта; в строке InterfaceIndex — смещение 8,
+        // DestinationPrefix.PrefixLength — 40 (0 = маршрут по умолчанию).
+        const int RouteRowsOffset = 8, RouteRowSize = 104, RouteIfIndex = 8, RoutePrefixLength = 40;
+
+        [DllImport("iphlpapi.dll")]
+        static extern int SetInterfaceDnsSettings(Guid iface, ref DNS_INTERFACE_SETTINGS settings);
+
+        [DllImport("iphlpapi.dll")]
+        static extern int GetInterfaceDnsSettings(Guid iface, ref DNS_INTERFACE_SETTINGS settings);
+
+        [DllImport("iphlpapi.dll")]
+        static extern void FreeInterfaceDnsSettings(ref DNS_INTERFACE_SETTINGS settings);
+
+        [DllImport("iphlpapi.dll")]
+        static extern int GetIpForwardTable2(ushort family, out IntPtr table);
+
+        [DllImport("iphlpapi.dll")]
+        static extern void FreeMibTable(IntPtr memory);
+
+        [DllImport("dnsapi.dll")]
+        static extern bool DnsFlushResolverCache();
+
+        sealed class Adapter
+        {
+            public string Name;
+            public Guid Id;
+            public int Index;
+        }
+
+        // Ответ в том же виде, что у DnsControl.RunPowerShell
+        public static Dictionary<string, object> Apply(bool enable, List<IPAddress> addresses)
+        {
+            List<Adapter> targets = UpAdapters();
+            if (enable && targets.Count > 0)
+            {
+                HashSet<int> gateways = DefaultRouteInterfaces();
+                List<Adapter> withGateway = targets.FindAll(a => gateways.Contains(a.Index));
+                if (withGateway.Count > 0) targets = withGateway;
+            }
+            string v4 = Servers(addresses, AddressFamily.InterNetwork);
+            string v6 = Servers(addresses, AddressFamily.InterNetworkV6);
+
+            List<string> done = new List<string>();
+            List<object> failed = new List<object>();
+            foreach (Adapter a in targets)
+            {
+                string error = ApplyFamily(a.Id, false, v4) ?? ApplyFamily(a.Id, true, v6);
+                if (error == null) { done.Add(a.Name); continue; }
+                Dictionary<string, object> f = new Dictionary<string, object>();
+                f["name"] = a.Name;
+                f["error"] = error;
+                failed.Add(f);
+                Log.Write("DNS через API: " + a.Name + ": " + error);
+            }
+            if (done.Count > 0)
+                try { DnsFlushResolverCache(); } catch (Exception) { }
+
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["ok"] = true;
+            result["no_adapter"] = targets.Count == 0;
+            result["adapters"] = done;
+            result["failed"] = failed;
+            return result;
+        }
+
+        // null — на адаптере теперь ровно эти адреса этого семейства
+        // (servers = "" — автоматический DNS), иначе текст ошибки.
+        static string ApplyFamily(Guid id, bool ipv6, string servers)
+        {
+            int setError = Call(id, ipv6, servers);
+            string now;
+            int readError = Read(id, ipv6, out now);
+            if (readError == 0 && Normalize(now) == Normalize(servers)) return null;
+            // Семейство не настроено на адаптере (например, IPv6 выключен) —
+            // сбрасывать нечего
+            if (readError != 0 && servers.Length == 0) return null;
+            if (setError != 0) return new System.ComponentModel.Win32Exception(setError).Message;
+            if (readError != 0) return "не удалось проверить: " + new System.ComponentModel.Win32Exception(readError).Message;
+            return "Windows оставила " + (now.Length > 0 ? now : "автоматический");
+        }
+
+        static int Call(Guid id, bool ipv6, string servers)
+        {
+            DNS_INTERFACE_SETTINGS s = new DNS_INTERFACE_SETTINGS();
+            s.Version = DNS_INTERFACE_SETTINGS_VERSION1;
+            s.Flags = DNS_SETTING_NAMESERVER | (ipv6 ? DNS_SETTING_IPV6 : 0);
+            s.NameServer = Marshal.StringToHGlobalUni(servers);
+            try { return SetInterfaceDnsSettings(id, ref s); }
+            finally { Marshal.FreeHGlobal(s.NameServer); }
+        }
+
+        static int Read(Guid id, bool ipv6, out string servers)
+        {
+            servers = "";
+            DNS_INTERFACE_SETTINGS s = new DNS_INTERFACE_SETTINGS();
+            s.Version = DNS_INTERFACE_SETTINGS_VERSION1;
+            s.Flags = DNS_SETTING_NAMESERVER | (ipv6 ? DNS_SETTING_IPV6 : 0);
+            int error = GetInterfaceDnsSettings(id, ref s);
+            if (error != 0) return error;
+            if (s.NameServer != IntPtr.Zero) servers = Marshal.PtrToStringUni(s.NameServer) ?? "";
+            FreeInterfaceDnsSettings(ref s);
+            return 0;
+        }
+
+        static string Servers(List<IPAddress> addresses, AddressFamily family)
+        {
+            return string.Join(",", addresses.FindAll(ip => ip.AddressFamily == family).ConvertAll(ip => ip.ToString()));
+        }
+
+        // Windows хранит список через запятую, но может и через пробел
+        static string Normalize(string servers)
+        {
+            List<string> list = new List<string>();
+            foreach (string part in servers.Split(new[] { ',', ' ', ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                IPAddress ip;
+                list.Add(IPAddress.TryParse(part, out ip) ? ip.ToString() : part);
+            }
+            return string.Join(",", list);
+        }
+
+        static List<Adapter> UpAdapters()
+        {
+            List<Adapter> result = new List<Adapter>();
+            foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up ||
+                    ni.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                    ni.NetworkInterfaceType == NetworkInterfaceType.Tunnel) continue;
+                Guid id;
+                if (!Guid.TryParse(ni.Id, out id)) continue;
+                Adapter a = new Adapter();
+                a.Name = ni.Name;
+                a.Id = id;
+                a.Index = InterfaceIndex(ni);
+                result.Add(a);
+            }
+            return result;
+        }
+
+        static int InterfaceIndex(NetworkInterface ni)
+        {
+            IPInterfaceProperties props = ni.GetIPProperties();
+            try { if (ni.Supports(NetworkInterfaceComponent.IPv4)) return props.GetIPv4Properties().Index; }
+            catch (NetworkInformationException) { }
+            try { if (ni.Supports(NetworkInterfaceComponent.IPv6)) return props.GetIPv6Properties().Index; }
+            catch (NetworkInformationException) { }
+            return -1;
+        }
+
+        static HashSet<int> DefaultRouteInterfaces()
+        {
+            IntPtr table;
+            int error = GetIpForwardTable2(AF_UNSPEC, out table);
+            if (error != 0) throw new System.ComponentModel.Win32Exception(error);
+            HashSet<int> result = new HashSet<int>();
+            try
+            {
+                int count = Marshal.ReadInt32(table);
+                for (int i = 0; i < count; i++)
+                {
+                    IntPtr row = new IntPtr(table.ToInt64() + RouteRowsOffset + (long)i * RouteRowSize);
+                    if (Marshal.ReadByte(row, RoutePrefixLength) == 0)
+                        result.Add(Marshal.ReadInt32(row, RouteIfIndex));
+                }
+            }
+            finally { FreeMibTable(table); }
             return result;
         }
     }

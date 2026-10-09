@@ -193,29 +193,90 @@ class _RiseEffect(QGraphicsEffect):
     готовую картинку виджета со сдвигом — сам виджет не двигается, поэтому
     раскладку не ломают ни быстрые переключения вкладок, ни смена размера."""
 
+    # В конце кривой блок долго ползёт по долям пикселя, его картинку на
+    # каждом кадре по-разному размывает (см. draw), и он «рябит». Поэтому
+    # последние SNAP_PX не рисуем — блок встаёт на место и дальше только
+    # проявляется, чётким. 0.5 px — прыжок и смена резкости заметны; 0.15 —
+    # картинка уже почти чёткая, переход не виден. MOVE_END < 1 ускоряет
+    # подъём, но тогда резче и начало — оставлено 1.0.
+    MOVE_END = 1.0
+    SNAP_PX = 0.15
+    _EASE = QEasingCurve(QEasingCurve.OutQuart)
+
     def __init__(self, parent=None, lift: int = 18) -> None:
         super().__init__(parent)
-        self._t = 0.0
+        self._t = 0.0           # прозрачность
+        self._shift = float(lift)
         self.LIFT = lift
 
     def set_progress(self, t: float) -> None:
-        self._t = t
+        """t — линейное время анимации 0…1; кривые — здесь."""
+        self._t = self._EASE.valueForProgress(t) if t < 1.0 else 1.0
+        shift = (1.0 - self._EASE.valueForProgress(min(1.0, t / self.MOVE_END))) * self.LIFT
+        self._shift = shift if shift >= self.SNAP_PX else 0.0
         self.update()
 
     def boundingRectFor(self, rect):
-        return QRectF(rect).adjusted(0, 0, 0, self.LIFT)
+        return QRectF(rect).adjusted(0, -1, 0, self.LIFT + 1)
 
     def draw(self, painter) -> None:
         if self._t >= 1.0:
             self.drawSource(painter)
             return
+        if self._shift == 0.0:
+            # На месте, только проявляется — без масштаба и размытия, чётко
+            pix = self._snapshot()
+            painter.save()
+            painter.setOpacity(self._t)
+            painter.drawPixmap(self.sourceBoundingRect(Qt.LogicalCoordinates).topLeft()
+                               - QPointF(0, 1.0 / pix.devicePixelRatio()), pix)
+            painter.restore()
+            return
         # drawSource не учитывает прозрачность и сдвиг кисти — рисуем картинку сами
-        pix = self.sourcePixmap(Qt.LogicalCoordinates, mode=QGraphicsEffect.PixmapPadMode.NoPad)
+        pix = self._snapshot()
         offset = self.sourceBoundingRect(Qt.LogicalCoordinates).topLeft()
+        pad = 1.0 / pix.devicePixelRatio()
         painter.save()
         painter.setOpacity(self._t)
-        painter.drawPixmap(offset + QPointF(0, (1.0 - self._t) * self.LIFT), pix)
+        # Сдвиг на доли пикселя. Без этого Qt ставит картинку на целые пиксели,
+        # и в медленном конце подъёма (при запуске окна) блок несколько кадров
+        # стоит, потом прыгает на пиксель — заметные рывки. Чистый сдвиг Qt
+        # всегда округляет, поэтому чуть-чуть масштабируем (на глаз не видно):
+        # тогда работает сглаживание. Прозрачная рамка — чтобы края тоже
+        # смешивались, а не «прилипали» к пикселям.
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        painter.translate(offset.x(), offset.y() - pad + self._shift)
+        painter.scale(1.0, 1.0000001)
+        painter.drawPixmap(0, 0, pix)
         painter.restore()
+
+    SNAPSHOT_MS = 200
+
+    def _snapshot(self) -> QPixmap:
+        """Картинка блока, пока он всплывает. Qt заново рисует содержимое блока
+        на каждом кадре (фон-сияние под ним перерисовывается постоянно), и
+        кадры выходят то лёгкими, то тяжёлыми — движение неровное. Поэтому
+        берём картинку раз в SNAPSHOT_MS: если в блоке что-то поменялось,
+        это видно с задержкой не больше неё, а в конце блок рисуется как есть."""
+        now = time.monotonic()
+        if getattr(self, "_snap", None) is None or now - self._snap_at > self.SNAPSHOT_MS / 1000:
+            self._snap = self._padded(self.sourcePixmap(Qt.LogicalCoordinates, mode=QGraphicsEffect.PixmapPadMode.NoPad))
+            self._snap_at = now
+        return self._snap
+
+    def _padded(self, pix: QPixmap) -> QPixmap:
+        """Картинка блока с прозрачной строкой пикселей сверху и снизу.
+        Кэш по ключу картинки: Qt отдаёт ту же, пока блок не перерисовался."""
+        key = pix.cacheKey()
+        if getattr(self, "_pad_key", None) != key:
+            padded = QPixmap(pix.width(), pix.height() + 2)
+            padded.setDevicePixelRatio(pix.devicePixelRatio())
+            padded.fill(Qt.transparent)
+            p = QPainter(padded)
+            p.drawPixmap(QPointF(0, 1.0 / pix.devicePixelRatio()), pix)
+            p.end()
+            self._pad_key, self._pad_pix = key, padded
+        return self._pad_pix
 
 
 def page_blocks(page: QWidget) -> list[QWidget]:
@@ -298,7 +359,7 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
         anim.setStartValue(0.0)
         anim.setEndValue(1.0)
         anim.setDuration(duration_ms)
-        anim.setEasingCurve(QEasingCurve.OutQuart)
+        # без кривой: кривые прозрачности и подъёма — в _RiseEffect.set_progress
         anim.valueChanged.connect(lambda v, e=effect: e.set_progress(float(v)))
         group = QSequentialAnimationGroup(w)
         group.addPause(first_delay_ms + i * step_ms)

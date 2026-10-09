@@ -135,7 +135,9 @@ def sync_engine(engine_dir: Path) -> None:
         return
     logger.info(f"Служба: winws {current or 'нет'} → zapret {local or 'последний'}, обновляю…")
     try:
-        _synced_version = service_client.session.update_engine(local)
+        from core.dns.manager import retry_without_dns    # dns.manager импортирует runner
+        _synced_version = retry_without_dns(lambda: service_client.session.update_engine(local),
+                                            lambda e: isinstance(e, ServiceError))
         logger.info(f"Служба: winws обновлён до zapret {_synced_version}")
     except ServiceError as e:
         if not current:
