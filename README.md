@@ -7,7 +7,7 @@
 [![Скачать](https://img.shields.io/github/v/release/xxFireflyxx/FlowZap-Zapret-GUI?label=%D1%81%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C&style=for-the-badge&color=22e4ff&labelColor=0d0f1c)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)
 [![Загрузки](https://img.shields.io/github/downloads/xxFireflyxx/FlowZap-Zapret-GUI/total?label=%D0%B7%D0%B0%D0%B3%D1%80%D1%83%D0%B7%D0%BA%D0%B8&style=for-the-badge&color=7c5cff&labelColor=0d0f1c)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%20%2F%2011-20e39c?style=for-the-badge&labelColor=0d0f1c)](#-установка)
-[![Kaspersky: безопасно](https://img.shields.io/badge/Kaspersky-%D0%B1%D0%B5%D0%B7%D0%BE%D0%BF%D0%B0%D1%81%D0%BD%D0%BE-3cffa0?style=for-the-badge&labelColor=0d0f1c)](https://opentip.kaspersky.com/37F3E4655724E62B4A34980A56DBECA5EE081F62A4DDD49848E8D39615837ACB/results?tab=upload)
+[![Kaspersky: безопасно](https://img.shields.io/badge/Kaspersky-%D0%B1%D0%B5%D0%B7%D0%BE%D0%BF%D0%B0%D1%81%D0%BD%D0%BE-3cffa0?style=for-the-badge&labelColor=0d0f1c)](https://opentip.kaspersky.com/9623B3D69928856D3E3D1E68B2AFA4FE11B6CE35F5AE9C373CA57196ADFDEE63/results?tab=upload)
 
 **Русский** · [English](#english)
 
@@ -67,7 +67,7 @@ FlowZap — приложение для Windows, которое возвраща
 **Требования:** Windows 10 или 11 (64-бит), интернет для первой загрузки zapret.
 
 > [!NOTE]
-> **🛡️ Безопасность.** Kaspersky проверил FlowZap, в том числе запустив его в песочнице: **«Безопасный объект»** — угроз и подозрительных действий не найдено. [Отчёт Kaspersky OpenTIP](https://opentip.kaspersky.com/37F3E4655724E62B4A34980A56DBECA5EE081F62A4DDD49848E8D39615837ACB/results?tab=upload)
+> **🛡️ Безопасность.** Kaspersky проверил FlowZap, в том числе запустив его в песочнице: **«Безопасный объект»** — угроз и подозрительных действий не найдено. [Отчёт Kaspersky OpenTIP](https://opentip.kaspersky.com/9623B3D69928856D3E3D1E68B2AFA4FE11B6CE35F5AE9C373CA57196ADFDEE63/results?tab=upload)
 
 ---
 
@@ -210,7 +210,7 @@ FlowZap — приложение для Windows, которое возвраща
 
 Microsoft Defender, Kaspersky, ESET, Dr.Web и другие крупные антивирусы FlowZap не трогают. Но бывает два вида срабатываний — оба не значат, что внутри вирус:
 
-- **Эвристика.** Некоторые антивирусы проверяют не по базе вирусов, а «по признакам»: неподписанная программа, которая запускает службу и меняет сетевые настройки, кажется им подозрительной. На [VirusTotal](https://www.virustotal.com/gui/file/37f3e4655724e62b4a34980a56dbeca5ee081f62a4ddd49848e8d39615837acb) так реагируют несколько антивирусов из ~70 — небольшие или эвристические движки; названия угроз у них бывают случайными и меняются от проверки к проверке.
+- **Эвристика.** Некоторые антивирусы проверяют не по базе вирусов, а «по признакам»: неподписанная программа, которая запускает службу и меняет сетевые настройки, кажется им подозрительной. На [VirusTotal](https://www.virustotal.com/gui/file/9623b3d69928856d3e3d1e68b2afa4fe11b6ce35f5ae9c373ca57196adfdee63) так реагируют несколько антивирусов из ~70 — небольшие или эвристические движки; названия угроз у них бывают случайными и меняются от проверки к проверке.
 - **zapret.** Сам FlowZap драйверов не содержит — обход делает zapret от Flowseal, который FlowZap скачивает при первом запуске. В него входит драйвер WinDivert, и некоторые антивирусы относят его к «потенциально опасным инструментам» (например, `Not-a-virus:RiskTool…WinDivert`): он умеет перехватывать сетевой трафик, а для обхода это и нужно. Так антивирусы реагируют на zapret и без FlowZap.
 
 Если антивирус удалил файл или мешает запуску — добавьте папку с FlowZap в исключения антивируса — например, `C:\FlowZap`, если вы распаковали его туда. Код FlowZap открыт: его можно посмотреть в этом репозитории.
@@ -301,7 +301,7 @@ FlowZap is a Windows app that brings back Discord and YouTube, connects Telegram
 
 If SmartScreen warns you, click **More info → Run anyway** — FlowZap has no paid code-signing certificate yet.
 
-🛡️ Kaspersky rates FlowZap as a **safe object**, including a sandbox run: [Kaspersky OpenTIP report](https://opentip.kaspersky.com/37F3E4655724E62B4A34980A56DBECA5EE081F62A4DDD49848E8D39615837ACB/results?tab=upload).
+🛡️ Kaspersky rates FlowZap as a **safe object**, including a sandbox run: [Kaspersky OpenTIP report](https://opentip.kaspersky.com/9623B3D69928856D3E3D1E68B2AFA4FE11B6CE35F5AE9C373CA57196ADFDEE63/results?tab=upload).
 
 **Requirements:** Windows 10 or 11 (64-bit).
 
