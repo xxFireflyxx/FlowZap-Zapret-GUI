@@ -62,7 +62,7 @@ FlowZap — приложение для Windows, которое возвраща
 3. Запустите **`FlowZap.exe`**. Права администратора не нужны.
 
 > [!TIP]
-> Windows SmartScreen может показать «Windows защитила ваш компьютер» — у FlowZap пока нет платной цифровой подписи. Нажмите **Подробнее → Выполнить в любом случае**.
+> Windows SmartScreen может показать «Windows защитила ваш компьютер» — у FlowZap пока нет платной цифровой подписи. Нажмите **Подробнее → Выполнить в любом случае**. При первом запуске это окно может появиться **дважды**: для самого FlowZap и для фоновой службы. Перед этим Защитник Windows может на несколько секунд проверить файл в облаке — это нормально.
 
 **Требования:** Windows 10 или 11 (64-бит), интернет для первой загрузки zapret.
 
@@ -299,7 +299,7 @@ FlowZap is a Windows app that brings back Discord and YouTube, connects Telegram
 3. Run **`FlowZap.exe`** — no administrator rights needed.
 4. Turn on **«Обход блокировок»** (Block bypass). FlowZap downloads zapret and tests the presets (~1.5 min); accept the one-time background service prompt. Then click **«Использовать»** (Use) on the best preset and turn the switch on again.
 
-If SmartScreen warns you, click **More info → Run anyway** — FlowZap has no paid code-signing certificate yet.
+If SmartScreen warns you, click **More info → Run anyway** — FlowZap has no paid code-signing certificate yet. On first launch it may appear twice: for FlowZap itself and for the background service.
 
 🛡️ Kaspersky rates FlowZap as a **safe object**, including a sandbox run: [Kaspersky OpenTIP report](https://opentip.kaspersky.com/136CE0263449C42A76ABEBEB008F4711790AA1911449AAA14C2D8F490AADE561/results?tab=upload).
 
