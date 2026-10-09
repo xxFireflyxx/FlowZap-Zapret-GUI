@@ -19,6 +19,12 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = io.StringIO()
 
+# Скрытый процесс сервера TG WS Proxy (core/tgproxy/host.py) — тот же exe,
+# но без интерфейса: PySide6 и всё остальное ниже ему не нужны.
+if len(sys.argv) > 1 and sys.argv[1] in ("--tgproxy", "--tgproxy-probe"):
+    from core.tgproxy.host import run as _run_tgproxy
+    sys.exit(_run_tgproxy(sys.argv[1:]))
+
 import faulthandler
 import logging
 import threading
@@ -199,6 +205,10 @@ def load_config(config_path: Path) -> dict:
     # Встроенные DNS прописаны в приложении (core/dns/builtin.py): пропавшие
     # возвращаются, новые из этой версии добавляются, удалённые — убираются
     apply_builtin_dns(defaults)
+    # TG Proxy: недостающие настройки; новый секрет — сохранить сразу (main())
+    from core.tgproxy.settings import ensure_config
+    if ensure_config(defaults):
+        defaults["_tgproxy_new_secret"] = True
     return defaults
 
 
@@ -258,6 +268,10 @@ def main() -> None:
 
     from ui.main_window import MainWindow
     window = MainWindow(root=ROOT, config=config, config_path=CONFIG_PATH, manager=manager)
+    if config.pop("_tgproxy_new_secret", False):
+        # Иначе при следующем запуске секрет был бы другим, и прокси,
+        # добавленный в Telegram, перестал бы подключаться
+        window.save_config()
 
     _migrate_win_autostart_async()
     window.start_builtin_dns_sync()

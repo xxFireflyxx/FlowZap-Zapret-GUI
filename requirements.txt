@@ -7,6 +7,11 @@ tomli_w==1.2.0
 # Сеть (updater ходит через urllib; certifi даёт CA-сертификаты для SSL)
 certifi==2026.7.22
 
+# Сервер TG WS Proxy (tgproxy/src, код Flowseal/tg-ws-proxy) — те же версии,
+# что в его pyproject.toml; FlowZap запускает сервер своим Python
+cryptography==46.0.5
+httpx[http2]==0.28.1
+
 # Только для release/publish_release.py (публикация на GitHub/GitLab) — самому
 # приложению не нужен. Сборка релиза (release.py) требует ещё PyInstaller — он тут
 # намеренно не указан, чтобы run_admin.bat не ставил его при каждом запуске.

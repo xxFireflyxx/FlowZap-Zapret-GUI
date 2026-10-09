@@ -31,7 +31,8 @@ from ui.widgets.controls import CircleBadge, Switch
 from ui.widgets.layout import Page
 from core.updates.app import find_exe_asset, download_and_install_exe
 from core.updates.releases import FLOWZAP_REPO, check_release_async
-from core.updates.tgproxy import TG_PROXY_REPO, TG_PROXY_EXE, download_and_install_tg_proxy
+from core.tgproxy.manager import is_installed
+from core.updates.tgproxy import TG_PROXY_REPO, download_and_install_tg_proxy, get_installed_tg_proxy_version
 from core.updates.zapret import CORE_REPO, download_and_install_core, get_installed_core_version
 from core.version import GUI_VERSION
 
@@ -323,17 +324,9 @@ class UpdatesTab(QWidget):
         return get_installed_core_version(core) or ""
 
     def _tg_installed_version(self) -> str:
-        try:
-            ver_file = self._tg_dir / "version.txt"
-            if ver_file.exists():
-                text = ver_file.read_text(encoding="utf-8").strip()
-                if text:
-                    return text
-            if (self._tg_dir / TG_PROXY_EXE).exists():
-                return "установлен"
-        except Exception:
-            pass
-        return ""
+        if not is_installed(self._tg_dir):
+            return ""
+        return get_installed_tg_proxy_version(self._tg_dir) or "установлен"
 
     def apply_background_check(self, releases: dict) -> None:
         """Результаты фоновой проверки из MainWindow — в карточки. Пропускаем
@@ -522,8 +515,10 @@ class UpdatesTab(QWidget):
         if not self._tg_resume:
             self._download_tg()
             return
-        # exe нельзя перезаписать, пока прокси работает: останавливаем через Dashboard
-        # (кнопка «TG Proxy» там остаётся синхронной) и качаем только после остановки.
+        # Новая версия заработает только после перезапуска, а папку с кодом
+        # работающего сервера лучше не подменять: останавливаем через Dashboard
+        # (тумблер «TG Proxy» там остаётся синхронным), качаем после остановки
+        # и включаем обратно.
         self._tg.set_status("Останавливаю TG Proxy…", "muted")
         self._dashboard.set_tg_proxy(False, on_done=self._on_tg_stopped)
 
@@ -554,7 +549,7 @@ class UpdatesTab(QWidget):
         else:
             c.set_status("Ошибка, попробуйте позже", "error")
             c.set_update_enabled(True)
-        # Возвращаем прокси и при ошибке: старый exe цел, а работал он до нажатия.
+        # Возвращаем прокси и при ошибке: прежняя версия на месте, а работала она до нажатия.
         if self._tg_resume:
             self._tg_resume = False
             self._dashboard.set_tg_proxy(True)

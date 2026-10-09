@@ -24,7 +24,7 @@ from ui.widgets.navigation import TabBar
 from ui.widgets.aurora import AuroraBackground
 from core.updates.app import find_exe_asset
 from core.updates.releases import FLOWZAP_REPO, get_latest_release
-from core.updates.tgproxy import TG_PROXY_REPO, TG_PROXY_EXE, get_installed_tg_proxy_version
+from core.updates.tgproxy import TG_PROXY_REPO, get_installed_tg_proxy_version
 from core.updates.zapret import CORE_REPO, get_installed_core_version
 from core.version import GUI_VERSION
 from ui.tabs.dashboard import DashboardTab
@@ -247,6 +247,7 @@ class MainWindow(QMainWindow):
             config=self.config,
             save_config_fn=self.save_config,
             on_dns_changed=self.dashboard.on_dns_changed,
+            tg_controller=self.dashboard,
         )
         self.stack.addWidget(self.parameters)
         # Выбор активной пары на главной — Параметры перечитывают список.
@@ -407,14 +408,12 @@ class MainWindow(QMainWindow):
         try:
             # Только если TG Proxy установлен — см. Core выше.
             tg_dir = self.root / "tgproxy"
-            if (tg_dir / TG_PROXY_EXE).exists():
+            installed = (get_installed_tg_proxy_version(tg_dir) or "").lstrip("vV")
+            if installed:
                 release = get_latest_release(TG_PROXY_REPO)
                 releases["tg"] = release
-                if release:
-                    tag = release.get("tag_name", "").lstrip("vV")
-                    installed = (get_installed_tg_proxy_version(tg_dir) or "").lstrip("vV")
-                    if not installed or installed != tag:
-                        has_update = True
+                if release and installed != release.get("tag_name", "").lstrip("vV"):
+                    has_update = True
         except Exception:
             log.exception("Автопроверка обновлений: ошибка при проверке TG Proxy")
 

@@ -315,23 +315,56 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
         group.start()
 
 
+class _ShakeEffect(QGraphicsEffect):
+    """Рисует картинку виджета со сдвигом по горизонтали. Сам виджет стоит на
+    месте: move() у виджета в раскладке сбрасывался первым же пересчётом
+    (ошибка тут же меняет подсказку и цвет плитки) — тряски не было видно."""
+
+    AMPLITUDE = 7
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._dx = 0.0
+
+    def set_offset(self, dx: float) -> None:
+        self._dx = dx
+        self.update()
+
+    def boundingRectFor(self, rect):
+        return QRectF(rect).adjusted(-self.AMPLITUDE - 1, 0, self.AMPLITUDE + 1, 0)
+
+    def draw(self, painter) -> None:
+        pix = self.sourcePixmap(Qt.LogicalCoordinates, mode=QGraphicsEffect.PixmapPadMode.NoPad)
+        offset = self.sourceBoundingRect(Qt.LogicalCoordinates).topLeft()
+        painter.drawPixmap(offset + QPointF(self._dx, 0), pix)
+
+
 def shake(widget: QWidget) -> None:
     """Короткая тряска по горизонтали (ошибка) — затухающая синусоида, ~0.55 с."""
     if not theme.animations or getattr(widget, "_shaking", False):
         return
+    rise = getattr(widget, "_fz_rise", None)
+    if rise is not None and rise.state() == QVariantAnimation.Running:
+        return      # блок ещё всплывает — у виджета один графический эффект, не перебиваем
     widget._shaking = True
-    base = widget.pos()
+    effect = _ShakeEffect(widget)
+    widget._fz_shake_effect = effect        # без ссылки Python-обёртку соберёт GC
+    widget.setGraphicsEffect(effect)
     anim = QVariantAnimation(widget)
     anim.setStartValue(0.0)
     anim.setEndValue(1.0)
     anim.setDuration(550)
 
     def step(t):
+        if widget._fz_shake_effect is None or widget.graphicsEffect() is not effect:
+            return      # эффект сменил начавшийся каскад (переход на вкладку)
         t = float(t)
-        widget.move(base.x() + round(math.sin(t * math.pi * 6) * 7 * (1 - t)), base.y())
+        effect.set_offset(math.sin(t * math.pi * 6) * _ShakeEffect.AMPLITUDE * (1 - t))
 
     def done():
-        widget.move(base)
+        if widget.graphicsEffect() is effect:
+            widget.setGraphicsEffect(None)
+        widget._fz_shake_effect = None
         widget._shaking = False
 
     anim.valueChanged.connect(step)

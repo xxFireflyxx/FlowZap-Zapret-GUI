@@ -1,11 +1,14 @@
 """
-ui/tabs/parameters.py — Вкладка «Параметры» (PySide6): DNS-серверы и списки zapret.
+ui/tabs/parameters.py — Вкладка «Параметры» (PySide6): DNS-серверы, списки
+zapret и Telegram Proxy.
 
 Две колонки: список DNS-серверов (добавить / изменить / удалить / замерить;
 встроенные — только замерить)
 и списки сайтов zapret вкладками. Активный сервер — всегда
 config["dns"]["pairs"][0]; выбирается он на главной (DashboardTab), здесь
 только помечен — одно действие, одно место.
+
+Под ними на всю ширину — карточка Telegram Proxy (ui/tabs/parameters_tgproxy.py).
 """
 
 import html
@@ -32,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.dns.builtin import builtin_names, is_builtin_dns
+from ui.tabs.parameters_tgproxy import TgProxyCard
 from ui.theme import theme
 from ui.widgets.base import AutoHideLabel, Glyph, button, label, set_tone
 from ui.widgets.controls import IconButton, SegmentedControl
@@ -356,12 +360,13 @@ class ParametersTab(QWidget):
     MAX_SHOWN = 200                  # длиннее — показываем начало и просим уточнить поиск
 
     def __init__(self, parent=None, manager=None, config: dict = None,
-                 save_config_fn=None, on_dns_changed=None):
+                 save_config_fn=None, on_dns_changed=None, tg_controller=None):
         super().__init__(parent)
         self.manager = manager
         self._config = config or {}
         self._save_config_fn = save_config_fn
         self._on_dns_changed = on_dns_changed
+        self._tg_controller = tg_controller   # DashboardTab — владелец TG Proxy
         self._ping_pending = 0
         self._pairs: list[dict] = []
         self._ping_cache: dict[str, str] = {}
@@ -416,13 +421,15 @@ class ParametersTab(QWidget):
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        page = Page("Параметры", "DNS-серверы и сайты, которые обходить или не трогать")
+        page = Page("Параметры", "DNS-серверы, сайты для обхода и Telegram Proxy")
         root.addWidget(page)
         columns = QHBoxLayout()
         columns.setSpacing(theme.metrics.padding_md)
         columns.addWidget(self._build_dns_block(), stretch=1)
         columns.addWidget(self._build_lists_block(), stretch=1)
         page.body.addLayout(columns)
+        if self._tg_controller is not None:
+            page.body.addWidget(TgProxyCard(self._config, self._save_config_fn, self._tg_controller))
 
     def _build_dns_block(self) -> QFrame:
         card, actions, body = _section_card(

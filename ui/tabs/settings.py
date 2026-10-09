@@ -10,7 +10,8 @@ ui/tabs/settings.py
 
 Тема применяется сразу (on_theme_changed → MainWindow.apply_theme) и
 сохраняется в ui.theme; ui.tray_enabled применяется сразу через on_tray_changed.
-ui.restore_state пока только записывается — читать его должен другой код.
+ui.restore_state читает DashboardTab: при запуске включает DNS и TG Proxy,
+если они были включены (config["state"], пишется при каждом переключении).
 
 TODO: карточка «Подсветка» (ui.bar_style: default / rainbow / candy / none) —
       вернуть, когда в Dashboard появится анимированная полоса статуса.
@@ -51,6 +52,7 @@ log = logging.getLogger(__name__)
 _STATUS_MS = 4000     # сколько висит статус автозапуска Windows
 _SHORTCUT_MS = 3000   # сколько на кнопке висит результат создания ярлыка
 _REPO_URL = f"https://github.com/{FLOWZAP_REPO}"
+_LICENSE_URL = f"{_REPO_URL}/blob/main/LICENSE"
 
 
 def _group(caption: str, subtitle: str = "") -> tuple[QFrame, QVBoxLayout]:
@@ -322,6 +324,10 @@ class SettingsTab(QWidget):
         names.addWidget(label(f"FlowZap {GUI_VERSION}", role="strong"))
         names.addWidget(label("© 2026 xxFireflyxx. Все права защищены", role="muted"))
         head.addLayout(names, stretch=1)
+        btn_license = button("Условия использования  ↗", variant="link")
+        btn_license.setToolTip(_LICENSE_URL)
+        btn_license.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(_LICENSE_URL)))
+        head.addWidget(btn_license, alignment=Qt.AlignVCenter)
         body.addLayout(head)
         links = QHBoxLayout()
         links.setSpacing(8)

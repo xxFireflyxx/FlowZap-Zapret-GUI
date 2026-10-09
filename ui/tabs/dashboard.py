@@ -9,9 +9,12 @@ TG Proxy, у каждой свой тумблер и одинаковый ске
 Пресеты — core/zapret/presets.py, их статусы — core/zapret/preset_checker.py.
 
 TG Proxy — тумблер управляет core/tgproxy/manager.TgProxyManager через
-set_running_async(); состояние при старте определяется через tasklist
-(check_running_async), т.к. Popen.poll() не видит процесс, запущенный вне
-FlowZap. Тумблер всегда показывает ФАКТИЧЕСКОЕ состояние, а не оптимистичное.
+set_running_async(); при первом включении сервер сначала скачивается.
+Тумблер всегда показывает ФАКТИЧЕСКОЕ состояние, а не оптимистичное. Пока
+прокси работает, раз в несколько секунд смотрим, кто к нему подключён
+(poll_async): слот плитки показывает «Подключить в Telegram», пока Telegram
+ни разу не подключался с текущими портом и секретом, а дальше — подключён
+ли он сейчас. То же состояние показывают «Параметры» (tgStatusChanged).
 
 DNS — тумблер читает активную пару из config["dns"]["pairs"][0]
 (core/dns/manager.get_active_pair) и применяет её через netsh
@@ -53,7 +56,9 @@ from core.zapret.manager import ServiceState
 from core.updates.zapret import download_and_install_core
 from core.dns import manager as dns_manager
 from core.service import client as service_client
-from core.tgproxy.manager import TgProxyManager
+from core.tgproxy import settings as tg_settings
+from core.tgproxy.manager import TgProxyManager, client_title
+from core.updates.tgproxy import download_and_install_tg_proxy
 from core.system.idle import get_idle_seconds
 
 log = logging.getLogger(__name__)
@@ -92,6 +97,24 @@ IDLE_PRESET_CHECK_POLL_MS            = 10 * 60 * 1000  # как часто пр�
 
 # «Запускается / Останавливается» на плитке — только если дольше этого
 ZAPRET_BUSY_DELAY_MS = 500
+
+# TG Proxy: как часто смотреть, кто подключён, и сколько ждать запущенный
+# Telegram, прежде чем сказать, что он ходит мимо прокси
+TG_POLL_MS = 3000
+TG_POLL_FAST_MS = 1000      # сразу после включения — чаще, чтобы зелёный появлялся без задержки
+TG_CONNECT_GRACE_SEC = 20
+
+# Цвет точки состояния Telegram на плитке — по виду из tg_connection_status()
+TG_DOT_COLORS = {
+    "connect":    "text_muted",
+    "ready":      "text_muted",
+    "connected":  "success",
+    "waiting":    "text_muted",
+    "connecting": "text_muted",     # плитка оставляет прежний цвет, см. _refresh_tg_tile
+    "bypass":     "warning",
+    "direct":     "warning",
+    "installing": "accent",
+}
 
 
 def _status_color(status: PingStatus) -> str:
@@ -614,7 +637,14 @@ class DashboardTab(QWidget):
     _coreInstallDone     = Signal(bool, str)
     _dnsToggleDone       = Signal(bool, str)     # (ok, error) — из dns_manager.apply_dns_async
     _tgProxyDone         = Signal(bool, str)     # (running, error) — из TgProxyManager.*_async
+    _tgPolled            = Signal(int, bool, object, bool, str)  # (поколение, жив, клиенты, Telegram запущен, его exe)
+    _tgMigrated          = Signal()              # переход со старого TgWsProxy завершён
+    _tgInstallProgress   = Signal(str)
+    _tgInstallDone       = Signal(bool, str)
     _warmupDone          = Signal()              # прогрев WinDivert завершён (core/windivert_warmup)
+
+    # Состояние TG Proxy изменилось — «Параметры» перерисовывают свою строку статуса
+    tgStatusChanged      = Signal()
 
     def __init__(self, parent=None, manager=None, config: dict = None, save_config_fn=None):
         super().__init__(parent)
@@ -657,15 +687,34 @@ class DashboardTab(QWidget):
         self._dns_toggle_event.set()
 
         self._tgProxyDone.connect(self._on_tg_proxy_done)
+        self._tgPolled.connect(self._on_tg_polled)
+        self._tgMigrated.connect(self._on_tg_migrated)
+        self._tgInstallProgress.connect(self._on_tg_install_progress)
+        self._tgInstallDone.connect(self._on_tg_install_done)
         self._tg_running = False
         self._tg_done_cb = None     # одноразовый колбэк из set_tg_proxy()
+        self._tg_error = ""         # почему не запустился — пока пользователь не попробует снова
+        self._tg_installing = False
+        self._tg_open_after_start = False   # «Подключить» при выключенном прокси: включить и открыть
+        self._tg_restart_pending = False    # настройки поменяли, пока шла другая операция
+        self._tg_clients: list[str] = []    # exe клиентов, подключённых сейчас
+        self._tg_app_running = False        # запущен ли Telegram на компьютере
+        self._tg_wait_since: float | None = None   # с какого момента Telegram запущен, но не подключён
+        self._tg_gen = 0                    # меняется при каждом запуске/остановке — старый опрос не в счёт
+        self._tg_polling = False
+        self._tg_fast_until = 0.0
+        self._tg_launch_app = False         # включили тумблером — после запуска открыть Telegram
+        self._tg_restoring_off = False      # временная остановка из кода (обновление) — не запоминать
         # Задаёт MainWindow: перечитать список DNS в «Параметрах» / открыть «Параметры».
         self.on_pairs_changed = None
         self.on_open_parameters = None
-        self._tg = TgProxyManager(Path(self._config.get("_app_dir", ".")))
+        self._tg = TgProxyManager(Path(self._config.get("_app_dir", ".")), self._config)
         # Та же защита, что и у DNS выше, но для TG Proxy.
         self._tg_toggle_event = threading.Event()
         self._tg_toggle_event.set()
+        self._tg_poll_timer = QTimer(self)
+        self._tg_poll_timer.setInterval(TG_POLL_MS)
+        self._tg_poll_timer.timeout.connect(self._poll_tg)
 
         # ServiceManager хранит только один колбэк (не список подписчиков) —
         # на этом экране мы его единственный владелец, как раньше делал
@@ -682,11 +731,12 @@ class DashboardTab(QWidget):
         self._load_presets()
         self._refresh_game_filter_ui()
 
-        # Тумблер заблокирован, пока tasklist не скажет, запущен ли TgWsProxy
-        # (в т.ч. вне FlowZap) — иначе клик мог бы стартовать второй экземпляр.
+        # Тумблер заблокирован, пока не убран exe автора из старой схемы (до 1.1):
+        # если он запущен из нашей папки, он держит тот же порт.
         self._sw_tg.setEnabled(False)
         self._tile_tg.set_state(False, "Проверяю состояние…")
-        self._tg.check_running_async(lambda running, err: self._tgProxyDone.emit(running, err))
+        self._tg.migrate_legacy_async(lambda: self._tgMigrated.emit())
+        self._restore_dns()
 
         self._on_manager_state_change(self.manager.state if self.manager is not None else ServiceState.STOPPED)
 
@@ -846,20 +896,36 @@ class DashboardTab(QWidget):
         # ── TG Proxy ──
         self._tile_tg = ServiceTile(
             Glyph.SEND, "Telegram Proxy", "Telegram",
-            "Локальный прокси для Telegram (TG WS Proxy). После включения "
-            "нажмите «Подключить в Telegram», чтобы добавить его в клиент.",
+            "Локальный прокси для Telegram (TG WS Proxy от Flowseal) — работает внутри "
+            "FlowZap, отдельно от обхода. Telegram подключается к нему один раз, дальше "
+            "FlowZap сам видит, идёт ли он через прокси. Настройки — во вкладке «Параметры».",
         )
         self._sw_tg = self._tile_tg.switch
         self._sw_tg.clicked.connect(self._on_tg_proxy_toggle)
+        # В слоте — либо кнопка подключения (пока Telegram ни разу не подключался
+        # с текущими портом и секретом), либо состояние Telegram
         self._btn_tg_open = FieldButton("Подключить в Telegram", trailing=Glyph.OPEN)
         self._btn_tg_open.set_centered(True)
-        self._btn_tg_open.clicked.connect(self._tg.open_in_telegram)
-        self._btn_tg_open.setEnabled(False)
+        self._btn_tg_open.clicked.connect(self.connect_telegram)
         self._tile_tg.slot.addWidget(self._btn_tg_open)
+        self._tg_status_row = QWidget()
+        status = QHBoxLayout(self._tg_status_row)
+        status.setContentsMargins(0, 0, 0, 0)
+        status.setSpacing(10)
+        self._tg_dot = StatusDot(10)
+        status.addWidget(self._tg_dot, alignment=Qt.AlignVCenter)
+        self._tg_state_lbl = label("", role="value")
+        status.addWidget(self._tg_state_lbl, alignment=Qt.AlignVCenter)
+        status.addStretch(1)
+        self._btn_tg_reconnect = button("Подключить", variant="link")
+        self._btn_tg_reconnect.setToolTip("Открыть Telegram и подключить прокси заново")
+        self._btn_tg_reconnect.clicked.connect(self.connect_telegram)
+        status.addWidget(self._btn_tg_reconnect, alignment=Qt.AlignVCenter)
+        self._tile_tg.slot.addWidget(self._tg_status_row)
         row.addWidget(self._tile_tg, stretch=1)
 
         self._refresh_dns_button_style()
-        self._refresh_tg_button_style()
+        self._refresh_tg_tile()
         return row
 
     def _set_message(self, text: str, tone: str | None = None) -> None:
@@ -1176,6 +1242,7 @@ class DashboardTab(QWidget):
             return
 
         target_enabled = not self._dns_enabled
+        self._tile_dns.set_error(False)     # новая попытка — красное гаснет
         self._sw_dns.setEnabled(False)
         self._tile_dns.set_state(target_enabled, "Применяю…")
 
@@ -1206,8 +1273,10 @@ class DashboardTab(QWidget):
             self._dns_enabled = not self._dns_enabled  # откат
             self._refresh_dns_button_style()
             self._tile_dns.set_hint(f"Не удалось: {error}", "error")
+            self._tile_dns.set_error(True)  # как у обхода: тряска и красная плитка
             return
 
+        self._remember_state("dns", self._dns_enabled)
         self._refresh_dns_button_style()
 
     def _refresh_dns_button_style(self) -> None:
@@ -1248,6 +1317,34 @@ class DashboardTab(QWidget):
             self.on_pairs_changed()
         self.on_dns_changed()
 
+    # ── Восстановление при запуске (Настройки → «Восстанавливать DNS и TG Proxy») ──
+
+    def _restore_enabled(self) -> bool:
+        return self._config.get("ui", {}).get("restore_state", True)
+
+    def _remember_state(self, key: str, enabled: bool) -> None:
+        """Что включено — в config["state"]. Пишется при каждом включении/
+        выключении, а не при выходе: выход сам всё выключает, а после
+        аварийного закрытия запись тоже должна остаться верной."""
+        state = self._config.setdefault("state", {})
+        if state.get(key) != enabled:
+            state[key] = enabled
+            if self._save_config_fn:
+                self._save_config_fn()
+
+    def _restore_dns(self) -> None:
+        if not self._restore_enabled() or not self._config.get("state", {}).get("dns"):
+            return
+        pair = dns_manager.get_active_pair(self._config)
+        if pair is None:
+            return
+        log.info("Восстанавливаю DNS — был включён при выходе")
+        self._sw_dns.setEnabled(False)
+        self._tile_dns.set_state(True, "Применяю…")
+        # Без окна установки службы: его показываем только на нажатие пользователя
+        self._apply_dns_async_tracked(True, pair)
+        self._dns_enabled = True
+
     def on_dns_changed(self) -> None:
         """Вызывается ParametersTab (on_dns_changed=...), когда пользователь
         выбрал другую активную DNS-пару. Если DNS сейчас включён —
@@ -1263,44 +1360,274 @@ class DashboardTab(QWidget):
             # включённым нечего, сбрасываем на DHCP.
             self._dns_enabled = False
 
+        self._tile_dns.set_error(False)
         self._sw_dns.setEnabled(False)
         self._tile_dns.set_state(self._dns_enabled, "Применяю…")
 
         self._apply_dns_async_tracked(pair is not None, pair)
 
+    def _on_tg_migrated(self) -> None:
+        self._sw_tg.setEnabled(True)
+        self._tg_restart_pending = False    # прокси не работал — перезапускать нечего
+        self._refresh_tg_tile()
+        # Опрос идёт всегда: и при выключенном прокси точка показывает,
+        # запущен ли Telegram (идёт мимо прокси — жёлтая)
+        self._tg_poll_timer.start()
+        self._poll_tg()
+        if self._restore_enabled() and self._config.get("state", {}).get("tgproxy"):
+            log.info("Восстанавливаю TG Proxy — был включён при выходе")
+            self._on_tg_proxy_toggle()
+            self._tg_launch_app = False     # Telegram при восстановлении сам не открываем
+
     def _on_tg_proxy_toggle(self) -> None:
         target_enabled = not self._tg_running
+        self._tg_error = ""
+        self._tile_tg.set_error(False)      # новая попытка — красное гаснет
+        if target_enabled and not self._tg.is_available:
+            self._install_tg_then_start()
+            return
         self._sw_tg.setEnabled(False)
         self._tile_tg.set_state(target_enabled, "Запускаю…" if target_enabled else "Останавливаю…")
         self._tg_toggle_event.clear()
+        self._tg_gen += 1
+        self._tg_launch_app = target_enabled
+        self._tg.set_running_async(target_enabled, on_done=self._tg_worker_done)
 
-        def _on_done(running: bool, err: str) -> None:
-            # Пишем сразу здесь (фоновый поток), а не только в _on_tg_proxy_done
-            # (GUI-поток, доставка через Qt-очередь) — иначе shutdown() при
-            # быстром выходе сразу после включения/выключения TG Proxy мог бы
-            # не увидеть актуальное значение, если очередь ещё не разобрана.
-            self._tg_running = running
-            self._tg_toggle_event.set()
-            self._tgProxyDone.emit(running, err)
+    def _tg_worker_done(self, running: bool, err: str) -> None:
+        """Из фонового потока TgProxyManager. _tg_running пишем сразу здесь, а
+        не только в _on_tg_proxy_done (GUI-поток, доставка через Qt-очередь) —
+        иначе shutdown() при быстром выходе сразу после включения/выключения
+        TG Proxy мог бы не увидеть актуальное значение."""
+        self._tg_running = running
+        self._tg_toggle_event.set()
+        self._tgProxyDone.emit(running, err)
 
-        self._tg.set_running_async(target_enabled, on_done=_on_done)
+    def _install_tg_then_start(self) -> None:
+        """Первое включение: сервера ещё нет — скачиваем, потом включаем."""
+        if self._tg_installing:
+            return
+        self._tg_installing = True
+        self._sw_tg.setEnabled(False)
+        self._sw_tg.setChecked(False)
+        self._tile_tg.set_state(False, "Установка…", "accent")
+        self._refresh_tg_tile()
+        download_and_install_tg_proxy(
+            self._tg.dir,
+            on_progress=lambda msg: self._tgInstallProgress.emit(msg),
+            on_done=lambda ok, msg: self._tgInstallDone.emit(ok, msg),
+        )
+
+    def _on_tg_install_progress(self, msg: str) -> None:
+        if not msg.startswith(("✓", "✗")):
+            self._tile_tg.set_hint(msg, "accent")
+
+    def _on_tg_install_done(self, ok: bool, msg: str) -> None:
+        self._tg_installing = False
+        self._sw_tg.setEnabled(True)
+        if not ok or not self._tg.is_available:
+            self._set_tg_error(f"Не удалось установить: {msg}")
+            self._tg_open_after_start = False
+            self._tg_restart_pending = False
+            self._refresh_tg_tile()
+            cb, self._tg_done_cb = self._tg_done_cb, None
+            if cb:
+                cb(False, self._tg_error)
+            return
+        self._on_tg_proxy_toggle()      # установлен — теперь включаем
 
     def _on_tg_proxy_done(self, running: bool, error: str) -> None:
         self._tg_running = running
+        if not self._tg_restoring_off:
+            self._remember_state("tgproxy", running)
         self._sw_tg.setEnabled(True)
-        self._refresh_tg_button_style()
-        if error:
-            self._tile_tg.set_hint(error, "error")
+        self._set_tg_error("" if running else error)
+        # Запущен ли Telegram — не сбрасываем: он от прокси не зависит, иначе до
+        # первой проверки точка мигала бы серым
+        self._tg_clients, self._tg_wait_since = [], None
+        if running:
+            self._tg_poll_timer.setInterval(TG_POLL_FAST_MS)
+            self._tg_fast_until = time.monotonic() + TG_CONNECT_GRACE_SEC
+            if self._tg_open_after_start:
+                self._tg.open_in_telegram()     # ссылка сама откроет Telegram
+            elif self._tg_launch_app and self._tg.settings.get("launch_telegram", True):
+                self._tg.launch_telegram_async()
+        else:
+            self._tg_poll_timer.setInterval(TG_POLL_MS)
+        self._poll_tg()
+        self._tg_open_after_start = False
+        self._tg_launch_app = False
+        self._refresh_tg_tile()
+        self._tg_restoring_off = False
         cb, self._tg_done_cb = self._tg_done_cb, None
         if cb:
             cb(running, error)
+        if self._tg_restart_pending:
+            self._tg_restart_pending = False
+            self.on_tg_settings_changed()
 
-    def _refresh_tg_button_style(self) -> None:
-        self._sw_tg.setChecked(self._tg_running)
-        self._tile_tg.set_state(self._tg_running, "Работает" if self._tg_running else "Выключен")
-        self._btn_tg_open.setEnabled(self._tg_running)
-        self._tile_tg.set_hint("Работает отдельно от обхода" if self._tg_running
-                               else "Включите прокси, чтобы подключить")
+    # ── TG Proxy: подключён ли Telegram ──
+
+    def _poll_tg(self) -> None:
+        if self._tg_polling:
+            return
+        self._tg_polling = True
+        gen = self._tg_gen
+        self._tg.poll_async(lambda alive, clients, app, path: self._tgPolled.emit(gen, alive, clients, app, path))
+
+    def _on_tg_polled(self, gen: int, alive: bool, clients: list, app_running: bool, app_path: str) -> None:
+        self._tg_polling = False
+        # Пока шёл опрос, прокси включали, выключали или перезапускали — ответ устарел
+        if gen != self._tg_gen or not self._sw_tg.isEnabled():
+            return
+        tg = self._tg.settings
+        if app_path and tg.get("client_path") != app_path:
+            tg["client_path"] = app_path        # отсюда запустим Telegram вместе с прокси
+            if self._save_config_fn:
+                self._save_config_fn()
+        if not self._tg_running:
+            if self._tg_app_running != app_running:
+                self._tg_app_running = app_running
+                self._refresh_tg_tile()
+            return
+        if not alive:
+            log.error("TG WS Proxy неожиданно остановился")
+            self._tg_gen += 1
+            self._tg.stop()
+            self._tg_running = False
+            self._tg_clients = []
+            self._set_tg_error("TG WS Proxy неожиданно остановился — подробности в logs/tgproxy.log")
+            self._refresh_tg_tile()
+            return
+        self._tg_clients = list(clients)
+        self._tg_app_running = app_running
+        if self._tg_poll_timer.interval() != TG_POLL_MS and (clients or time.monotonic() > self._tg_fast_until):
+            self._tg_poll_timer.setInterval(TG_POLL_MS)
+        if clients or not app_running:
+            self._tg_wait_since = None
+        elif self._tg_wait_since is None:
+            self._tg_wait_since = time.monotonic()
+        if clients:
+            self._remember_tg_link(clients)
+        self._refresh_tg_tile()
+
+    def _remember_tg_link(self, clients: list[str]) -> None:
+        """Telegram подключился с текущими портом и секретом — кнопка
+        «Подключить» больше не нужна, пока их не сменят."""
+        tg = self._tg.settings
+        fp = tg_settings.fingerprint(tg)
+        named = next((c for c in clients if c), "")
+        changed = False
+        if tg.get("linked") != fp:
+            tg["linked"] = fp
+            changed = True
+            log.info(f"Telegram подключился к прокси: {client_title(named)}")
+        if named and tg.get("client") != named:
+            tg["client"] = named        # чтобы узнавать и неизвестные клиенты Telegram
+            changed = True
+        if changed and self._save_config_fn:
+            self._save_config_fn()
+
+    def tg_connection_status(self) -> tuple[str, str, str, str | None]:
+        """(вид, коротко, пояснение, tone пояснения) — общее для плитки и
+        «Параметров». Вид — ключ TG_DOT_COLORS; «connect» — показать кнопку
+        «Подключить в Telegram»."""
+        tg = self._tg.settings
+        linked = tg_settings.is_linked(tg)
+        if self._tg_installing:
+            return "installing", "Скачивается…", "Скачиваю TG WS Proxy — это нужно один раз", "accent"
+        if not self._tg_running:
+            if not linked:
+                kind, text = "connect", "Не подключён"
+            elif self._tg_app_running:
+                kind, text = "direct", "Без прокси"
+            else:
+                kind, text = "ready", "Не запущен"
+            if self._tg_error:
+                return kind, text, self._tg_error, "error"
+            if kind == "direct":
+                return kind, text, "Telegram открыт, но работает без прокси — включите прокси на главной", None
+            if linked:
+                return kind, text, "Включите прокси — Telegram подключится сам", None
+            return kind, text, "Нажмите — прокси включится, а Telegram спросит «Подключить»", None
+        if self._tg_clients:
+            names = ", ".join(dict.fromkeys(client_title(c) for c in self._tg_clients))
+            return "connected", "Подключён", f"Через прокси: {names}", None
+        if not linked:
+            return "connect", "Не подключён", "Нажмите и подтвердите в Telegram «Подключить»", None
+        if not self._tg_app_running:
+            return "waiting", "Ждёт Telegram", "Запустите Telegram — он подключится сам", None
+        if self._tg_wait_since is None or time.monotonic() - self._tg_wait_since < TG_CONNECT_GRACE_SEC:
+            return "connecting", "Подключается…", "Telegram запущен, ждём подключения", None
+        return ("bypass", "Не через прокси",
+                "Telegram запущен, но прокси не использует — нажмите «Подключить»", "warning")
+
+    def _refresh_tg_tile(self) -> None:
+        """Плитка — как у обхода: в слоте имя клиента и цветная точка (состояние
+        прокси и так написано сверху), подсказка внизу — только когда что-то
+        не так. Подробные слова — в «Параметрах» (tg_connection_status)."""
+        kind, _text, _detail, _tone = self.tg_connection_status()
+        if not self._tg_installing:
+            self._sw_tg.setChecked(self._tg_running)
+            self._tile_tg.set_state(self._tg_running, "Работает" if self._tg_running else "Выключен")
+        show_button = kind == "connect"
+        self._btn_tg_open.setVisible(show_button)
+        self._tg_status_row.setVisible(not show_button)
+        # Пока Telegram подключается, точка держит прежний цвет: был жёлтым
+        # (шёл мимо прокси) — станет сразу зелёным, без серого посередине
+        if kind != "connecting":
+            self._tg_dot.set_color(TG_DOT_COLORS.get(kind, "text_muted"))
+        names = list(dict.fromkeys(client_title(c) for c in self._tg_clients))
+        self._tg_state_lbl.setText(", ".join(names) if kind == "connected"
+                                   else client_title(self._tg.settings.get("client") or "Telegram.exe"))
+        self._btn_tg_reconnect.setVisible(kind == "bypass")
+        if self._tg_error:
+            self._tile_tg.set_hint(self._tg_error, "error")
+        elif kind == "bypass":
+            self._tile_tg.set_hint("Telegram не использует прокси", "warning")
+        elif kind == "installing":
+            self._tile_tg.set_hint("Скачиваю TG WS Proxy…", "accent")
+        else:
+            self._tile_tg.set_hint("")
+        self.tgStatusChanged.emit()
+
+    def _set_tg_error(self, error: str) -> None:
+        """Ошибка — как у обхода: тряска и красная плитка, пока не попробуют снова."""
+        self._tg_error = error
+        if error:
+            self._tile_tg.set_error(True)
+
+    # ── TG Proxy: действия для «Параметров» ──
+
+    @property
+    def tg_manager(self) -> TgProxyManager:
+        return self._tg
+
+    def connect_telegram(self) -> None:
+        """«Подключить в Telegram»: прокси выключен — включить (и установить,
+        если его ещё нет), потом открыть ссылку; Telegram спросит «Подключить»."""
+        if self._tg_running:
+            self._tg.open_in_telegram()
+            return
+        if not self._sw_tg.isEnabled():
+            return          # идёт другая операция — по её окончании нажмут ещё раз
+        self._tg_open_after_start = True
+        self._on_tg_proxy_toggle()
+
+    def on_tg_settings_changed(self) -> None:
+        """«Параметры» изменили настройки прокси: если он работает — перезапустить."""
+        if self._tg_installing or not self._sw_tg.isEnabled():
+            self._tg_restart_pending = True     # применим, когда закончится текущая операция
+            return
+        if not self._tg_running:
+            self._refresh_tg_tile()
+            return
+        self._tg_error = ""
+        self._tile_tg.set_error(False)
+        self._sw_tg.setEnabled(False)
+        self._tile_tg.set_state(True, "Перезапускаю…")
+        self._tg_toggle_event.clear()
+        self._tg_gen += 1
+        self._tg.restart_async(on_done=self._tg_worker_done)
 
     # ── Публичный API для других вкладок (UpdatesTab) ────────────────────
 
@@ -1338,7 +1665,9 @@ class DashboardTab(QWidget):
                 on_done(self._tg_running, "TG Proxy сейчас занят другой операцией — повторите позже.")
             return
         self._tg_done_cb = on_done
+        self._tg_restoring_off = not enable
         self._on_tg_proxy_toggle()
+        self._tg_launch_app = False     # вызов из кода (обновление), не пользователь — Telegram не открываем
 
     def on_core_updated(self) -> None:
         """Вызывается UpdatesTab после успешного обновления Core — перечитать пресеты."""

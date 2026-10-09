@@ -1,217 +1,390 @@
 """
 core/tgproxy/manager.py
 -----------------------
-Управление tg-ws-proxy — локальным MTProto прокси для Telegram.
-Exe лежит в: <app_root>/tgproxy/TgWsProxy_windows.exe
+TG WS Proxy — локальный MTProto-прокси для Telegram (Flowseal/tg-ws-proxy).
+
+Сервер работает в скрытом процессе FlowZap (core/tgproxy/host.py) из кода в
+<app_root>/tgproxy/src, настройки — config["tgproxy"] (core/tgproxy/settings.py).
+Своего окна, значка в трее и самообновления у него нет: всё управляется
+отсюда, обновляется — вкладкой «Обновления» (core/updates/tgproxy.py).
+
+Подключён ли Telegram — по таблице TCP-соединений: к порту сервера есть
+живые соединения, и видно, какая программа их открыла.
+
+До 1.1 FlowZap запускал готовый exe автора (TgWsProxy_windows.exe в
+tgproxy/) — migrate_legacy() его останавливает и удаляет.
 """
 
 import json
 import logging
 import os
-import re
 import subprocess
 import threading
 import time
+import webbrowser
 from pathlib import Path
 from typing import Callable, Optional
 
-from core.system import winproc
+from core.system import tcp, winproc
+from core.tgproxy import settings as tg_settings
+from core.tgproxy.host import CREATE_NO_WINDOW, probe, serve_command
 
 logger = logging.getLogger(__name__)
 
-PROXY_EXE_NAME = "TgWsProxy_windows.exe"
 PROXY_DIR_NAME = "tgproxy"
-PROXY_PORT     = 1080
-PROXY_HOST     = "127.0.0.1"
+LEGACY_EXE = "TgWsProxy_windows.exe"
+_LEGACY_AUTOSTART = "TgWsProxy"         # значение в HKCU\...\Run у exe автора
 
-# Сколько ждать после запуска, прежде чем считать, что прокси поднялся:
-# при занятом порте или битом конфиге процесс завершается почти сразу.
-_START_CHECK_SEC = 0.7
+# Сколько ждать, пока сервер откроет порт: импорт библиотек в новом
+# процессе на медленном диске — пара секунд
+_START_TIMEOUT_SEC = 15
 
-_SECRET_PATTERNS = [re.compile(p, re.IGNORECASE) for p in (
-    r'secret[=:\s]+([0-9a-fA-F]{32,})',
-    r'key[=:\s]+([0-9a-fA-F]{32,})',
-    r'"secret"\s*:\s*"([^"]+)"',
-    r'proxy.*secret.*?([0-9a-fA-F]{32,})',
-)]
+# Клиенты Telegram для компьютера: если такой запущен, а к прокси никто не
+# подключён — Telegram ходит мимо прокси
+TELEGRAM_APPS = frozenset(name.lower() for name in (
+    "Telegram.exe", "AyuGram.exe", "Kotatogram.exe", "64Gram.exe",
+    "Unigram.exe", "materialgram.exe", "Forkgram.exe",
+))
 
 
-def _read_proxy_config(proxy_dir: Path) -> tuple[Optional[str], int]:
-    """(secret, port) из конфига tg-ws-proxy: сначала %APPDATA%\\TgWsProxy\\config.json,
-    затем файлы рядом с exe. Чего нет — None / порт по умолчанию."""
-    candidates = [
-        Path(os.environ.get("APPDATA", "")) / "TgWsProxy" / "config.json",
-        proxy_dir / "config.json",
-        proxy_dir / "tgwsproxy.json",
-    ]
-    secret, port = None, None
-    for cfg in candidates:
-        if not cfg.exists():
-            continue
-        try:
-            text = cfg.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        try:
-            data = json.loads(text)
-            secret = secret or data.get("secret")
-            port = port or data.get("port")
-        except Exception:
-            m = re.search(r'"secret"\s*:\s*"([^"]+)"', text)
-            if m and not secret:
-                secret = m.group(1)
-        if secret and port:
-            break
+def src_dir(tgproxy_dir: Path) -> Path:
+    return tgproxy_dir / "src"
+
+
+def is_installed(tgproxy_dir: Path) -> bool:
+    return (src_dir(tgproxy_dir) / "proxy" / "tg_ws_proxy.py").is_file()
+
+
+def client_title(exe: str) -> str:
+    """«Telegram.exe» → «Telegram»; пусто (соединение с другого устройства) — «другое устройство»."""
+    if not exe:
+        return "другое устройство"
+    return exe[:-4] if exe.lower().endswith(".exe") else exe
+
+
+def _last_log_line(log_file: Path) -> str:
     try:
-        port = int(port) if port else PROXY_PORT
-    except (TypeError, ValueError):
-        port = PROXY_PORT
-    return secret, port
+        lines = log_file.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines[-40:]):
+        if "ERROR" in line or "Error" in line or "error" in line:
+            return line.strip()
+    return lines[-1].strip() if lines else ""
 
 
-def build_tg_link(secret: Optional[str] = None, port: int = PROXY_PORT) -> str:
-    """Собрать tg://proxy ссылку."""
-    base = f"tg://proxy?server={PROXY_HOST}&port={port}"
-    if secret:
-        base += f"&secret={secret}"
-    return base
+def _same_path(a: str, b: Path) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(str(b)))
+
+
+def migrate_legacy(tgproxy_dir: Path) -> None:
+    """Убрать exe автора, который ставил FlowZap до 1.1: процесс (только
+    запущенный из нашей папки — отдельно установленный TgWsProxy не трогаем),
+    файл и его автозапуск, если тот указывает на нашу папку. Синхронно."""
+    exe = tgproxy_dir / LEGACY_EXE
+    if exe.exists():
+        for pid, name in winproc.process_names().items():
+            if name.lower() == LEGACY_EXE.lower():
+                path = winproc.image_path(pid)
+                if path and _same_path(path, exe):
+                    logger.info(f"Останавливаю старый TgWsProxy из папки FlowZap (PID {pid})")
+                    winproc.kill_pid(pid)
+        for _ in range(10):
+            try:
+                exe.unlink()
+                logger.info("Старый TgWsProxy_windows.exe удалён — прокси теперь встроен в FlowZap")
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                time.sleep(0.3)       # процесс ещё не отпустил файл
+        else:
+            logger.warning("Не удалось удалить старый TgWsProxy_windows.exe — попробую при следующем запуске")
+        # Версия в version.txt была версией exe; кода сервера ещё нет — не установлен
+        if not is_installed(tgproxy_dir):
+            try:
+                (tgproxy_dir / "version.txt").unlink(missing_ok=True)
+            except OSError:
+                pass
+    _remove_legacy_autostart(exe)
+
+
+def _remove_legacy_autostart(exe: Path) -> None:
+    import winreg
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0,
+                            winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            value, _ = winreg.QueryValueEx(key, _LEGACY_AUTOSTART)
+            if os.path.normcase(str(exe)) in os.path.normcase(str(value)):
+                winreg.DeleteValue(key, _LEGACY_AUTOSTART)
+                logger.info("Удалён автозапуск старого TgWsProxy из папки FlowZap")
+    except OSError:
+        pass        # записи нет — и хорошо
 
 
 class TgProxyManager:
-    """Менеджер процесса tg-ws-proxy."""
+    """Процесс сервера TG WS Proxy. Синхронные методы — для фоновых потоков
+    и выхода из приложения; UI зовёт *_async."""
 
-    def __init__(self, app_root: Path, on_state_change: Callable[[bool], None] = None) -> None:
-        self._dir      = app_root / PROXY_DIR_NAME
-        self._exe      = self._dir / PROXY_EXE_NAME
+    def __init__(self, app_root: Path, config: dict) -> None:
+        self._dir = app_root / PROXY_DIR_NAME
+        self._log_file = app_root / "logs" / "tgproxy.log"
+        self._config = config
+        tg_settings.ensure_config(config)
         self._proc: Optional[subprocess.Popen] = None
-        self._on_state = on_state_change
-        self._lock     = threading.Lock()
-        self._secret:  Optional[str] = None
+        self._server_pid: Optional[int] = None     # кто слушает порт (обычно = _proc.pid)
+        self._port: Optional[int] = None
+        self._lock = threading.Lock()
+
+    # ── Состояние ────────────────────────────────────────────────────────
+
+    @property
+    def dir(self) -> Path:
+        return self._dir
+
+    @property
+    def log_file(self) -> Path:
+        return self._log_file
+
+    @property
+    def settings(self) -> dict:
+        return self._config["tgproxy"]
 
     @property
     def is_available(self) -> bool:
-        return self._exe.exists()
+        return is_installed(self._dir)
 
     @property
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
-    def start(self) -> bool:
-        """Запустить прокси и убедиться, что он не упал сразу. Синхронный
-        (ждёт ~0,7 с) — вызывать из фонового потока."""
+    # ── Запуск и остановка ───────────────────────────────────────────────
+
+    def _options(self) -> Optional[set[str]]:
+        """Параметры, которые знает установленная версия сервера (options.json
+        пишет установка; нет файла — спрашиваем сервер сейчас)."""
+        src = src_dir(self._dir)
+        path = src / "options.json"
+        try:
+            info = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            info = probe(src)
+            if info.get("error"):
+                logger.error(f"TG WS Proxy не запускается: {info['error']}")
+                return None
+            try:
+                path.write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                pass
+        options = info.get("options") if isinstance(info, dict) else None
+        return set(options) if isinstance(options, list) else None
+
+    def start(self) -> str:
+        """Запустить сервер и дождаться, пока он откроет порт. "" — работает,
+        иначе текст ошибки для пользователя. Синхронный (до ~15 с)."""
         with self._lock:
             if self.is_running:
-                return True
+                return ""
             if not self.is_available:
-                logger.warning(f"TgWsProxy не найден: {self._exe}")
-                return False
+                return "TG WS Proxy не установлен"
+            tg = self.settings
+            port = tg["port"]
+
+            options = self._options()
+            if options is None:
+                return ("Установленная версия TG WS Proxy не запускается — переустановите "
+                        "её во вкладке «Обновления»")
+            args, skipped = tg_settings.build_args(tg, options)
+            missing = [o for o in tg_settings.REQUIRED_OPTIONS if o in skipped]
+            if missing:
+                return (f"Эта версия TG WS Proxy не понимает {', '.join(missing)} — "
+                        "нужна новая версия FlowZap")
+            if skipped:
+                logger.warning(f"TG WS Proxy этой версии не знает {', '.join(skipped)} — "
+                               "эти настройки не применены")
+
+            try:
+                busy = tcp.listener_pid(port)
+            except OSError as e:
+                logger.warning(f"Таблица соединений недоступна: {e}")
+                busy = None
+            if busy is not None:
+                name = winproc.process_names().get(busy, "")
+                who = client_title(name) if name else "другая программа"
+                return (f"Порт {port} занят ({who}). Закройте её или смените порт "
+                        "в «Параметрах»")
+
             try:
                 self._proc = subprocess.Popen(
-                    [str(self._exe)],
+                    serve_command(src_dir(self._dir), self._log_file, args),
                     cwd=str(self._dir),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    creationflags=winproc.CREATE_NO_WINDOW,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=CREATE_NO_WINDOW,
                 )
-            except Exception as e:
-                logger.error(f"Ошибка запуска TgWsProxy: {e}")
-                return False
-            # Вывод читаем в фоне — ищем secret и не даём переполниться pipe
-            threading.Thread(target=self._read_output, args=(self._proc,),
-                             daemon=True, name="tgproxy-reader").start()
-            time.sleep(_START_CHECK_SEC)
-            if self._proc.poll() is not None:
-                logger.error(f"TgWsProxy завершился сразу после запуска (код {self._proc.returncode}) — "
-                             "возможно, порт занят другой программой")
+            except OSError as e:
+                logger.error(f"Ошибка запуска TG WS Proxy: {e}")
                 self._proc = None
-                return False
-            logger.info(f"TgWsProxy запущен (PID {self._proc.pid})")
-            if self._on_state:
-                self._on_state(True)
-            return True
+                return "Не удалось запустить TG WS Proxy — подробности в логе"
+
+            deadline = time.monotonic() + _START_TIMEOUT_SEC
+            while time.monotonic() < deadline:
+                if self._proc.poll() is not None:
+                    reason = _last_log_line(self._log_file)
+                    logger.error(f"TG WS Proxy завершился при запуске (код {self._proc.returncode}): {reason}")
+                    self._proc = None
+                    return "TG WS Proxy не запустился — подробности в logs/tgproxy.log"
+                try:
+                    pid = tcp.listener_pid(port)
+                except OSError:
+                    pid = None
+                if pid is not None:
+                    # Порт до запуска был свободен — слушает наш сервер (из
+                    # исходников python.exe может оказаться посредником, и
+                    # слушает тогда его дочерний процесс)
+                    self._server_pid, self._port = pid, port
+                    logger.info(f"TG WS Proxy работает на порту {port} (PID {pid})")
+                    return ""
+                time.sleep(0.15)
+
+            logger.error(f"TG WS Proxy не открыл порт {port} за {_START_TIMEOUT_SEC} с")
+            self._stop_locked()
+            return f"TG WS Proxy не открыл порт {port} — подробности в logs/tgproxy.log"
+
+    def _stop_locked(self) -> None:
+        proc, server_pid = self._proc, self._server_pid
+        self._proc = self._server_pid = self._port = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+        if server_pid is not None and proc is not None and server_pid != proc.pid:
+            winproc.kill_pid(server_pid)
 
     def stop(self) -> None:
         with self._lock:
-            if self.is_running:
-                pid = self._proc.pid
-                try:
-                    self._proc.terminate()
-                    self._proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    try:
-                        self._proc.kill()
-                        self._proc.wait(timeout=2)
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-                # Гарантированно (на случай, если процесс завис)
-                winproc.kill(PROXY_EXE_NAME)
-                logger.info(f"TgWsProxy остановлен (PID {pid})")
-            self._proc = None
-            if self._on_state:
-                self._on_state(False)
+            was_running = self.is_running
+            self._stop_locked()
+            if was_running:
+                logger.info("TG WS Proxy остановлен")
 
-    def _read_output(self, proc: subprocess.Popen) -> None:
-        """Читать вывод процесса — искать secret."""
-        try:
-            for line in proc.stdout:
-                text = line.decode("utf-8", errors="replace").strip()
-                if not text:
-                    continue
-                logger.debug(f"TgWsProxy: {text}")
-                for pattern in _SECRET_PATTERNS:
-                    m = pattern.search(text)
-                    if m:
-                        self._secret = m.group(1)
-                        logger.info(f"TgWsProxy secret найден: {self._secret[:8]}...")
-                        break
-        except Exception:
-            pass
-
-    def check_running_async(self, on_done: Callable[[bool, str], None]) -> None:
-        """Определить, запущен ли TgWsProxy в системе (в т.ч. вне FlowZap).
-        Сам создаёт поток, зовёт on_done(running, "")."""
-        threading.Thread(
-            target=lambda: on_done(winproc.is_running(PROXY_EXE_NAME), ""),
-            daemon=True, name="tgproxy-check",
-        ).start()
+    def stop_all(self) -> str:
+        """Синхронно остановить сервер (выход из приложения). "" — остановлен."""
+        self.stop()
+        return ""
 
     def set_running_async(self, enable: bool, on_done: Callable[[bool, str], None]) -> None:
-        """Включить/выключить TgWsProxy. on_done(running, error): running —
-        ФАКТИЧЕСКОЕ состояние после операции (не целевое), error — текст для
-        пользователя или ""."""
+        """Включить/выключить. on_done(running, error) из фонового потока:
+        running — ФАКТИЧЕСКОЕ состояние после операции."""
 
         def _worker() -> None:
             if enable:
-                if not self.is_available:
-                    on_done(False, f"TgWsProxy не найден: {self._exe}")
-                elif not self.start():
-                    on_done(False, "Не удалось запустить TgWsProxy — подробности в логе.")
-                else:
-                    on_done(True, "")
-                return
-            error = self.stop_all()
-            on_done(bool(error), error)
+                error = self.start()
+                on_done(not error, error)
+            else:
+                self.stop()
+                on_done(False, "")
 
         threading.Thread(target=_worker, daemon=True, name="tgproxy-toggle").start()
 
-    def stop_all(self) -> str:
-        """Синхронно остановить TgWsProxy — свой процесс через stop(), внешний
-        (запущенный не из FlowZap) — по имени. "" при успехе или текст ошибки,
-        если процесс всё ещё жив. Для выхода из приложения и set_running_async."""
-        if self.is_running:
+    def restart_async(self, on_done: Callable[[bool, str], None]) -> None:
+        """Перезапустить с новыми настройками. on_done(running, error)."""
+
+        def _worker() -> None:
             self.stop()
-        else:
-            winproc.kill(PROXY_EXE_NAME)
-        if winproc.is_running(PROXY_EXE_NAME):
-            return "Не удалось остановить TgWsProxy (возможно, нужны права администратора)."
-        return ""
+            error = self.start()
+            on_done(not error, error)
+
+        threading.Thread(target=_worker, daemon=True, name="tgproxy-restart").start()
+
+    def migrate_legacy_async(self, on_done: Callable[[], None]) -> None:
+        def _worker() -> None:
+            try:
+                migrate_legacy(self._dir)
+            except Exception:
+                logger.exception("Ошибка перехода со старого TgWsProxy")
+            on_done()
+
+        threading.Thread(target=_worker, daemon=True, name="tgproxy-migrate").start()
+
+    # ── Кто подключён ────────────────────────────────────────────────────
+
+    def _telegram_process(self, names: dict[int, str]) -> Optional[int]:
+        """PID запущенного клиента Telegram (известного или того, что уже
+        подключался к прокси) или None."""
+        known = TELEGRAM_APPS | ({self.settings.get("client", "").lower()} - {""})
+        return next((pid for pid, name in names.items() if name.lower() in known), None)
+
+    def poll_clients(self) -> tuple[bool, list[str], bool, str]:
+        """(жив ли сервер; exe клиентов, подключённых к нему — "" для
+        соединений с других устройств; запущен ли на компьютере Telegram;
+        путь к его exe или ""). Telegram смотрим и при выключенном прокси —
+        точка на плитке показывает, идёт ли он мимо прокси. Синхронный,
+        миллисекунды."""
+        names = winproc.process_names()
+        app_pid = self._telegram_process(names)
+        app_path = (winproc.image_path(app_pid) or "") if app_pid is not None else ""
+        app_running = app_pid is not None
+
+        server_pid, port = self._server_pid, self._port
+        if server_pid is None or port is None or not self.is_running:
+            return False, [], app_running, app_path
+        try:
+            conns = tcp.connections()
+        except OSError as e:
+            logger.debug(f"Таблица соединений недоступна: {e}")
+            return True, [], app_running, app_path
+        # Соединение видно дважды: со стороны сервера (наш порт) и со стороны
+        # клиента — по его адресу находим, чей это процесс
+        owners = {c.local: c.pid for c in conns if c.state == tcp.ESTABLISHED}
+        clients = []
+        for c in conns:
+            if c.state == tcp.ESTABLISHED and c.pid == server_pid and c.local[1] == port:
+                client_pid = owners.get(c.remote)
+                clients.append(names.get(client_pid, "") if client_pid is not None else "")
+        return True, clients, app_running, app_path
+
+    def poll_async(self, on_done: Callable[[bool, list[str], bool, str], None]) -> None:
+        threading.Thread(target=lambda: on_done(*self.poll_clients()),
+                         daemon=True, name="tgproxy-poll").start()
+
+    def launch_telegram(self) -> None:
+        """Запустить Telegram, если он ещё не запущен: по пути, запомненному,
+        когда он работал (так находятся и AyuGram, и нестандартная папка),
+        иначе из обычного места установки. Не нашли (например, версия из
+        Microsoft Store) — открываем tg://, Windows сама откроет Telegram."""
+        if self._telegram_process(winproc.process_names()) is not None:
+            return
+        candidates = [self.settings.get("client_path", ""),
+                      os.path.join(os.environ.get("APPDATA", ""), "Telegram Desktop", "Telegram.exe")]
+        for path in candidates:
+            if path and os.path.isfile(path):
+                try:
+                    subprocess.Popen([path], cwd=os.path.dirname(path), close_fds=True,
+                                     creationflags=subprocess.DETACHED_PROCESS)
+                    logger.info(f"Запущен Telegram: {path}")
+                    return
+                except OSError as e:
+                    logger.warning(f"Не удалось запустить {path}: {e}")
+        logger.info("Telegram не найден на диске — открываем tg://")
+        webbrowser.open("tg://")
+
+    def launch_telegram_async(self) -> None:
+        threading.Thread(target=self.launch_telegram, daemon=True, name="tgproxy-launch-tg").start()
+
+    # ── Подключение Telegram ─────────────────────────────────────────────
 
     def open_in_telegram(self) -> None:
-        import webbrowser
-        secret, port = _read_proxy_config(self._dir)
-        link = build_tg_link(self._secret or secret, port)
+        """Открыть tg://proxy — Telegram спросит «Подключить». Для Telegram на
+        этом компьютере адрес всегда 127.0.0.1: адрес в сети может смениться."""
         logger.info("Открываем Telegram: tg://proxy (127.0.0.1)")
-        webbrowser.open(link)
+        webbrowser.open(tg_settings.tg_link(self.settings))
+
+    def share_link(self) -> str:
+        """Ссылка для копирования: с доступом из сети — с адресом компьютера в
+        сети (для телефона), иначе 127.0.0.1."""
+        tg = self.settings
+        host = (tg_settings.lan_address() if tg.get("lan") else None) or tg_settings.LOCAL_HOST
+        return tg_settings.tg_link(tg, host)
