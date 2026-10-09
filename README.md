@@ -1,126 +1,242 @@
-> [!WARNING]
-> ## ⚠️ Проект находится в активной разработке
->
-> Приложение может содержать баги и нестабильные функции. Если вы столкнулись с проблемой или что-то не работает — пожалуйста, [создайте Issue](../../issues/new) и опишите проблему. Ваши отчёты помогают улучшить проект.
+<div align="center">
 
-## Безопасность
+<img src="docs/banner.png" alt="FlowZap — Discord, YouTube, Telegram и нейросети одной кнопкой" width="100%">
 
-[![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/250917ecf8454c4fe50a20ab6bec8cb416b1ed52a3161577778e2c4218f2dcfd?nocache=1)
+<br>
 
-- 🔒 Исходный код полностью открыт — вы можете проверить его самостоятельно
+[![Скачать](https://img.shields.io/github/v/release/xxFireflyxx/FlowZap-Zapret-GUI?label=%D1%81%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C&style=for-the-badge&color=22e4ff&labelColor=0d0f1c)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)
+[![Загрузки](https://img.shields.io/github/downloads/xxFireflyxx/FlowZap-Zapret-GUI/total?label=%D0%B7%D0%B0%D0%B3%D1%80%D1%83%D0%B7%D0%BA%D0%B8&style=for-the-badge&color=7c5cff&labelColor=0d0f1c)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%20%2F%2011-20e39c?style=for-the-badge&labelColor=0d0f1c)](#-установка)
+[![Kaspersky: безопасно](https://img.shields.io/badge/Kaspersky-%D0%B1%D0%B5%D0%B7%D0%BE%D0%BF%D0%B0%D1%81%D0%BD%D0%BE-3cffa0?style=for-the-badge&labelColor=0d0f1c)](https://opentip.kaspersky.com/37F3E4655724E62B4A34980A56DBECA5EE081F62A4DDD49848E8D39615837ACB/results?tab=upload)
 
-# FlowZap
+**Русский** · [English](#english)
 
-[![Downloads](https://img.shields.io/github/downloads/xxFireflyxx/FlowZap-Zapret-GUI/total)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
-[![Version](https://img.shields.io/github/v/release/xxFireflyxx/FlowZap-Zapret-GUI)](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)
-![Platform](https://img.shields.io/badge/platform-Windows-blue)
+</div>
 
-⭐ Если приложение помогло — поставь звезду, это мотивирует развивать проект!
+FlowZap — приложение для Windows, которое возвращает Discord и YouTube, подключает Telegram через прокси и открывает нейросети — ChatGPT, Gemini и другие сервисы, которые сами закрыли доступ из России. Внутри — проверенный обход [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) и [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy), а снаружи — три плитки и пара кликов. Ни консоли, ни `.bat`-файлов, ни ручной настройки.
 
-**RU** | [EN](#english)
+<div align="center">
 
-Графический интерфейс для управления [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) на Windows.  
-Позволяет легко переключать пресеты обхода блокировок, управлять DNS — без командной строки.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/home-dark.png">
+  <img src="docs/screenshots/home-light.png" alt="Главный экран FlowZap: обход, DNS и Telegram Proxy включены" width="100%">
+</picture>
 
----
+</div>
 
-## Возможности
-
-- 🔓 Обход блокировок Discord, YouTube и других сайтов через zapret
-- 🌐 Управление DNS-серверами (основной + запасные) — по умолчанию используется [xbox-dns.ru](https://xbox-dns.ru), можно заменить на свои
-- 📋 Выбор пресета из списка с цветным индикатором проверки (⚪ не проверялось, 🔵 идёт проверка, 🟢 работает, 🟡 нестабильно, 🔴 не работает)
-- 🎮 Game Filter — расширенная фильтрация игрового трафика с выбором режима (TCP / UDP / Все)
-- 📲 Управление TG Proxy прямо с главного экрана
-- ⬇️ Автоустановка zapret и TG Proxy при первом запуске — просто нажми «Запуск», всё скачается само, без похода во вкладку «Обновления»
-- 💾 Восстанавливает выбранный пресет и состояние DNS/TG Proxy между запусками — корректно работает даже после перезагрузки Windows
-- ❓ Подсказки прямо в интерфейсе — значок «?» рядом с непонятными разделами
-- 🎨 Четыре темы оформления на выбор — тёмные и светлые варианты
-- 🚀 Автозапуск FlowZap вместе с Windows — настраивается в один клик
-- ⚡ Автозапуск zapret при старте приложения
-- 🔄 Обновление zapret (Core), TG Proxy и FlowZap прямо из вкладки **Обновления**
-- 🖥️ Не требует навыков работы с консолью
+> [!NOTE]
+> FlowZap активно развивается. Что-то не работает — [напишите в Issues](../../issues/new), это очень помогает.
 
 ---
 
-## Установка
+## ✨ Что умеет
 
-### Вариант 1 — EXE (рекомендуется)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/features-dark.png">
+  <img src="docs/features-light.png" alt="Обход блокировок, свой DNS, Telegram Proxy, проверка пресетов, работа без прав администратора, автозагрузка, обновления, Game Filter, шесть тем" width="100%">
+</picture>
 
-1. Скачай последний релиз со страницы **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)**
-2. Распакуй архив
-3. Запусти `FlowZap.exe` от имени администратора
-4. Если у вас уже есть папка `zapret/` — просто положите её рядом с `FlowZap.exe`
-5. Если папки нет — просто нажми **Запуск** на главном экране, zapret скачается и установится автоматически
-6. Готово — можно запускать обход блокировок
+<details>
+<summary>Подробнее о возможностях</summary>
 
-### Вариант 2 — из исходников
+<br>
 
-**Требования:** Python 3.11+
+- 🔍 **Проверка пресетов** — FlowZap по очереди пробует каждый пресет и показывает результат цветом: 🟢 работает · 🟡 частично · 🔴 не работает. Лучший — сверху, с временем ответа.
+- 🔐 **Без прав администратора** — один раз ставится фоновая служба FlowZap Service (одно окно Windows), дальше FlowZap запускается как обычная программа.
+- ⬇️ **Всё скачивается само** — при первом нажатии «Включить» FlowZap загрузит zapret и проверит файлы по контрольной сумме.
+- 🔄 **Обновления в один клик** — FlowZap, zapret и TG Proxy обновляются на вкладке «Обновления». Если загрузка с GitHub упёрлась в лимит из-за DNS, FlowZap сам повторит её без него.
+- 💾 **Помнит, что было включено** — после перезагрузки Windows обход, DNS и прокси вернутся как были.
+- 🎮 **Game Filter** — обход для онлайн-игр: TCP, UDP или оба.
+- 📱 **Прокси для телефона** — телефон в той же Wi-Fi сети может пользоваться прокси компьютера.
+- 🎨 **Шесть тем** — Светлая, Земляная, Персиковая, Тёмная, Карбон и Неон, у каждой своё «северное сияние» на фоне.
+- 🚀 **Автозапуск с Windows** и сворачивание в трей.
 
-1. Скачай репозиторий: кнопка **Code → Download ZIP** на GitHub
-2. Распакуй архив
-3. Запусти `run_admin.bat` — он установит зависимости и запустит FlowZap
-
----
-
-## Использование
-
-1. Открой приложение
-2. В главном окне выбери нужный пресет из списка
-3. Нажми **Запуск**
-4. При необходимости включи DNS кнопкой на главном экране
-5. Для смены пресета — просто выбери другой, zapret перезапустится автоматически
-
-### Управление DNS
-
-1. Перейди во вкладку **Параметры** → раздел **DNS серверы**
-2. Нажми **+** чтобы добавить новую пару DNS (основной + запасной адрес)
-3. Чтобы выбрать активный DNS — нажми на нужную запись в списке
-4. Чтобы удалить — нажми **✕** рядом с записью
-5. Включи/выключи DNS кнопкой на главном экране
-
-### Списки zapret
-
-1. Перейди во вкладку **Параметры** → раздел **Списки zapret**
-2. Введи домен (или вставь ссылку целиком — домен выделится автоматически) и нажми **Добавить**
-3. Чтобы удалить домен — выбери его в списке и нажми **Удалить**
-
-### Обновление zapret
-
-Вкладка **Обновления** → **Проверить** в разделе Core → **Обновить**
-
-### Обновление TG Proxy
-
-Вкладка **Обновления** → **Проверить** в разделе TG Proxy → **Обновить**
-
-### Обновление FlowZap
-
-Вкладка **Обновления** → **Проверить** → **Обновить**
+</details>
 
 ---
 
-## Интерфейс
+## 📥 Установка
 
-<img width="958" height="668" alt="Анимация2" src="https://github.com/user-attachments/assets/03eba1fc-8359-4996-a9d8-d562d3110236" />
+1. Скачайте архив `FlowZap-vX.X.X.zip` со страницы **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)**.
+2. Распакуйте его в любую папку, например `C:\FlowZap` — не на рабочий стол внутри архива.
+3. Запустите **`FlowZap.exe`**. Права администратора не нужны.
+
+> [!TIP]
+> Windows SmartScreen может показать «Windows защитила ваш компьютер» — у FlowZap пока нет платной цифровой подписи. Нажмите **Подробнее → Выполнить в любом случае**.
+
+**Требования:** Windows 10 или 11 (64-бит), интернет для первой загрузки zapret.
+
+> [!NOTE]
+> **🛡️ Безопасность.** Kaspersky проверил FlowZap, в том числе запустив его в песочнице: **«Безопасный объект»** — угроз и подозрительных действий не найдено. [Отчёт Kaspersky OpenTIP](https://opentip.kaspersky.com/37F3E4655724E62B4A34980A56DBECA5EE081F62A4DDD49848E8D39615837ACB/results?tab=upload)
 
 ---
 
-## Благодарности
+## 🚀 Первый запуск
 
-- [Flowseal](https://github.com/Flowseal) — за пресеты и скрипты zapret-discord-youtube
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/steps-dark.png">
+  <img src="docs/steps-light.png" alt="Четыре шага: включите обход, разрешите службу, дождитесь проверки пресетов, нажмите «Использовать»" width="100%">
+</picture>
+
+1. **Нажмите тумблер «Обход блокировок»** на главной — FlowZap скачает zapret.
+2. Затем он **сам проверит пресеты и подскажет лучший** — около полутора минут, ход видно по полосе в блоке «Пресеты». В начале Windows один раз спросит разрешение на установку **фоновой службы** (окно UAC) — согласитесь. Больше это окно появляться не будет.
+3. Когда проверка закончится, у лучшего пресета нажмите **«Использовать»** и включите тумблер ещё раз.
+4. Готово — Discord и YouTube открываются. В следующий раз хватит одного тумблера, а можно и вовсе включить обход при запуске в **Настройках**.
+
+<div align="center">
+<img src="docs/screenshots/check.webp" alt="Проверка пресетов: FlowZap по очереди пробует каждый" width="90%">
+<br><sub>Проверка пресетов (ускорено — на деле около 1,5 мин)</sub>
+</div>
+
+### Свой DNS и нейросети
+Включите тумблер **«Свой DNS»** на главной — и откроются нейросети и сервисы, которые сами ограничили доступ из России: ChatGPT, Gemini и другие. Это делают встроенные DNS-серверы (xbox-dns и другие): для таких сервисов они пропускают запросы через себя. Сервер выбирается во вкладке **Параметры → DNS-серверы**: там встроенные серверы и время их ответа, можно добавить свой. При выходе из FlowZap возвращается DNS провайдера.
+
+### Telegram Proxy
+1. Включите тумблер **«Telegram Proxy»** на главной.
+2. Нажмите **«Подключить в Telegram»** — Telegram откроется и предложит добавить прокси. Нажмите «Подключить».
+3. На плитке появится зелёная точка — Telegram работает через прокси.
+
+Порт, секрет, прокси для телефона и дополнительные настройки — во вкладке **Параметры → Telegram Proxy**.
+
+
+---
+
+## 🖼️ Интерфейс
+
+<table>
+<tr>
+<td align="center"><b>Параметры</b></td>
+<td align="center"><b>Обновления</b></td>
+</tr>
+<tr>
+<td width="50%">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/parameters-dark.png">
+  <img src="docs/screenshots/parameters-light.png" alt="Параметры: DNS-серверы, списки сайтов, Telegram Proxy" width="100%">
+</picture>
+
+</td>
+<td width="50%">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/updates-dark.png">
+  <img src="docs/screenshots/updates-light.png" alt="Обновления: FlowZap, zapret и TG Proxy" width="100%">
+</picture>
+
+</td>
+</tr>
+<tr>
+<td align="center"><b>Настройки</b></td>
+<td align="center"><b>Главная</b></td>
+</tr>
+<tr>
+<td width="50%">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/settings-dark.png">
+  <img src="docs/screenshots/settings-light.png" alt="Настройки: запуск, темы, фоновая служба" width="100%">
+</picture>
+
+</td>
+<td width="50%">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/home-dark.png">
+  <img src="docs/screenshots/home-light.png" alt="Главная" width="100%">
+</picture>
+
+</td>
+</tr>
+</table>
+
+| Вкладка | Что там |
+|---|---|
+| **Главная** | Три плитки — обход, DNS, Telegram Proxy — и блок «Пресеты» с лучшим пресетом и проверкой |
+| **Параметры** | DNS-серверы, списки сайтов для обхода, настройки Telegram Proxy |
+| **Обновления** | FlowZap, zapret и TG Proxy: версия, что нового, обновить |
+| **Настройки** | Тема, автозапуск, трей, фоновая служба, ярлык, логи |
+
+---
+
+## ❓ Частые вопросы
+
+<details>
+<summary><b>Discord или YouTube всё равно не открываются</b></summary>
+
+<br>
+
+Нажмите **«Проверить заново»** в блоке «Пресеты» — провайдеры меняют блокировки, и лучший пресет со временем может смениться. Если ни один не работает — обновите zapret во вкладке «Обновления»: Flowseal регулярно выпускает новые пресеты.
+
+</details>
+
+<details>
+<summary><b>Как открываются ChatGPT, Gemini и другие нейросети?</b></summary>
+
+<br>
+
+Их блокирует не провайдер, а сами сервисы — по стране. Обход zapret тут не поможет, а **свой DNS** поможет: встроенные серверы FlowZap (xbox-dns и другие) подставляют для таких сайтов свои адреса и пропускают запросы через себя. Включите тумблер «Свой DNS» на главной. Какие именно сервисы открываются — решает выбранный DNS-сервер; если какой-то не открылся, попробуйте другой во вкладке **Параметры → DNS-серверы**.
+
+</details>
+
+<details>
+<summary><b>Зачем фоновая служба и безопасно ли это?</b></summary>
+
+<br>
+
+Обход (WinDivert) и смена DNS требуют прав администратора. Чтобы не запускать FlowZap от администратора каждый раз, их выполняет маленькая служба **FlowZap Service**. Она умеет только это: запустить или остановить обход, поменять или сбросить DNS, обновить свой zapret с GitHub (со сверкой контрольной суммы). Других программ она не запускает. Удалить её можно в **Настройках** одной кнопкой.
+
+</details>
+
+<details>
+<summary><b>Антивирус ругается на FlowZap или zapret</b></summary>
+
+<br>
+
+Часть антивирусов помечает WinDivert и `winws.exe` как «HackTool» или «RiskTool» — это инструменты для работы с сетевым трафиком, и так же реагируют на сам zapret от Flowseal. Код FlowZap открыт — его можно посмотреть в этом репозитории.
+
+</details>
+
+<details>
+<summary><b>Не работают онлайн-игры</b></summary>
+
+<br>
+
+Включите **Game Filter** в шапке блока «Пресеты»: TCP — для игр с подключением по TCP, UDP — для большинства онлайн-игр и голоса, «TCP и UDP» — максимальный охват.
+
+</details>
+
+<details>
+<summary><b>Как перенести настройки или удалить FlowZap?</b></summary>
+
+<br>
+
+Все настройки — в файле `config.toml` рядом с `FlowZap.exe`. Чтобы удалить FlowZap: в **Настройках** удалите фоновую службу, выключите автозапуск, затем удалите папку с программой.
+
+</details>
+
+<details>
+<summary><b>Где логи, если нужно сообщить об ошибке?</b></summary>
+
+<br>
+
+**Настройки → Логи → Открыть папку** — откроется папка `logs` с выделенным файлом `flowzap.log`. Приложите его к [Issue](../../issues/new).
+
+</details>
+
+---
+
+## 🙏 Благодарности
+
+- [Flowseal](https://github.com/Flowseal) — за [zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) и [tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy)
+- [bol-van](https://github.com/bol-van) — за [zapret](https://github.com/bol-van/zapret), на котором всё построено
 - [medvedeff-true](https://github.com/medvedeff-true) — за игровые списки доменов и IP ([ru-gaming-blocklist](https://github.com/medvedeff-true/ru-gaming-blocklist))
 
 ---
 
-## Автор
+## 📄 Лицензия
 
-Разработано [xxFireflyxx](https://github.com/xxFireflyxx)
-
----
-
-## Лицензия
-
-Все права защищены — полные условия в файле [LICENSE](LICENSE).
+**© 2026 [xxFireflyxx](https://github.com/xxFireflyxx). Все права защищены** — полные условия в файле [LICENSE](LICENSE).
 
 - ✅ Можно бесплатно скачивать FlowZap отсюда или с [GitLab](https://gitlab.com/xx_firefly_xx/flowzap), пользоваться им и делиться ссылкой
 - ✅ Можно смотреть код и изучать, как всё устроено
@@ -128,123 +244,47 @@
 
 Вдохновились идеей и пишете своё? Будет приятно, если упомянете FlowZap в своём README 🙂
 
-Версии, опубликованные до смены лицензии, остаются под MIT.
+<div align="center">
+
+⭐ **Если FlowZap помог — поставьте звезду, это лучшая мотивация развивать проект!**
+
+</div>
 
 ---
-
-> [!WARNING]
-> ## ⚠️ This project is under active development
->
-> The application may contain bugs and unstable features. If you encounter a problem or something doesn't work — please [open an Issue](../../issues/new) and describe the problem. Your reports help improve the project.
-
-## Security
-
-[![VirusTotal](https://img.shields.io/badge/VirusTotal-Clean-brightgreen)](https://www.virustotal.com/gui/file/426e2d3eb4cc289b5ac99ddaaa0c86bd37879d891915454d70dd2a2f1093884f/detection)
-
-- 🔒 The source code is fully open — you can verify it yourself
 
 <a name="english"></a>
 
-# FlowZap — English
+<div align="center">
 
-A graphical interface for managing [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) on Windows.  
-Bypass site blocks (Discord, YouTube, etc.) without touching the command line.
+## 🇬🇧 English
 
----
+</div>
 
-## Features
+FlowZap is a Windows app that brings back Discord and YouTube, connects Telegram through a proxy and opens AI services such as ChatGPT and Gemini that block Russia themselves. Under the hood it runs the proven [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube) bypass and [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy); on the surface — three tiles and a couple of clicks. No console, no `.bat` files. The interface is in Russian.
 
-- 🔓 Bypass blocks for Discord, YouTube and other sites via zapret
-- 🌐 DNS server management (primary + fallback) — [xbox-dns.ru](https://xbox-dns.ru) by default, customizable
-- 📋 Preset selector with color-coded check status (⚪ not checked, 🔵 checking, 🟢 working, 🟡 unstable, 🔴 not working)
-- 🎮 Game Filter — extended filtering for game traffic with selectable mode (TCP / UDP / All)
-- 📲 TG Proxy management right from the main screen
-- ⬇️ Auto-installs zapret and TG Proxy on first launch — just click **Start**, everything downloads automatically, no need to visit the Updates tab
-- 💾 Restores the selected preset and DNS/TG Proxy state between sessions — works correctly even after a Windows reboot
-- ❓ In-app hints — a "?" icon next to sections that need explaining
-- 🎨 Four UI themes — dark and light variants
-- 🚀 Launch FlowZap with Windows — configurable in one click
-- ⚡ Auto-start zapret when the app launches
-- 🔄 Update zapret (Core), TG Proxy and FlowZap directly from the **Updates** tab
-- 🖥️ No command line skills needed
+### Features
 
----
+- 🛡️ **Block bypass** — FlowZap tests every zapret preset, ranks them by result and speed, and enables the best one.
+- 🌐 **Custom DNS** — opens ChatGPT, Gemini and other AI services that geo-block Russia; one switch, applied in a fraction of a second.
+- ✈️ **Telegram Proxy** — built into FlowZap, no extra apps or tray icons; connect Telegram with one button.
+- 🔐 **No admin rights** — a small background service (FlowZap Service) is installed once with a single UAC prompt.
+- ⬇️ **Downloads everything itself** — zapret is fetched and checksum-verified on first start.
+- 🔄 **One-click updates** for FlowZap, zapret and TG Proxy.
+- 💾 **Restores state** after a Windows reboot; 🎮 **Game Filter**; 📱 **proxy for your phone**; 🎨 **six themes**, each with its own live aurora background.
 
-## Installation
+### Installation
 
-### Option 1 — EXE (recommended)
+1. Download `FlowZap-vX.X.X.zip` from **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases/latest)**.
+2. Extract it to any folder, e.g. `C:\FlowZap`.
+3. Run **`FlowZap.exe`** — no administrator rights needed.
+4. Turn on **«Обход блокировок»** (Block bypass). FlowZap downloads zapret and tests the presets (~1.5 min); accept the one-time background service prompt. Then click **«Использовать»** (Use) on the best preset and turn the switch on again.
 
-1. Download the latest release from the **[Releases](https://github.com/xxFireflyxx/FlowZap-Zapret-GUI/releases)** page
-2. Extract the archive
-3. Run `FlowZap.exe` as administrator
-4. If you already have a `zapret/` folder — place it next to `FlowZap.exe`
-5. If you don't have it — just click **Start** on the main screen, zapret will be downloaded and installed automatically
-6. Done — you can now start bypassing blocks
+If SmartScreen warns you, click **More info → Run anyway** — FlowZap has no paid code-signing certificate yet.
 
-### Option 2 — from source
+🛡️ Kaspersky rates FlowZap as a **safe object**, including a sandbox run: [Kaspersky OpenTIP report](https://opentip.kaspersky.com/37F3E4655724E62B4A34980A56DBECA5EE081F62A4DDD49848E8D39615837ACB/results?tab=upload).
 
-**Requirements:** Python 3.11+
+**Requirements:** Windows 10 or 11 (64-bit).
 
-1. Download the repository: click **Code → Download ZIP** on GitHub
-2. Extract the archive
-3. Run `run_admin.bat` — it will install dependencies and launch FlowZap
+### License
 
----
-
-## Usage
-
-1. Open the application
-2. In the main window, select the desired preset from the list
-3. Click **Start**
-4. If needed, enable DNS using the button on the main screen
-5. To switch presets — just select another one, zapret will restart automatically
-
-### DNS Management
-
-1. Go to the **Parameters** tab → **DNS Servers** section
-2. Click **+** to add a new DNS pair (primary + backup address)
-3. To select the active DNS — click on the desired entry in the list
-4. To delete — click **✕** next to the entry
-5. Enable/disable DNS using the button on the main screen
-
-### Block Lists
-
-1. Go to the **Parameters** tab → **zapret Lists** section
-2. Enter a domain (or paste a full URL — the domain will be extracted automatically) and click **Add**
-3. To remove a domain — select it in the list and click **Delete**
-
-### Updating zapret
-**Updates** tab → **Check** in the Core section → **Update**
-
-### Updating TG Proxy
-**Updates** tab → **Check** in the TG Proxy section → **Update**
-
-### Updating FlowZap
-**Updates** tab → **Check** → **Update**
-
----
-
-## Credits
-
-- [Flowseal](https://github.com/Flowseal) — for zapret-discord-youtube presets and scripts
-- [medvedeff-true](https://github.com/medvedeff-true) — for gaming domain and IP lists ([ru-gaming-blocklist](https://github.com/medvedeff-true/ru-gaming-blocklist))
-
----
-
-## Author
-
-Developed by [xxFireflyxx](https://github.com/xxFireflyxx)
-
----
-
-## License
-
-All rights reserved — see [LICENSE](LICENSE) for the full terms.
-
-- ✅ You may download FlowZap for free from here or from [GitLab](https://gitlab.com/xx_firefly_xx/flowzap), use it and share the link
-- ✅ You may view the code and study how it works
-- ❌ Without the author's permission you may not copy the code, publish your own builds or modified versions, or make money from the program
-
-Inspired by the idea and building your own? A mention of FlowZap in your README would be appreciated 🙂
-
-Versions published before the license change remain under the MIT License.
+**© 2026 [xxFireflyxx](https://github.com/xxFireflyxx). All rights reserved** — see [LICENSE](LICENSE). You may download FlowZap for free from here or [GitLab](https://gitlab.com/xx_firefly_xx/flowzap), use it, share the link and read the code. Copying the code, publishing your own builds or modified versions, or making money from the program requires the author's permission.
