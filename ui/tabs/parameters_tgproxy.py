@@ -390,7 +390,7 @@ class TgProxyCard(QFrame):
         if port == self._tg["port"]:
             return
         self._tg["port"] = port
-        self._saved("✓ Порт изменён — подключите Telegram заново")
+        self._saved("✓ Порт изменён — " + self._relink_hint())
 
     def _new_secret(self) -> None:
         reply = QMessageBox.question(
@@ -400,8 +400,16 @@ class TgProxyCard(QFrame):
         if reply != QMessageBox.Yes:
             return
         self._tg["secret"] = tg_settings.new_secret()
+        log.info("TG Proxy: новый секрет — Telegram и телефоны нужно подключить заново")
         self._secret.setText(_mask(self._tg["secret"]))
-        self._saved("✓ Новый секрет — подключите Telegram заново")
+        self._saved("✓ Новый секрет — " + self._relink_hint())
+
+    def _relink_hint(self) -> str:
+        """Telegram откроется сам (прокси работает, Telegram открыт) — или
+        подсказка, где подключить. Телефоны — только заново по QR-коду."""
+        if self._ctl.relink_telegram():
+            return "Telegram сейчас спросит «Подключить», подтвердите"
+        return "подключите Telegram заново кнопкой «Подключить в Telegram»"
 
     def _apply_lan(self) -> None:
         self._tg["lan"] = self._sw_lan.isChecked()
