@@ -37,9 +37,7 @@ def find_exe_asset(release: dict) -> Optional[dict]:
         and a.get("browser_download_url", "")
     ]
 
-    # Приоритет 0: полная сборка flowzap-full-vX.X.X.zip (с 1.0). flowzap-vX.zip
-    # рядом с ней — «мост» для 0.5.x (bridge/): он тоже сработает, но качать
-    # полную сборку прямо — короче.
+    # Приоритет 0: полная сборка flowzap-full-vX.X.X.zip (так называется с 1.0)
     for asset in real_assets:
         name = asset.get("name", "").lower()
         if name.startswith("flowzap-full-") and name.endswith(".zip"):
@@ -115,7 +113,7 @@ def _extract_update_payload(data: bytes, parent: Path) -> Optional[Path]:
             root = Path(exe_member).parent.as_posix()
             internal_prefix = f"{root}/_internal/" if root not in ("", ".") else "_internal/"
 
-            temp_dir = Path(tempfile.mkdtemp(prefix="_flowzap_update_", dir=parent))
+            temp_dir = _new_update_dir(parent)
             (temp_dir / "FlowZap.exe").write_bytes(zf.read(exe_member))
 
             internal_members = [
@@ -303,6 +301,19 @@ def _launch_swap_script(script_path: Path) -> None:
         subprocess.Popen(cmd, creationflags=flags, close_fds=True)
 
 
+def _new_update_dir(parent: Path) -> Path:
+    """Папка для распаковки обновления рядом с FlowZap. Не tempfile.mkdtemp:
+    с Python 3.13 она получает права «только владелец», и они переезжают
+    вместе с файлами в папку FlowZap. Если FlowZap обновлялся от
+    администратора, владелец — группа администраторов, и новый FlowZap.exe
+    потом не запустить ни щелчком, ни автозапуском (так сломалось
+    самообновление 0.5.2). Обычная папка наследует права папки FlowZap."""
+    import uuid
+    path = parent / f"_flowzap_update_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    path.mkdir()
+    return path
+
+
 def cleanup_old_update_leftovers(root: Path) -> None:
     """Удалить FlowZap.exe.old и _internal.old, оставшиеся после
     обновления. Вызывается один раз при следующем успешном старте
@@ -311,8 +322,7 @@ def cleanup_old_update_leftovers(root: Path) -> None:
     """
     exe_old = root / "FlowZap.exe.old"
     internal_old = root / "_internal.old"
-    leftovers = [exe_old, internal_old, *root.glob("_flowzap_update_*"),
-                 root / "FlowZap.exe.bridge", root / "_flowzap_bridge_tmp"]     # после моста с 0.5.x
+    leftovers = [exe_old, internal_old, *root.glob("_flowzap_update_*")]
     for path in leftovers:
         if not path.exists():
             continue
@@ -376,7 +386,7 @@ def download_and_install_exe(
             if not payload_dir:
                 raise ValueError("FlowZap.exe не найден внутри zip архива")
         else:
-            payload_dir = Path(tempfile.mkdtemp(prefix="_flowzap_update_", dir=target_dir))
+            payload_dir = _new_update_dir(target_dir)
             (payload_dir / "FlowZap.exe").write_bytes(data)
 
         new_internal = payload_dir / "_internal"
