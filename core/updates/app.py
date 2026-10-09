@@ -37,7 +37,8 @@ def find_exe_asset(release: dict) -> Optional[dict]:
         and a.get("browser_download_url", "")
     ]
 
-    # Приоритет 0: полная сборка flowzap-full-vX.X.X.zip (так называется с 1.0)
+    # Приоритет 0: flowzap-full-vX.X.X.zip — запас на случай, если в релизе
+    # появятся два архива (полный и служебный); обычно его нет
     for asset in real_assets:
         name = asset.get("name", "").lower()
         if name.startswith("flowzap-full-") and name.endswith(".zip"):
