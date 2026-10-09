@@ -7,6 +7,9 @@ tomli_w==1.2.0
 # Сеть (updater ходит через urllib; certifi даёт CA-сертификаты для SSL)
 certifi==2026.7.22
 
+# QR-код ссылки на TG Proxy для телефона (чистый Python, без зависимостей)
+segno==1.6.6
+
 # Сервер TG WS Proxy (tgproxy/src, код Flowseal/tg-ws-proxy) — те же версии,
 # что в его pyproject.toml; FlowZap запускает сервер своим Python
 cryptography==46.0.5

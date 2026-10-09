@@ -388,3 +388,11 @@ class TgProxyManager:
         tg = self.settings
         host = (tg_settings.lan_address() if tg.get("lan") else None) or tg_settings.LOCAL_HOST
         return tg_settings.tg_link(tg, host)
+
+    def phone_link(self) -> Optional[str]:
+        """Ссылка для QR-кода: tg:// с адресом компьютера в сети. Не t.me —
+        камера открывает её через браузер, а t.me часто заблокирован (страница
+        висит); tg:// камера Android передаёт прямо в Telegram (проверено).
+        None — компьютер не в сети (адрес не определить)."""
+        host = tg_settings.lan_address()
+        return tg_settings.tg_link(self.settings, host) if host else None
