@@ -37,6 +37,14 @@ def find_exe_asset(release: dict) -> Optional[dict]:
         and a.get("browser_download_url", "")
     ]
 
+    # Приоритет 0: полная сборка flowzap-full-vX.X.X.zip (с 1.0). flowzap-vX.zip
+    # рядом с ней — «мост» для 0.5.x (bridge/): он тоже сработает, но качать
+    # полную сборку прямо — короче.
+    for asset in real_assets:
+        name = asset.get("name", "").lower()
+        if name.startswith("flowzap-full-") and name.endswith(".zip"):
+            return asset
+
     # Приоритет 1: flowzap-vX.X.X.zip
     for asset in real_assets:
         name = asset.get("name", "").lower()
@@ -303,7 +311,8 @@ def cleanup_old_update_leftovers(root: Path) -> None:
     """
     exe_old = root / "FlowZap.exe.old"
     internal_old = root / "_internal.old"
-    leftovers = [exe_old, internal_old, *root.glob("_flowzap_update_*")]
+    leftovers = [exe_old, internal_old, *root.glob("_flowzap_update_*"),
+                 root / "FlowZap.exe.bridge", root / "_flowzap_bridge_tmp"]     # после моста с 0.5.x
     for path in leftovers:
         if not path.exists():
             continue
