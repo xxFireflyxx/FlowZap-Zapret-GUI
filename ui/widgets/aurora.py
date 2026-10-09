@@ -162,8 +162,8 @@ class AuroraBackground(QWidget):
 
     def _colors(self) -> list[QColor]:
         pal = theme.palette
-        names = AURORA_DARK if pal.is_dark else AURORA_LIGHT
-        alpha = 0.34 if pal.is_dark else 0.5
+        names = pal.aurora or (AURORA_DARK if pal.is_dark else AURORA_LIGHT)
+        alpha = pal.aurora_alpha or (0.34 if pal.is_dark else 0.5)
         colors = []
         for name in names:
             c = QColor(getattr(pal, name) if not name.startswith("#") else name)

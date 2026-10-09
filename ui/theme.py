@@ -25,6 +25,32 @@ def _mix(c1: str, c2: str, t: float) -> str:
     return "#" + "".join(f"{round(x + (y - x) * t):02x}" for x, y in zip(a, b))
 
 
+def _luminance(c: str) -> float:
+    def ch(v: int) -> float:
+        v = v / 255
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(c[i:i + 2], 16) for i in (1, 3, 5))
+    return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b)
+
+
+def _contrast(a: str, b: str) -> float:
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def readable(fg: str, bg: str, toward: str, minimum: float = 4.5) -> str:
+    """Цветной текст на фоне — читаемым: если контраст ниже minimum (4.5:1 —
+    порог для обычного текста), цвет понемногу смешивается с toward
+    (основной цвет текста темы), пока не станет читаемым. Нужно для
+    светлых акцентов вроде персикового: на мятной плашке #f8a978 почти
+    не читался. Где контраста хватает — цвет не меняется."""
+    for step in range(21):
+        c = _mix(fg, toward, step / 20)
+        if _contrast(c, bg) >= minimum:
+            return c
+    return toward
+
+
 @dataclass(frozen=True)
 class Palette:
     is_dark:        bool
@@ -44,6 +70,12 @@ class Palette:
     success:        str
     warning:        str
     error:          str
+    # Три цвета «северного сияния» (ui/widgets/aurora.py); пусто — общие
+    # AURORA_DARK / AURORA_LIGHT. Свои у каждой темы: с общими темы
+    # различались только кнопками — сияние сквозь карточки всё сглаживало.
+    aurora:         tuple = ()
+    aurora_alpha:   float = 0.0     # сила сияния; 0 — обычная (0.34 тёмные / 0.5 светлые)
+    card_alpha:     float = 0.82    # непрозрачность карточек поверх сияния
 
     # Производные «мягкие» цвета — фон плашек и подсветок.
     @property
@@ -61,6 +93,12 @@ class Palette:
     @property
     def error_soft(self) -> str:
         return _mix(self.bg_card, self.error, 0.16 if self.is_dark else 0.10)
+
+    @property
+    def segment_on(self) -> str:
+        """Ползунок выбранного пункта SegmentedControl — мягкий акцент от фона
+        полоски (bg_input), а не карточки: иначе в «Персиковой» он мятный."""
+        return _mix(self.bg_input, self.accent, 0.20 if self.is_dark else 0.16)
 
     @property
     def info(self) -> str:
@@ -94,33 +132,8 @@ class Metrics:
 
 
 THEMES: Dict[str, Palette] = {
-    "dark": Palette(
-        is_dark=True,
-        bg_root="#131418",      bg_sidebar="#18191e",
-        bg_card="#1d1f25",      bg_input="#25272e",
-        bg_hover="#2b2e36",
-        border="#2c2f37",       border_strong="#3b3f49",
-        text_primary="#eceef2", text_secondary="#a6abb7",
-        text_muted="#6f7480",
-        accent="#5b8cff",       accent_hover="#7aa2ff",
-        accent_text="#ffffff",
-        success="#3ecf8e",      warning="#f2b544",
-        error="#f2555a",
-    ),
-    "carbon": Palette(
-        is_dark=True,
-        bg_root="#000000",      bg_sidebar="#0a0a0b",
-        bg_card="#111113",      bg_input="#1a1a1d",
-        bg_hover="#222226",
-        border="#222226",       border_strong="#323238",
-        text_primary="#f3f3f4", text_secondary="#a1a1aa",
-        text_muted="#64646c",
-        accent="#2dd4bf",       accent_hover="#5eead4",
-        accent_text="#03201c",
-        success="#34d399",      warning="#fbbf24",
-        error="#f87171",
-    ),
-    "earthy": Palette(
+    # Нейтральная светлая — тема по умолчанию: белые карточки, синий акцент.
+    "light": Palette(
         is_dark=False,
         bg_root="#f3f4f6",      bg_sidebar="#fbfbfc",
         bg_card="#ffffff",      bg_input="#f2f3f5",
@@ -133,18 +146,73 @@ THEMES: Dict[str, Palette] = {
         success="#16a34a",      warning="#d97706",
         error="#dc2626",
     ),
+    # Палитры dark / earthy / peach / carbon — подобранные автором для
+    # v0.5.x (фон, карточки, текст, акцент, статусы — те же значения;
+    # text_muted подтянут до контраста 3:1 с карточкой — на крупных
+    # карточках нового интерфейса прежний еле читался).
+    # Чего в старой теме не было (рамка посильнее, текст на акцентной
+    # кнопке, наведение) — выведено из её же цветов.
+    # «Кофе с песком»: текст, статусы — из v0.5.x; холодный сине-серый фон
+    # (#222831 / #393E46) заменён тёплым — на больших карточках нового
+    # интерфейса он выглядел тускло, а песочный акцент на нём терялся.
+    "dark": Palette(
+        is_dark=True,
+        bg_root="#1f1d1a",      bg_sidebar="#2e2a25",
+        bg_card="#2e2a25",      bg_input="#26231f",
+        bg_hover="#3a352f",
+        border="#3f3a33",       border_strong="#51493f",
+        text_primary="#DFD0B8", text_secondary="#a89e8a",
+        text_muted="#7f7566",
+        accent="#b8a586",       accent_hover="#c9b796",
+        accent_text="#1f1d1a",
+        success="#4a9c6a",      warning="#c49a3a",
+        error="#c05040",
+        aurora=("#c49a3a", "#a0674a", "#4a9c6a"),
+    ),
+    "carbon": Palette(
+        is_dark=True,
+        bg_root="#161616",      bg_sidebar="#1e1e1e",
+        bg_card="#1e1e1e",      bg_input="#262626",
+        bg_hover="#2a2a2a",
+        border="#2e2e2e",       border_strong="#3a3a3a",
+        text_primary="#e8edf2", text_secondary="#a0aab4",
+        text_muted="#646c7a",
+        accent="#1f6feb",       accent_hover="#3b82f6",
+        accent_text="#ffffff",
+        success="#22c55e",      warning="#f59e0b",
+        error="#ef4444",
+        aurora=("#1f6feb", "#0ea5e9", "#6366f1"),
+    ),
+    # Земляная: пастельный кремовый с тёмно-изумрудным акцентом (бежевый +
+    # изумруд); текст и статусы — из v0.5.x.
+    "earthy": Palette(
+        is_dark=False,
+        bg_root="#f8f3ea",      bg_sidebar="#f0e8da",
+        bg_card="#f0e8da",      bg_input="#faf6ef",
+        bg_hover="#e8dfcf",
+        border="#e2d8c6",       border_strong="#d3c7b2",
+        text_primary="#2d3a3c", text_secondary="#4f6a60",
+        text_muted="#738586",
+        accent="#1f6b4f",       accent_hover="#185a42",
+        accent_text="#ffffff",
+        success="#2f8f6a",      warning="#b07840",
+        error="#a0403a",
+        aurora=("#2f8f6a", "#e3a1a1", "#c9b8e8"),     # изумруд, пыльная роза, лаванда
+    ),
     "peach": Palette(
         is_dark=False,
-        bg_root="#f6f1ea",      bg_sidebar="#fbf8f4",
-        bg_card="#ffffff",      bg_input="#f4ede4",
-        bg_hover="#ece3d8",
-        border="#e7ddd0",       border_strong="#d6c8b6",
-        text_primary="#2a211a", text_secondary="#6b5d50",
-        text_muted="#a29483",
-        accent="#dd6b33",       accent_hover="#c45a26",
-        accent_text="#ffffff",
-        success="#3f9a5b",      warning="#c98a1b",
-        error="#cf4a3c",
+        bg_root="#fcf9ea",      bg_sidebar="#badfdb",
+        bg_card="#badfdb",      bg_input="#fcf9ea",
+        bg_hover="#a8d4cf",
+        border="#9ecfca",       border_strong="#86c2bc",
+        text_primary="#2d2010", text_secondary="#4a7a76",
+        text_muted="#5f7e75",
+        accent="#f8a978",       accent_hover="#e09060",
+        accent_text="#2d2010",
+        success="#4a7c59",      warning="#e07840",
+        error="#c05040",
+        aurora=("#ff8a65", "#a78bdb", "#6fb7ef"),     # коралл, сирень, небо — мятное сливалось с карточками
+        aurora_alpha=0.55,
     ),
     "neon": Palette(
         is_dark=True,
@@ -161,11 +229,14 @@ THEMES: Dict[str, Palette] = {
     ),
 }
 
+DEFAULT_THEME = "light"
+
 # Ключи (dark/carbon/earthy/peach) остаются прежними — они уже записаны в
 # config.toml у пользователей; меняются только названия и сами цвета.
 THEME_NAMES: Dict[str, str] = {
-    "earthy": "Светлая",
-    "peach":  "Тёплая",
+    "light":  "Светлая",
+    "earthy": "Земляная",
+    "peach":  "Персиковая",
     "dark":   "Тёмная",
     "carbon": "Карбон",
     "neon":   "Неон",
@@ -192,9 +263,9 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     r, rs = m.corner_radius, m.corner_radius_sm
     # С сиянием фон окна рисует ui/widgets/aurora.AuroraBackground, страницы прозрачны,
     # а карточки чуть просвечивают — шары видно и сквозь них, не только в зазорах.
-    card_bg = _rgba(p.bg_card, 0.82) if aurora else p.bg_card
+    card_bg = _rgba(p.bg_card, p.card_alpha) if aurora else p.bg_card
     tile_on = _mix(p.bg_card, p.accent, 0.12 if p.is_dark else 0.07)
-    tile_on_bg = _rgba(tile_on, 0.85) if aurora else tile_on
+    tile_on_bg = _rgba(tile_on, max(0.85, p.card_alpha)) if aurora else tile_on
     return f"""
     * {{
         font-family: '{t.family_ui}';
@@ -282,15 +353,15 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
         border-radius: 10px; padding: 2px 10px;
     }}
 
-    QLabel[tone="success"] {{ color: {p.success}; }}
-    QLabel[tone="warning"] {{ color: {p.warning}; }}
-    QLabel[tone="error"]   {{ color: {p.error}; }}
-    QLabel[tone="accent"]  {{ color: {p.accent}; }}
+    QLabel[tone="success"] {{ color: {readable(p.success, p.bg_card, p.text_primary)}; }}
+    QLabel[tone="warning"] {{ color: {readable(p.warning, p.bg_card, p.text_primary)}; }}
+    QLabel[tone="error"]   {{ color: {readable(p.error, p.bg_card, p.text_primary)}; }}
+    QLabel[tone="accent"]  {{ color: {readable(p.accent, p.bg_card, p.text_primary)}; }}
     QLabel[tone="muted"]   {{ color: {p.text_muted}; }}
-    QLabel[role="pill"][tone="success"] {{ background-color: {p.success_soft}; }}
-    QLabel[role="pill"][tone="warning"] {{ background-color: {p.warning_soft}; }}
-    QLabel[role="pill"][tone="error"]   {{ background-color: {p.error_soft}; }}
-    QLabel[role="pill"][tone="accent"]  {{ background-color: {p.accent_soft}; }}
+    QLabel[role="pill"][tone="success"] {{ background-color: {p.success_soft}; color: {readable(p.success, p.success_soft, p.text_primary)}; }}
+    QLabel[role="pill"][tone="warning"] {{ background-color: {p.warning_soft}; color: {readable(p.warning, p.warning_soft, p.text_primary)}; }}
+    QLabel[role="pill"][tone="error"]   {{ background-color: {p.error_soft}; color: {readable(p.error, p.error_soft, p.text_primary)}; }}
+    QLabel[role="pill"][tone="accent"]  {{ background-color: {p.accent_soft}; color: {readable(p.accent, p.accent_soft, p.text_primary)}; }}
     QLabel[role="badge"] {{
         font-size: 11px; font-weight: 700; letter-spacing: 1px;
         color: {p.accent_text}; background-color: {p.accent};
@@ -351,8 +422,10 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
         font-size: {t.size_sm}px;
     }}
     QPushButton[variant="segment"]:hover   {{ color: {p.text_primary}; }}
+    /* Ползунок выбранного пункта рисует сам SegmentedControl (переезжает плавно) */
     QPushButton[variant="segment"]:checked {{
-        background-color: {p.bg_card}; color: {p.text_primary}; border: 1px solid {p.border_strong};
+        background: transparent; border: 1px solid transparent;
+        color: {readable(p.accent, p.segment_on, p.text_primary)};
     }}
     QPushButton[variant="segment"]:disabled {{ color: {p.text_muted}; }}
 
@@ -440,16 +513,16 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
 
 class Theme:
     def __init__(self) -> None:
-        self.palette    = THEMES["earthy"]
+        self.palette    = THEMES[DEFAULT_THEME]
         self.typography = Typography()
         self.metrics    = Metrics()
-        self._current   = "earthy"
+        self._current   = DEFAULT_THEME
         self.aurora     = True    # ui/widgets/aurora — шары на фоне окна
         self.animations = True    # ui.animations — волна, вкладки, каскад, тряска, полоса проверки
 
     def set_theme(self, name: str) -> None:
         if name not in THEMES:
-            name = "earthy"
+            name = DEFAULT_THEME
         self.palette  = THEMES[name]
         self._current = name
 
