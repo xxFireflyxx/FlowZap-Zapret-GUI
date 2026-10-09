@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 
-from ui.theme import theme
+from ui.theme import DEFAULT_THEME, theme
 from ui.widgets.animation import IntroSplash, cascade_hide, cascade_in, page_steps
 from ui.widgets.base import Glyph, label
 from ui.widgets.navigation import TabBar
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         theme.aurora = ui_cfg.get("aurora", True)
         theme.animations = ui_cfg.get("animations", True)
         self._build_ui()
-        self.apply_theme(ui_cfg.get("theme", "earthy"))
+        self.apply_theme(ui_cfg.get("theme", DEFAULT_THEME))
         self.aurora.set_enabled(theme.aurora)
         self._build_tray()
 

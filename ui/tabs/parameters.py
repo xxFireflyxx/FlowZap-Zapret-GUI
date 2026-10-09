@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -358,6 +359,8 @@ class ParametersTab(QWidget):
 
     _pingUpdated = Signal(str, str)  # (ipv4_main, результат) — из фонового потока пинга
     MAX_SHOWN = 200                  # длиннее — показываем начало и просим уточнить поиск
+    VISIBLE_ROWS = 7                 # выше — список прокручивается внутри карточки
+    ROW_HEIGHT = 44                  # _EntryRow
 
     def __init__(self, parent=None, manager=None, config: dict = None,
                  save_config_fn=None, on_dns_changed=None, tg_controller=None):
@@ -593,9 +596,20 @@ class ParametersTab(QWidget):
         status_row.addWidget(self._lists_count, alignment=Qt.AlignTop)
         body.addLayout(status_row)
 
-        self._entries_layout = QVBoxLayout()
+        # Записи — в своей прокрутке не выше VISIBLE_ROWS строк: длинный список
+        # иначе растягивал карточку, и TG Proxy уезжал далеко вниз.
+        self._entries_scroll = QScrollArea()
+        self._entries_scroll.setWidgetResizable(True)
+        self._entries_scroll.setFrameShape(QFrame.NoFrame)
+        self._entries_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        entries = QWidget()
+        entries.setObjectName("pageContent")        # прозрачный фон, как у страниц
+        self._entries_layout = QVBoxLayout(entries)
+        self._entries_layout.setContentsMargins(0, 0, 0, 0)
         self._entries_layout.setSpacing(0)
-        body.addLayout(self._entries_layout)
+        self._entries_layout.addStretch(1)
+        self._entries_scroll.setWidget(entries)
+        body.addWidget(self._entries_scroll)
         body.addStretch(1)
         body.addWidget(label("Можно вставить ссылку целиком — домен выделится сам. Несколько — через запятую.",
                              role="hint", wrap=True))
@@ -626,6 +640,7 @@ class ParametersTab(QWidget):
         """Список записей текущего файла, отфильтрованный по тексту в поле:
         ввод сразу ищет, а «Добавить» добавляет то, чего ещё нет."""
         _clear(self._entries_layout)
+        self._entries_layout.addStretch(1)          # _clear убирает и её; строки встают перед ней
         all_lines = self._read_list(self._list_file)
         query = self._query()
         _, allow_add, _, _ = _list_meta(self._list_file)
@@ -642,18 +657,25 @@ class ParametersTab(QWidget):
                 self._set_list_status("")
 
         self._lists_count.setText(f"Найдено {len(found)} из {len(all_lines)}" if query else f"Всего {len(all_lines)}")
-        for value in found[:self.MAX_SHOWN]:
+        shown = found[:self.MAX_SHOWN]
+        add = lambda w: self._entries_layout.insertWidget(self._entries_layout.count() - 1, w)   # перед растяжкой
+        for value in shown:
             row = _EntryRow(value, query)
             row.removeRequested.connect(self._remove_value)
-            self._entries_layout.addWidget(row)
+            add(row)
+        extra = 0
         if len(found) > self.MAX_SHOWN:
-            self._entries_layout.addWidget(label(
-                f"Показаны первые {self.MAX_SHOWN} — уточните поиск", role="hint"))
+            add(label(f"Показаны первые {self.MAX_SHOWN} — уточните поиск", role="hint"))
+            extra = 28
         if not found:
             empty = label("Ничего не найдено" if query else "Список пуст", role="muted")
             empty.setAlignment(Qt.AlignCenter)
             empty.setMinimumHeight(56)
-            self._entries_layout.addWidget(empty)
+            add(empty)
+        rows = min(len(shown), self.VISIBLE_ROWS)
+        height = 56 if not found else rows * self.ROW_HEIGHT + (extra if len(shown) <= self.VISIBLE_ROWS else 0)
+        self._entries_scroll.setFixedHeight(height)
+        self._entries_scroll.verticalScrollBar().setValue(0)
 
     def _on_list_text(self, _text: str) -> None:
         self._set_list_status("")

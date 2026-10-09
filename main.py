@@ -175,6 +175,7 @@ def _acquire_single_instance() -> "QTcpServer | None":
 
 def load_config(config_path: Path) -> dict:
     from core.dns.builtin import apply_builtin_dns
+    from ui.theme import DEFAULT_THEME     # без Qt — модуль только с цветами
     defaults = {
         "zapret": {
             "exe_path": str(ROOT / "zapret" / "bin" / "winws.exe"),
@@ -183,7 +184,7 @@ def load_config(config_path: Path) -> dict:
             "args": [],
             "autostart": False,
         },
-        "ui":      {"theme": "earthy", "remember_tab": True},
+        "ui":      {"theme": DEFAULT_THEME, "remember_tab": True},
         "updater": {"repo": "Flowseal/zapret-discord-youtube", "check_on_start": True},
         "dns": {"pairs": []},
     }
@@ -251,8 +252,8 @@ def main() -> None:
     config = load_config(CONFIG_PATH)
     config["_app_dir"] = str(ROOT)
 
-    from ui.theme import theme
-    theme.set_theme(config.get("ui", {}).get("theme", "earthy"))
+    from ui.theme import DEFAULT_THEME, theme
+    theme.set_theme(config.get("ui", {}).get("theme", DEFAULT_THEME))
 
     from core.updates.releases import set_github_token
     from core.zapret.game_lists import update_gaming_lists

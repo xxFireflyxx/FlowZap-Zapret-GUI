@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -248,17 +249,19 @@ class SettingsTab(QWidget):
 
         # ── Оформление ──
         look, body = _group("ОФОРМЛЕНИЕ", "Тема применяется сразу")
-        swatches = QHBoxLayout()
-        swatches.setSpacing(12)
+        # Две строки по три: в одну строку шесть образцов узкие — «Персиковая» не влезала
+        swatches = QGridLayout()
+        swatches.setHorizontalSpacing(12)
+        swatches.setVerticalSpacing(10)
         self._theme_group = QButtonGroup(self)
         self._theme_group.setExclusive(True)
         current = ui_cfg.get("theme") if ui_cfg.get("theme") in THEMES else theme.current
-        for key in THEME_NAMES:
+        for i, key in enumerate(THEME_NAMES):
             sw = _ThemeSwatch(key)
             sw.setChecked(key == current)
             sw.clicked.connect(lambda _=False, k=key: self._on_theme_selected(k))
             self._theme_group.addButton(sw)
-            swatches.addWidget(sw)
+            swatches.addWidget(sw, i // 3, i % 3)
         body.addLayout(swatches)
         body.addSpacing(6)
 

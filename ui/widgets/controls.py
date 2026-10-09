@@ -268,9 +268,14 @@ class FieldButton(QAbstractButton):
 
 class SegmentedControl(QFrame):
     """Выбор одного из нескольких вариантов (TCP / UDP / Все).
-    changed(key) — только по клику пользователя; set_current() — тихий."""
+    changed(key) — только по клику пользователя; set_current() — тихий.
+    Ползунок выбранного пункта рисует сам переключатель и, как подсветка
+    вкладок (ui.widgets.navigation.TabBar), плавно переезжает к новому
+    пункту. Цвет — мягкий акцент: цвет карточки внутри карточки сливался
+    (в «Персиковой» выбранный пункт выглядел как дырка)."""
 
     changed = Signal(str)
+    STYLE = "accent"        # "accent" — мягкий акцент; "card" — цвет карточки (как было)
 
     def __init__(self, options: list[tuple[str, str]], parent=None) -> None:
         super().__init__(parent)
@@ -285,15 +290,75 @@ class SegmentedControl(QFrame):
             btn = button(text, variant="segment")
             btn.setCheckable(True)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            btn.clicked.connect(lambda _=False, k=key: self.changed.emit(k))
+            btn.clicked.connect(lambda _=False, k=key: self._on_clicked(k))
             self._group.addButton(btn)
             layout.addWidget(btn)
             self._buttons[key] = btn
+        self._current: str | None = None
+        self._from: str | None = None       # откуда едет ползунок
+        self._t = 1.0                       # 0 — у _from, 1 — у _current
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(340)
+        self._anim.setStartValue(0.0)
+        self._anim.setEndValue(1.0)
+        self._anim.setEasingCurve(QEasingCurve.InOutCubic)    # как у TabBar — без скачка на первом кадре
+        self._anim.valueChanged.connect(self._on_step)
+
+    def _on_clicked(self, key: str) -> None:
+        self._move_to(key, animate=True)
+        self.changed.emit(key)
 
     def set_current(self, key: str) -> None:
         btn = self._buttons.get(key)
         if btn is not None:
             btn.setChecked(True)
+            self._move_to(key, animate=False)
+
+    def _move_to(self, key: str, animate: bool) -> None:
+        if key == self._current:
+            return
+        # Ползунок едет между пунктами, а не между запомненными координатами:
+        # прямоугольник считается в paintEvent от текущих кнопок. Иначе смена
+        # ширины посреди анимации (на странице появилась/пропала полоса
+        # прокрутки — список стал длиннее) обрывала её, и ползунок прыгал.
+        if animate and theme.animations and self._current is not None and self.isVisible():
+            self._from = self._pill_rect()       # с того места, где он сейчас (и если ещё едет)
+            self._current = key
+            self._t = 0.0
+            self._anim.stop()
+            self._anim.start()
+        else:
+            self._anim.stop()
+            self._current, self._from, self._t = key, None, 1.0
+            self.update()
+
+    def _on_step(self, t) -> None:
+        self._t = float(t)
+        self.update()
+
+    def _pill_rect(self) -> QRectF:
+        end = QRectF(self._buttons[self._current].geometry())
+        if self._from is None or self._t >= 1.0:
+            return end
+        a, t = self._from, self._t
+        return QRectF(a.x() + (end.x() - a.x()) * t, a.y() + (end.y() - a.y()) * t,
+                      a.width() + (end.width() - a.width()) * t, a.height() + (end.height() - a.height()) * t)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if self._current is None:
+            return
+        p = theme.palette
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self._pill_rect().adjusted(0.5, 0.5, -0.5, -0.5)
+        if self.STYLE == "card":
+            painter.setPen(QPen(QColor(p.border_strong), 1))
+            painter.setBrush(QColor(p.bg_card))
+        else:
+            painter.setPen(QPen(QColor(_mix(p.bg_input, p.accent, 0.45)), 1))
+            painter.setBrush(QColor(p.segment_on))
+        painter.drawRoundedRect(rect, 6, 6)
 
 
 class StatusDot(QWidget):
