@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.theme import DEFAULT_THEME, theme
-from ui.widgets.animation import IntroSplash, cascade_hide, cascade_in, page_steps
+from ui.widgets.animation import IntroSplash, cascade_hide, cascade_in, cascade_settle_ms, page_steps
 from ui.widgets.base import Glyph, label, set_tone
 from ui.widgets.navigation import TabBar
 from ui.widgets.aurora import AuroraBackground
@@ -107,6 +107,8 @@ class MainWindow(QMainWindow):
         self._releasesFetched.connect(self.updates.apply_background_check)
         self._builtinDnsFetched.connect(self._on_builtin_dns_fetched)
         self._announcementsFetched.connect(self._on_announcements_fetched)
+        self._ui_settled = False                # заставка и каскад закончились
+        self._pending_announcements = None      # пришли раньше — ждут _on_ui_settled
         self._start_update_autocheck()
 
     def save_config(self) -> None:
@@ -131,7 +133,21 @@ class MainWindow(QMainWindow):
         if items is None:
             return
         dismissed = set(self.config.get("announcements", {}).get("dismissed", []))
-        self.dashboard.show_announcements(relevant(items, GUI_VERSION, dismissed))
+        shown = relevant(items, GUI_VERSION, dismissed)
+        if not shown:
+            return
+        # Окно ещё не показано (запуск в трей) или идёт заставка — подождать,
+        # пока блоки встанут на места; без анимаций ждать нечего
+        if getattr(self, "_ui_settled", False) or not theme.animations:
+            self._show_announcements(shown)
+        else:
+            self._pending_announcements = shown
+
+    def _show_announcements(self, items: list) -> None:
+        # Анимация — только если главная на экране; иначе плашки уже стоят,
+        # когда на неё перейдут (и всплывут вместе с каскадом вкладки)
+        animate = self.isVisible() and self.stack.currentWidget() is self.dashboard
+        self.dashboard.show_announcements(items, animate=animate)
 
     def start_builtin_dns_sync(self) -> None:
         """Скачать список встроенных DNS в фоне (вызывается при запуске)."""
@@ -198,11 +214,23 @@ class MainWindow(QMainWindow):
                     on_fade_out=self._intro_fade_out)
                 # Стартует в _reveal — когда окно станет видно
 
+    _INTRO_CASCADE = dict(first_delay_ms=280, step_ms=330, duration_ms=2300, lift=42)
+
     def _intro_fade_out(self) -> None:
         """Заставка тает — собирается интерфейс: шапка, затем блоки страницы."""
         cascade_in([[self._topbar]], first_delay_ms=0, duration_ms=1400, lift=10)
-        cascade_in(page_steps(self.stack.currentWidget()),
-                   first_delay_ms=280, step_ms=330, duration_ms=2300, lift=42)
+        steps = page_steps(self.stack.currentWidget())
+        cascade_in(steps, **self._INTRO_CASCADE)
+        c = self._INTRO_CASCADE
+        # Объявления — когда блоки встали на места (не поверх заставки)
+        settle = cascade_settle_ms(len(steps), c["first_delay_ms"], c["step_ms"], c["duration_ms"])
+        QTimer.singleShot(settle + 250, self._on_ui_settled)
+
+    def _on_ui_settled(self) -> None:
+        self._ui_settled = True
+        items, self._pending_announcements = self._pending_announcements, None
+        if items:
+            self._show_announcements(items)
 
     def eventFilter(self, obj, event) -> bool:
         if obj is self.aurora and event.type() == QEvent.Paint and self.windowOpacity() < 1.0                 and not getattr(self, "_revealing", False):
