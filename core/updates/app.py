@@ -406,12 +406,15 @@ def download_and_install_exe(
             release = get_from_gitlab()
             if not release:
                 raise ValueError("GitLab недоступен")
+            # Только та же версия: иначе (пре-релиз с GitHub, а на GitLab —
+            # прежний релиз) FlowZap «обновился» бы не на то, что предложил
+            if release.get("tag_name") != tag:
+                raise ValueError(f"на GitLab версия {release.get('tag_name')}, а нужна {tag}")
             gl_asset = find_exe_asset(release)
             if not gl_asset:
                 raise ValueError("Файл для обновления не найден в релизе GitLab")
-            from_gitlab.update(name=gl_asset["name"], tag=release.get("tag_name", tag))
-            same = gl_asset["name"] == asset["name"] and from_gitlab["tag"] == tag
-            return gl_asset["browser_download_url"], same
+            from_gitlab.update(name=gl_asset["name"], tag=tag)
+            return gl_asset["browser_download_url"], gl_asset["name"] == asset["name"]
 
         data = download_asset(asset, gitlab_mirror, "зеркало GitLab")
         asset_name = from_gitlab.get("name", asset["name"])
