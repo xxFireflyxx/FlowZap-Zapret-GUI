@@ -2,7 +2,7 @@
   "format": 1,
   "kind": "file",
   "name": "announcements.toml",
-  "sha256": "db12a760f0218ae493753fab754a0856c6273263e3c8634e7f88b5f51fe096fe",
+  "sha256": "351ecb08f9e6fefeb70fe5291a3a545cbb6c84df9e137943dd06952c6186c227",
   "key": "main",
-  "signature": "t1p8k6w+2gBvzITuaaimdX43/RhF4Temfbt06jAdMHzFh0/TiwDXRe8sM6PQy2glIv0CbC/WG0RDrSPm8zfFDw=="
+  "signature": "l859f8n3YsFM4BYbYRJs5iubEuw+EtpziX2E5tL1eMwB79lEu/f0pBRr+4m6OBh5L1cOlQllkSs3RSwRmBTxCQ=="
 }
