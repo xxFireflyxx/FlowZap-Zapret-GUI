@@ -216,12 +216,16 @@ def _newest_including_prereleases(repo: str) -> dict:
     return max(releases, key=lambda x: _version_key(x.get("tag_name", "")))
 
 
-def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optional[dict]:
+def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False,
+                       gitlab: bool = True) -> Optional[dict]:
     """Последний релиз с GitHub (кэш на 3 часа). Для самого FlowZap при
-    любой ошибке GitHub (лимит запросов, блокировка, 404) — релиз с GitLab."""
+    любой ошибке GitHub (лимит запросов, блокировка, 404) — релиз с GitLab;
+    gitlab=False — без него (и без взятого с него в кэше): см.
+    latest_release_for_user."""
     if not force and repo in _release_cache:
         ts, cached = _release_cache[repo]
-        if time.time() - ts < _CACHE_TTL:
+        from_gitlab = isinstance(cached, dict) and cached.get("_source") == "gitlab"
+        if time.time() - ts < _CACHE_TTL and (gitlab or not from_gitlab):
             logger.debug(f"Релиз из кэша: {repo}")
             return cached
 
@@ -238,7 +242,7 @@ def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optiona
             logger.warning(f"GitHub: лимит запросов ({repo})")
         else:
             logger.error(f"Ошибка проверки обновлений {repo}: {e}")
-        if repo != FLOWZAP_REPO:
+        if repo != FLOWZAP_REPO or not gitlab:
             return None
         logger.info("Пробуем GitLab...")
         result = get_from_gitlab()
@@ -246,6 +250,32 @@ def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optiona
             return None
     _release_cache[repo] = (time.time(), result)
     return result
+
+
+def latest_release_for_user(repo: str) -> dict:
+    """Последний релиз, когда его просит пользователь («Проверить»,
+    «Обновить», установка): GitHub → GitHub без своего DNS (на пару секунд:
+    через DNS-прокси GitHub часто отвечает «лимит запросов» — один адрес на
+    многих) → для самого FlowZap GitLab. Не сразу GitLab: там нет
+    пре-релизов (бета-канал) и он мог отстать. Автопроверка при запуске DNS
+    не трогает — она зовёт get_latest_release. NetworkError — нигде нет."""
+    def _attempt() -> dict:
+        release = get_latest_release(repo, gitlab=False)
+        if release is None:
+            raise NetworkError("Не удалось получить информацию о релизе")
+        return release
+
+    try:
+        return retry_without_dns(_attempt)
+    except NetworkError:
+        if repo != FLOWZAP_REPO:
+            raise
+    logger.info("Пробуем GitLab...")
+    release = get_from_gitlab()
+    if not release:
+        raise NetworkError("Не удалось получить информацию о релизе")
+    _release_cache[repo] = (time.time(), release)
+    return release
 
 
 def check_release_async(
@@ -257,15 +287,9 @@ def check_release_async(
     (до ~20 с с учётом GitLab-fallback). Сам создаёт поток и зовёт on_done(release | None),
     как download_and_install_*: вызывающий UI-код только оборачивает on_done в Signal.emit.
     """
-    def _attempt() -> dict:
-        release = get_latest_release(repo)
-        if release is None:
-            raise NetworkError("Не удалось получить информацию о релизе")
-        return release
-
     def _worker() -> None:
         try:
-            release = retry_without_dns(_attempt)
+            release = latest_release_for_user(repo)
         except Exception:
             release = None
         on_done(release)
@@ -297,8 +321,13 @@ def download_asset(
     тот же — сверяем с размером и sha256 из GitHub, как и загрузку с GitHub."""
     name = asset["name"]
     try:
-        # 15 с ждём ответа, дальше таймаут шире — обрывает только зависание закачки
-        data = _download_with_grace(asset["browser_download_url"], github_headers())
+        # 15 с ждём ответа, дальше таймаут шире — обрывает только зависание закачки.
+        # Токен GitHub — только для его API (архив исходников TG Proxy): файлы
+        # релиза публичные, а заголовок ушёл бы и по перенаправлению на
+        # хранилище, и на GitLab (релиз из запасного источника)
+        url = asset["browser_download_url"]
+        headers = github_headers() if url.startswith("https://api.github.com/") else {"User-Agent": "FlowZap/1.0"}
+        data = _download_with_grace(url, headers)
         _verify_download(data, asset, name)
         return data
     except Exception as e:
@@ -322,9 +351,7 @@ def latest_asset(repo: str, find: Callable[[dict], Optional[dict]], what: str,
                   log: Callable[[str], None]) -> tuple[str, dict]:
     """(тег, файл) последнего релиза; ValueError с текстом для пользователя."""
     log("Проверяем обновления...")
-    release = get_latest_release(repo)
-    if not release:
-        raise NetworkError("Не удалось получить информацию о релизе")
+    release = latest_release_for_user(repo)
     tag = release.get("tag_name", "unknown")
     asset = find(release)
     if not asset:

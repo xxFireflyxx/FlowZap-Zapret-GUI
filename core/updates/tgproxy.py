@@ -24,7 +24,7 @@ from typing import Callable, Optional
 
 from core.tgproxy.host import probe
 from core.tgproxy.manager import is_installed, migrate_legacy, src_dir
-from core.updates.releases import NetworkError, download_asset, get_latest_release, run_install, sourceforge_url
+from core.updates.releases import download_asset, latest_release_for_user, run_install, sourceforge_url
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +108,7 @@ def download_and_install_tg_proxy(
 
 def _install(tgproxy_dir: Path, repo: str, log: Callable[[str], None]) -> str:
     log("Проверяем обновления...")
-    release = get_latest_release(repo)
-    if not release:
-        raise NetworkError("Не удалось получить информацию о релизе")
+    release = latest_release_for_user(repo)      # при лимите — повтор без своего DNS
     tag = release.get("tag_name", "")
     if not tag:
         raise ValueError("В релизе нет номера версии")
