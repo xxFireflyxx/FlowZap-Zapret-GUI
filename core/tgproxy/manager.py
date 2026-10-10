@@ -122,9 +122,12 @@ class _RejectWatch:
             m = _CLIENT_LINE.search(raw.decode("utf-8", errors="replace"))
             if not m:
                 continue
-            if "bad handshake" in m["msg"]:
+            msg = m["msg"]
+            if "bad handshake" in msg:
                 self._bad[m["host"]] = now
-            elif "handshake" not in m["msg"]:    # «timeout during handshake» — ни то ни другое
+            # «handshake ok» (подробный лог) и строки уже пущенного соединения —
+            # пустили; «timeout during handshake» — ни то ни другое
+            elif "handshake ok" in msg or "handshake" not in msg:
                 self._good[m["host"]] = now
 
     def rejected(self) -> set[str]:
