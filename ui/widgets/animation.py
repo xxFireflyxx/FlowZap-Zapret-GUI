@@ -216,6 +216,13 @@ class _RiseEffect(QGraphicsEffect):
         self._shift = shift if shift >= self.SNAP_PX else 0.0
         self.update()
 
+    def set_state(self, opacity: float, shift: float) -> None:
+        """Прозрачность и сдвиг напрямую — для исчезновения (fade_out): кривые
+        всплытия, прокрученные назад, давали «стоит, потом резко пропадает»."""
+        self._t = min(opacity, 0.999)       # 1.0 = рисовать как есть, без сдвига
+        self._shift = shift
+        self.update()
+
     def boundingRectFor(self, rect):
         return QRectF(rect).adjusted(0, -1, 0, self.LIFT + 1)
 
@@ -284,7 +291,7 @@ def page_blocks(page: QWidget) -> list[QWidget]:
     сверху вниз, в одном ряду — слева направо. Вложенные карточки не в счёт."""
     blocks = []
     for w in page.findChildren(QFrame):
-        if w.objectName() not in ("card", "tile") or not w.isVisibleTo(page):
+        if w.objectName() not in ("card", "tile", "announce") or not w.isVisibleTo(page):
             continue
         parent, nested = w.parentWidget(), False
         while parent is not None and parent is not page:
@@ -348,6 +355,8 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
     if not theme.animations:
         return
     for i, w in ((i, w) for i, step in enumerate(steps) for w in step):
+        if getattr(w, "_fz_fading", False):
+            continue        # уже исчезает (fade_out) — не перебивать
         old = getattr(w, "_fz_rise", None)
         if old is not None:
             old.stop()
@@ -374,6 +383,69 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
         group.finished.connect(_done)
         w._fz_rise = group
         group.start()
+
+
+def cascade_settle_ms(steps: int, first_delay_ms: int, step_ms: int, duration_ms: int) -> int:
+    """Через сколько после старта cascade_in последний блок встанет на место."""
+    return first_delay_ms + max(0, steps - 1) * step_ms + duration_ms if steps else 0
+
+
+QWIDGETSIZE_MAX = 16777215
+
+
+def animate_height(widget: QWidget, start: int, end: int, duration_ms: int, on_done=None,
+                   easing=QEasingCurve.OutCubic) -> None:
+    """Плавно менять высоту блока: всё, что ниже в раскладке, плавно
+    съезжает. Высота на время анимации жёсткая (и min, и max) — иначе при
+    сжатии раскладка сразу ужимает блок до содержимого (скачок). В конце
+    ограничения снимаются (если end — не 0)."""
+    old = getattr(widget, "_fz_height_anim", None)
+    if old is not None:
+        old.stop()
+    anim = QVariantAnimation(widget)
+    anim.setStartValue(start)
+    anim.setEndValue(end)
+    anim.setDuration(duration_ms)
+    anim.setEasingCurve(easing)
+    anim.valueChanged.connect(lambda v: widget.setFixedHeight(int(v)))
+    widget.setFixedHeight(start)
+
+    def _done() -> None:
+        widget._fz_height_anim = None
+        widget.setMinimumHeight(0)
+        if end:
+            widget.setMaximumHeight(QWIDGETSIZE_MAX)
+        if on_done:
+            on_done()
+
+    anim.finished.connect(_done)
+    widget._fz_height_anim = anim
+    anim.start()
+
+
+def fade_out(widget: QWidget, duration_ms: int = 220, lift: int = 8, on_done=None) -> None:
+    """Блок тает (равномерно с первого кадра) и чуть опускается."""
+    # Ещё всплывает (закрыли сразу) — остановить: по окончании всплытие
+    # снимает эффект с блока, и исчезновение оборвалось бы на полпути
+    rise = getattr(widget, "_fz_rise", None)
+    if rise is not None:
+        widget._fz_rise = None
+        rise.stop()
+    widget._fz_fading = True        # cascade_in его больше не трогает
+    effect = _RiseEffect(widget, lift)
+    effect.set_state(1.0, 0.0)
+    widget._fz_rise_effect = effect
+    widget.setGraphicsEffect(effect)
+    anim = QVariantAnimation(widget)
+    anim.setStartValue(0.0)
+    anim.setEndValue(1.0)
+    anim.setDuration(duration_ms)
+    # Прозрачность — линейно, сдвиг — с разгоном: уходит, а не прыгает
+    anim.valueChanged.connect(lambda v: effect.set_state(1.0 - float(v), lift * float(v) ** 2))
+    if on_done:
+        anim.finished.connect(on_done)
+    widget._fz_fade = anim
+    anim.start()
 
 
 class _ShakeEffect(QGraphicsEffect):

@@ -28,7 +28,7 @@ import time
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, QTimer, QPointF, QRectF, QSize
+from PySide6.QtCore import QEasingCurve, Qt, Signal, QTimer, QPointF, QRectF, QSize
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -45,7 +45,10 @@ from PySide6.QtWidgets import (
 
 from ui.theme import theme
 from ui.widgets.popup import HelpIcon
-from ui.widgets.animation import CheckProgress, RippleOverlay, shake
+from ui.widgets.animation import (
+    QWIDGETSIZE_MAX, CheckProgress, RippleOverlay, animate_height, cascade_hide, cascade_in, fade_out,
+    shake,
+)
 from ui.widgets.announcement import AnnouncementBar
 from ui.widgets.base import Glyph, button, dot_icon, label, restyle, set_tone
 from ui.widgets.controls import CircleBadge, FieldButton, StatusDot, Switch
@@ -883,12 +886,19 @@ class DashboardTab(QWidget):
         page = Page("")
         root.addWidget(page)
 
-        # Объявления автора (core/announcements.py) — над плитками
-        self._announce_box = QVBoxLayout()
+        # Объявления автора (core/announcements.py) — над плитками. Отступ до
+        # плиток — внутри контейнера: при раскрытии высота растёт с нуля,
+        # и плитки съезжают плавно, без скачка на величину отступа.
+        top = QVBoxLayout()
+        top.setSpacing(0)
+        self._announce_holder = QWidget()
+        self._announce_box = QVBoxLayout(self._announce_holder)
+        self._announce_box.setContentsMargins(0, 0, 0, theme.metrics.padding_md)
         self._announce_box.setSpacing(theme.metrics.padding_md)
-        page.body.addLayout(self._announce_box)
-
-        page.body.addLayout(self._build_services_row())
+        self._announce_holder.hide()
+        top.addWidget(self._announce_holder)
+        top.addLayout(self._build_services_row())
+        page.body.addLayout(top)
 
         self._presets_panel = PresetsPanel(self._ping_mgr)
         self._presets_panel.presetSelected.connect(self._on_preset_selected)
@@ -903,16 +913,51 @@ class DashboardTab(QWidget):
 
     # ── Объявления ──
 
-    def show_announcements(self, items: list[dict]) -> None:
-        """Показать объявления (уже отобранные под эту версию) вместо прежних."""
-        while self._announce_box.count():
-            widget = self._announce_box.takeAt(0).widget()
-            if widget is not None:
-                widget.deleteLater()
+    ANNOUNCE_OPEN_MS = 360      # плитки съезжают вниз
+    ANNOUNCE_FADE_MS = 260      # плашка тает
+    ANNOUNCE_CLOSE_MS = 360     # потом плитки поднимаются (как при появлении — наоборот)
+
+    def _announce_bars(self) -> list[AnnouncementBar]:
+        return [self._announce_box.itemAt(i).widget() for i in range(self._announce_box.count())
+                if isinstance(self._announce_box.itemAt(i).widget(), AnnouncementBar)]
+
+    def _announce_height(self) -> int:
+        """Высота контейнера с плашками при его текущей ширине."""
+        box = self._announce_box
+        box.activate()
+        width = self._announce_holder.width() or self.width()
+        return box.totalHeightForWidth(width) if box.hasHeightForWidth() \
+            else box.totalSizeHint().height()
+
+    def show_announcements(self, items: list[dict], animate: bool = False) -> None:
+        """Показать объявления (уже отобранные под эту версию) вместо прежних.
+        animate — плитки плавно съезжают вниз, в открывшееся место всплывают
+        плашки (как блоки при запуске окна)."""
+        for bar in self._announce_bars():
+            self._announce_box.removeWidget(bar)
+            bar.deleteLater()
+        if not items:
+            self._announce_holder.hide()
+            return
+        bars = []
         for item in items:
-            bar = AnnouncementBar(item, self)
+            bar = AnnouncementBar(item, self._announce_holder)
             bar.dismissed.connect(self._dismiss_announcement)
             self._announce_box.addWidget(bar)
+            bars.append(bar)
+        if not (animate and theme.animations and self.isVisible()):
+            self._announce_holder.setMaximumHeight(QWIDGETSIZE_MAX)
+            self._announce_holder.show()
+            return
+        cascade_hide([[b] for b in bars])          # содержимое — до раскрытия не видно
+        self._announce_holder.setMaximumHeight(0)
+        self._announce_holder.show()
+
+        def _expand() -> None:
+            animate_height(self._announce_holder, 0, self._announce_height(), self.ANNOUNCE_OPEN_MS,
+                           on_done=lambda: cascade_in([[b] for b in bars], first_delay_ms=0,
+                                                      step_ms=140, duration_ms=900, lift=18))
+        QTimer.singleShot(0, _expand)               # после раскладки — ширина известна
 
     def _dismiss_announcement(self, aid: str) -> None:
         dismissed = self._config.setdefault("announcements", {}).setdefault("dismissed", [])
@@ -921,13 +966,35 @@ class DashboardTab(QWidget):
             if self._save_config_fn:
                 self._save_config_fn()
         log.info(f"Объявление «{aid}» скрыто")
-        for i in range(self._announce_box.count()):
-            widget = self._announce_box.itemAt(i).widget()
-            if isinstance(widget, AnnouncementBar) and widget.property("aid") == aid:
-                widget.hide()
-                widget.deleteLater()
-                self._announce_box.removeWidget(widget)
-                break
+        bar = next((b for b in self._announce_bars() if b.property("aid") == aid), None)
+        if bar is None:
+            return
+        holder = self._announce_holder
+
+        def _collapse() -> None:
+            start = holder.height()
+            holder.setMaximumHeight(start)          # без скачка, пока плашка ещё видна
+            self._announce_box.removeWidget(bar)    # дотаивает поверх, её обрежет контейнер
+            left = bool(self._announce_bars())
+            end = self._announce_height() if left else 0
+            if not theme.animations:
+                bar.deleteLater()
+                holder.setMaximumHeight(QWIDGETSIZE_MAX)
+                holder.setVisible(left)
+                return
+            animate_height(holder, start, end, self.ANNOUNCE_CLOSE_MS,
+                           on_done=None if left else holder.hide, easing=QEasingCurve.InOutCubic)
+
+        if not theme.animations:
+            _collapse()
+            return
+        # Зеркально появлению: сначала плашка тает, потом плитки поднимаются
+
+        def _faded() -> None:
+            _collapse()
+            bar.deleteLater()
+
+        fade_out(bar, self.ANNOUNCE_FADE_MS, on_done=_faded)
 
     def _build_services_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
