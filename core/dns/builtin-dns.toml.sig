@@ -2,7 +2,7 @@
   "format": 1,
   "kind": "file",
   "name": "builtin-dns.toml",
-  "sha256": "526845dc6ca17075bdc76d0ebd2d2d466ae1a7e7e5d0a5a8057c35971eac9608",
+  "sha256": "723bcc1e69419365d8626fbb44309b6670e24c923d2951cde304afe8b8ad89d3",
   "key": "main",
-  "signature": "lnGbCsGqfvYNs8qTAZe8qHBHB4sZzru+fVW/zBbg862aSei/RXfHHDJ3MX5KI+5F0G79CGf5hXdUWMKdJb/xCQ=="
+  "signature": "WGHOS7zJhctvhdGs30Q5CtHRXm16PaqRfmIDbaLZQSdvTHhnzPfekhXjce/XlOF8HHNa1bnjUr9Yb4P9Mgi9Aw=="
 }

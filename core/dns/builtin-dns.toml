@@ -1,6 +1,6 @@
 # Встроенные DNS-серверы FlowZap
 
-version = 2
+version = 3
 
 [[dns]]
 id = "by"
@@ -9,15 +9,15 @@ ipv4_main = "143.20.64.55"
 ipv4_backup = "91.108.243.78"
 
 [[dns]]
-id = "xbox"
-name = "xbox-dns"
-ipv4_main = "111.88.96.54"
-ipv4_backup = "111.88.96.55"
-ipv6_main = "2a00:ab00:1233:26::50"
-ipv6_backup = "2a00:ab00:1233:26::51"
-
-[[dns]]
 id = "reserve"
 name = "Резерв"
 ipv4_main = "159.94.200.33"
 ipv4_backup = "193.233.112.67"
+
+[[dns]]
+id = "xbox"
+name = "xbox-dns (временно недоступен)"
+ipv4_main = "111.88.96.54"
+ipv4_backup = "111.88.96.55"
+ipv6_main = "2a00:ab00:1233:26::50"
+ipv6_backup = "2a00:ab00:1233:26::51"
