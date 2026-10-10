@@ -132,13 +132,12 @@ def _secret_from(args: list[str]) -> str:
 
 def _serve(log_file: Path, parent_pid: int, args: list[str]) -> int:
     import logging
-    import logging.handlers
 
     _watch_parent(parent_pid)
 
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=2 * 1024 * 1024, backupCount=1, encoding="utf-8")
+    from core.system.logfiles import ArchivedLogHandler
+    handler = ArchivedLogHandler(log_file, max_bytes=2 * 1024 * 1024, backups=1)   # копия — в logs/archive/
     handler.setFormatter(logging.Formatter(
         "%(asctime)s  %(levelname)-5s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
     secret = _secret_from(args)

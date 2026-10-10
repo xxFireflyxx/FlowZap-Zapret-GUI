@@ -159,8 +159,13 @@ class SettingsTab(QWidget):
 
     def __init__(self, parent=None, config: dict = None, save_config_fn=None,
                  on_tray_changed=None, on_theme_changed=None, on_effects_changed=None,
-                 manager=None, on_relaunch_admin=None, on_service_outdated=None) -> None:
+                 manager=None, on_relaunch_admin=None, on_service_outdated=None,
+                 on_service_changed=None) -> None:
         super().__init__(parent)
+        # (action, resume_bat) — службу переустановили/удалили: остановившись,
+        # она сбросила DNS FlowZap и погасила обход — главная вернёт как было
+        self._on_service_changed = on_service_changed
+        self._service_resume_bat = None
         # (bool) — есть новая версия службы: MainWindow зажигает точку на вкладке
         self._on_service_outdated = on_service_outdated
         self._manager = manager
@@ -507,6 +512,8 @@ class SettingsTab(QWidget):
         desc = self._row_service.description
         desc.setText("Подтвердите в окне Windows")
         set_tone(desc, None)
+        self._service_action_running = action
+        self._service_resume_bat = None
 
         def _worker() -> None:
             try:
@@ -517,6 +524,7 @@ class SettingsTab(QWidget):
                 else:
                     # Обновление = переустановка: служба на это время остановится
                     if action == "update" and self._manager is not None and self._manager.is_running:
+                        self._service_resume_bat = self._manager.bat_path
                         self._manager.stop()
                     engine = self._engine_dir()
                     version_file = engine.parent / "version.txt"
@@ -536,6 +544,10 @@ class SettingsTab(QWidget):
     def _on_service_done(self, ok: bool, error: str) -> None:
         self._service_busy = False
         self.refresh_service_status()
+        # И при отмене UAC: соединение со службой уже закрыто — DNS она сбросила
+        if self._on_service_changed:
+            resume, self._service_resume_bat = self._service_resume_bat, None
+            self._on_service_changed(self._service_action_running, resume)
         if not ok:
             desc = self._row_service.description
             desc.setText(error or "Не получилось")

@@ -98,6 +98,36 @@ def set_autostart(enable: bool) -> None:
     log.info("Автозапуск выключен")
 
 
+def _registered_exe() -> Path | None:
+    """exe из записи автозапуска (первый аргумент, в кавычках или без)."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, RUN_VALUE)
+    except OSError:
+        return None
+    value = str(value).strip()
+    if value.startswith('"'):
+        end = value.find('"', 1)
+        return Path(value[1:end]) if end > 0 else None
+    return Path(value.split(" ", 1)[0]) if value else None
+
+
+def repair_autostart_path() -> bool:
+    """Папку FlowZap перенесли или старую копию удалили — запись автозапуска
+    указывает на exe, которого нет, и Windows молча ничего не запускает, а
+    галочка в настройках стоит. Переписываем на этот FlowZap. Только для
+    собранного FlowZap и только когда прежнего exe нет: работающая копия в
+    другой папке (тестовая) автозапуск не перехватывает. True — исправлено."""
+    if not getattr(sys, "frozen", False):
+        return False
+    old = _registered_exe()
+    if old is None or old.exists():
+        return False
+    set_autostart(True)
+    log.info(f"Автозапуск указывал на несуществующий {old} — теперь на {Path(sys.executable)}")
+    return True
+
+
 def migrate_legacy_autostart() -> bool:
     """Задача Планировщика от FlowZap до 1.0 → запись в реестре. Переносим,
     только если задачу удалось удалить (FlowZap сейчас от администратора);

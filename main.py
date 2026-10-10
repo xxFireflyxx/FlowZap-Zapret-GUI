@@ -32,6 +32,7 @@ import time
 import tomllib
 from pathlib import Path
 
+from PySide6.QtCore import QObject, Signal, Slot
 from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 
@@ -50,11 +51,40 @@ _crash_log_file = None  # держим открытым на всё время �
 _error_dialog_shown = False  # не более одного окна с ошибкой за сессию
 
 
+class _ErrorDialog(QObject):
+    """Окно «непредвиденная ошибка» — только из GUI-потока: виджет, созданный
+    в фоновом потоке (DNS, TG Proxy, загрузки…), мог уронить весь FlowZap
+    вместо сообщения. Объект живёт в главном потоке, сигнал из любого потока
+    доставляется туда очередью."""
+    requested = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.requested.connect(self._show)
+
+    @Slot(str)
+    def _show(self, crash_log_path: str) -> None:
+        QMessageBox.critical(
+            None, "FlowZap — ошибка",
+            "Произошла непредвиденная ошибка. Подробности сохранены "
+            f"в {crash_log_path}.\n\n"
+            "Приложение может продолжить работу, но лучше его "
+            "перезапустить.",
+        )
+
+
+_error_dialog: "_ErrorDialog | None" = None
+
+
 def setup_logging(log_dir: Path) -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "flowzap.log"
     level = logging.INFO if getattr(sys, "frozen", False) else logging.DEBUG
-    handlers = [logging.FileHandler(log_file, encoding="utf-8")]
+    # С ограничением: без него flowzap.log рос без конца (~300 КБ в день).
+    # Прежние части — в logs/archive/, в logs/ только текущие файлы
+    from core.system.logfiles import ArchivedLogHandler, tidy_old_backups
+    tidy_old_backups(log_dir)
+    handlers = [ArchivedLogHandler(log_file, max_bytes=2 * 1024 * 1024, backups=2)]
     if _HAS_CONSOLE:
         handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
@@ -71,7 +101,8 @@ def setup_crash_handling(log_dir: Path) -> None:
     главном потоке и в фоновых threading.Thread. Диалог с ошибкой
     показывается не более одного раза за сессию — иначе повторяющееся
     исключение (например, в таймере) засыпало бы окнами."""
-    global _crash_log_file
+    global _crash_log_file, _error_dialog
+    _error_dialog = _ErrorDialog()
     log_dir.mkdir(parents=True, exist_ok=True)
     crash_log_path = log_dir / "crash.log"
     _crash_log_file = open(crash_log_path, "a", encoding="utf-8")
@@ -86,17 +117,9 @@ def setup_crash_handling(log_dir: Path) -> None:
         traceback.print_exception(exc_type, exc_value, exc_tb, file=_crash_log_file)
         _crash_log_file.flush()
 
-        if not _error_dialog_shown:
+        if not _error_dialog_shown and QApplication.instance() is not None:
             _error_dialog_shown = True
-            app = QApplication.instance()
-            if app is not None:
-                QMessageBox.critical(
-                    None, "FlowZap — ошибка",
-                    "Произошла непредвиденная ошибка. Подробности сохранены "
-                    f"в {crash_log_path}.\n\n"
-                    "Приложение может продолжить работу, но лучше его "
-                    "перезапустить.",
-                )
+            _error_dialog.requested.emit(str(crash_log_path))
 
     def _excepthook(exc_type, exc_value, exc_tb) -> None:
         _report(exc_type, exc_value, exc_tb)
@@ -202,7 +225,18 @@ def load_config(config_path: Path) -> dict:
         # xbox-dns, а он теперь встроенный — ключ просто убираем
         defaults.get("dns", {}).pop("servers", None)
     except Exception as exc:
-        logging.getLogger(__name__).error(f"Ошибка чтения config.toml: {exc}")
+        # Дальше FlowZap работает с настройками по умолчанию и при первом
+        # сохранении перезапишет файл — испорченный (обрезан, опечатка после
+        # ручной правки) откладываем в сторону, иначе пропали бы секрет TG,
+        # DNS-серверы и списки
+        backup = config_path.with_name(f"config.broken-{time.strftime('%Y%m%d-%H%M%S')}.toml")
+        try:
+            config_path.replace(backup)
+            note = f" — файл сохранён как {backup.name}, FlowZap начал с настроек по умолчанию"
+            defaults["_config_broken"] = backup.name
+        except OSError:
+            note = ""
+        logging.getLogger(__name__).error(f"Ошибка чтения config.toml: {exc}{note}")
     # Встроенные DNS прописаны в приложении (core/dns/builtin.py): пропавшие
     # возвращаются, новые из этой версии добавляются, удалённые — убираются
     apply_builtin_dns(defaults)
@@ -220,8 +254,9 @@ def _migrate_win_autostart_async() -> None:
 
     def _worker() -> None:
         try:
-            from core.system.autostart import migrate_legacy_autostart
+            from core.system.autostart import migrate_legacy_autostart, repair_autostart_path
             migrate_legacy_autostart()
+            repair_autostart_path()
         except Exception:
             logging.getLogger("flowzap").exception("Ошибка миграции автозапуска Windows")
 
@@ -269,6 +304,15 @@ def main() -> None:
 
     from ui.main_window import MainWindow
     window = MainWindow(root=ROOT, config=config, config_path=CONFIG_PATH, manager=manager)
+    broken = config.pop("_config_broken", None)
+    if broken:
+        QMessageBox.warning(
+            None, "FlowZap",
+            "Файл настроек config.toml повреждён или в нём ошибка — FlowZap запущен "
+            "с настройками по умолчанию.\n\n"
+            f"Прежний файл сохранён рядом как {broken}: "
+            "из него можно вернуть свои DNS-серверы и секрет TG Proxy.",
+        )
     if config.pop("_tgproxy_new_secret", False):
         # Иначе при следующем запуске секрет был бы другим, и прокси,
         # добавленный в Telegram, перестал бы подключаться

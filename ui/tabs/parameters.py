@@ -12,6 +12,7 @@ config["dns"]["pairs"][0]; выбирается он на главной (Dashbo
 """
 
 import html
+import ipaddress
 import logging
 import re
 import shutil
@@ -109,16 +110,29 @@ CONFLICT_PAIRS = [
     ("list-general-user.txt", "list-exclude-user.txt"),
 ]
 
-# Отдельный, более строгий валидатор, чем _RE_IP_OR_HOST у DNS-полей —
-# тут допускается CIDR (/24 и т.п.), что для DNS-адреса не имеет смысла.
+# Домен для списков; IP и подсети (/24 и т.п.) — _valid_ip_entry. Зона —
+# буквы или punycode (xn--p1ai — это .рф)
 _RE_LIST_DOMAIN = re.compile(
-    r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$"
+    r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+(?:[a-zA-Z]{2,}|xn--[a-zA-Z0-9\-]{2,59})$"
 )
-_RE_LIST_IP = re.compile(r"^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$")
+
+
+def _valid_ip_entry(value: str) -> bool:
+    """IPv4/IPv6 или подсеть. Не регулярка «цифры через точку»: 999.1.1.1
+    проходил, а с таким адресом в списке winws может не запуститься."""
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return True
+    except ValueError:
+        return False
 
 
 def _valid_list_entry(value: str) -> bool:
-    return bool(_RE_LIST_DOMAIN.match(value) or _RE_LIST_IP.match(value))
+    return bool(_RE_LIST_DOMAIN.match(value)) or _valid_ip_entry(value)
+
+
+def _is_comment(line: str) -> bool:
+    return line.startswith(("#", ";", "//"))
 
 
 def _list_meta(filename: str) -> tuple:
@@ -705,22 +719,42 @@ class ParametersTab(QWidget):
             v = v.lower()
             if v.startswith("www."):
                 v = v[4:]
-            result.append(v.split("/")[0])
+            v = v.split("/")[0]
+            if not v.isascii():
+                # госуслуги.рф → xn--…: в таком виде имя сайта видит winws
+                try:
+                    v = v.encode("idna").decode("ascii")
+                except UnicodeError:
+                    pass        # не домен — проверка формата скажет об этом
+            result.append(v)
         return result
 
-    def _read_list(self, filename: str) -> list[str]:
+    def _read_lines(self, filename: str) -> list[str]:
+        """Непустые строки файла. utf-8-sig — у файла с BOM (Блокнот) первая
+        запись иначе не находилась; чужая кодировка не роняет вкладку."""
         path = self._lists_dir / filename
         if not path.exists():
             return []
-        return [l.strip() for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        try:
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError as exc:
+            log.error(f"Не удалось прочитать {filename}: {exc}")
+            return []
+        return [l.strip() for l in text.splitlines() if l.strip()]
+
+    def _read_list(self, filename: str) -> list[str]:
+        """Записи списка — без комментариев (# …): это не сайты."""
+        return [l for l in self._read_lines(filename) if not _is_comment(l)]
 
     def _write_list(self, filename: str, lines: list[str]) -> None:
         path = self._lists_dir / filename
         path.parent.mkdir(parents=True, exist_ok=True)
+        comments = [l for l in self._read_lines(filename) if _is_comment(l)]
         if path.exists():
             shutil.copy2(path, path.with_suffix(".bak"))
+        # Комментарии — сверху, как были; записи — по алфавиту
         sorted_lines = sorted(set(lines), key=str.lower)
-        path.write_text("\n".join(sorted_lines) + "\n", encoding="utf-8")
+        path.write_text("\n".join(comments + sorted_lines) + "\n", encoding="utf-8")
 
     def _set_list_status(self, text: str, tone: str | None = None) -> None:
         self._lists_status.setText(text)

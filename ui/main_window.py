@@ -115,10 +115,15 @@ class MainWindow(QMainWindow):
         if not self.config_path:
             return
         try:
+            import os
             import tomli_w
             data = {k: v for k, v in self.config.items() if not k.startswith("_")}
-            with open(self.config_path, "wb") as f:
+            # Через временный файл: выключение или падение посреди записи не
+            # оставит обрезанный config.toml (с ним пропали бы все настройки)
+            tmp = self.config_path.with_name(self.config_path.name + ".tmp")
+            with open(tmp, "wb") as f:
                 tomli_w.dump(data, f)
+            os.replace(tmp, self.config_path)
         except Exception:
             logging.getLogger(__name__).exception("Ошибка сохранения конфига")
 
@@ -313,6 +318,7 @@ class MainWindow(QMainWindow):
             on_relaunch_admin=self.relaunch_as_admin,
             # Новая версия службы — та же мигающая точка, что у «Обновлений»
             on_service_outdated=lambda v: self._tabs.set_badge(_SETTINGS_TAB, v),
+            on_service_changed=self.dashboard.after_service_change,
         )
         self.stack.addWidget(self.settings)
         layout.addWidget(self.stack, stretch=1)

@@ -1053,8 +1053,8 @@ class DashboardTab(QWidget):
                 self._save_config_fn()
         log.info(f"Объявление «{aid}» скрыто")
         bar = next((b for b in self._announce_bars() if b.property("aid") == aid), None)
-        if bar is None:
-            return
+        if bar is None or getattr(bar, "_fz_fading", False):
+            return      # второй щелчок по крестику, пока плашка тает
         holder = self._announce_holder
 
         def _collapse() -> None:
@@ -1936,6 +1936,31 @@ class DashboardTab(QWidget):
         self._tg_restoring_off = not enable
         self._on_tg_proxy_toggle()
         self._tg_launch_app = False     # вызов из кода (обновление), не пользователь — Telegram не открываем
+
+    def after_service_change(self, action: str, resume_bat) -> None:
+        """«Настройки» переустановили, обновили или удалили фоновую службу.
+        Остановившись (или потеряв связь с FlowZap), она сбросила DNS, который
+        включал FlowZap, а обход перед этим остановили — без этого плитка DNS
+        показывала «включён», а DNS уже был провайдера. Возвращаем как было;
+        без службы и без прав администратора DNS не включить — показываем
+        выключенным. resume_bat — пресет, работавший до обновления службы."""
+        if self._dns_enabled and self._sw_dns.isEnabled():
+            pair = dns_manager.get_active_pair(self._config)
+            if pair is not None and (service_client.service_installed() or service_client.is_admin()):
+                log.info("Фоновая служба переустановлена — включаю DNS снова")
+                self._sw_dns.setEnabled(False)
+                self._tile_dns.set_error(False)
+                self._tile_dns.set_state(True, "Применяю…")
+                self._apply_dns_async_tracked(True, pair)
+            else:
+                log.info("Фоновой службы нет — DNS провайдера, тумблер выключен")
+                self._dns_enabled = False
+                self._remember_state("dns", False)
+                self._refresh_dns_button_style()
+        if action == "update" and resume_bat and self.manager is not None and not self.manager.is_running \
+                and Path(resume_bat).exists():
+            log.info(f"Фоновая служба обновлена — запускаю обход снова: {Path(resume_bat).stem}")
+            self.manager.start_async(bat_path=resume_bat)
 
     def on_core_updated(self) -> None:
         """Вызывается UpdatesTab после успешного обновления Core — перечитать пресеты."""
