@@ -1,9 +1,10 @@
 """
 core/updates/app.py
 -------------------
-Самообновление FlowZap: скачать архив релиза, распаковать FlowZap.exe и
-_internal/ рядом с приложением и запустить PowerShell-скрипт замены,
-который дождётся выхода приложения, заменит файлы (с откатом) и перезапустит.
+Самообновление FlowZap: скачать архив релиза, проверить подпись автора
+(core/updates/signing.py), распаковать FlowZap.exe и _internal/ рядом с
+приложением и запустить PowerShell-скрипт замены, который дождётся выхода
+приложения, заменит файлы (с откатом) и перезапустит.
 """
 import logging
 import os
@@ -11,11 +12,40 @@ import shutil
 from pathlib import Path
 from typing import Callable, Optional
 
+from core.updates import signing
 from core.updates.releases import (
-    FLOWZAP_REPO, download_asset, get_from_gitlab, latest_asset, run_install,
+    FLOWZAP_REPO, _fetch, download_asset, get_from_gitlab, get_latest_release, latest_asset,
+    run_install,
 )
 
 logger = logging.getLogger(__name__)
+
+_UNSIGNED = ("Обновление {tag} не прошло проверку подписи ({reason}) — не устанавливаю. "
+             "Если это не ошибка сети, скачайте FlowZap вручную со страницы проекта")
+
+
+def _fetch_signature(repo: str, name: str, tag: str) -> bytes:
+    """Файл подписи <архив>.sig того же релиза: GitHub, потом GitLab.
+    SignatureError — нигде нет."""
+    sig_name = name + signing.SIGNATURE_SUFFIX
+    problems = []
+    for source in (lambda: get_latest_release(repo), get_from_gitlab):
+        try:
+            release = source()
+            if not release or release.get("tag_name") != tag:
+                continue
+            where = release.get("_source", "github")
+            asset = next((a for a in release.get("assets", []) if a.get("name") == sig_name), None)
+            if asset is None:
+                problems.append(f"{where}: нет {sig_name}")
+                continue
+            if where == "gitlab":
+                return _fetch(asset["browser_download_url"], timeout=30)
+            return download_asset(asset)    # с проверкой размера и sha256 из GitHub
+        except Exception as e:
+            problems.append(str(e))
+    logger.error(f"Подпись {sig_name} не получена: {'; '.join(problems) or 'релиз не найден'}")
+    raise signing.SignatureError("нет файла подписи")
 
 
 def find_exe_asset(release: dict) -> Optional[dict]:
@@ -365,6 +395,14 @@ def download_and_install_exe(
         data = download_asset(asset, gitlab_mirror, "зеркало GitLab")
         asset_name = from_gitlab.get("name", asset["name"])
         tag = from_gitlab.get("tag", tag)
+
+        log("Проверяем подпись...")
+        try:
+            key_id = signing.verify(data, asset_name, tag, _fetch_signature(repo, asset_name, tag))
+        except signing.SignatureError as e:
+            logger.error(f"Обновление {tag} ({asset_name}): подпись не прошла проверку — {e}")
+            raise ValueError(_UNSIGNED.format(tag=tag, reason=e))
+        logger.info(f"Обновление {tag}: подпись верна (ключ {key_id})")
 
         current_exe = (
             Path(sys.executable) if getattr(sys, "frozen", False) else install_dir / "FlowZap.exe"
