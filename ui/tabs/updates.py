@@ -388,7 +388,9 @@ class UpdatesTab(QWidget):
         if find_exe_asset(release) is None:
             c.set_status(f"Версия {tag} есть, но файл релиза ещё не добавлен.", "error")
             return
-        c.set_status(f"Доступна версия {tag}", "warn")
+        # Пре-релиз видит только бета-канал ([updater] beta = true)
+        pre = " (пре-релиз)" if release.get("prerelease") else ""
+        c.set_status(f"Доступна версия {tag}{pre}", "warn")
         c.set_update_enabled(True)
         c.set_notes(release.get("body", ""), release.get("html_url", ""))
 

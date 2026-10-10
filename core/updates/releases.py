@@ -184,6 +184,37 @@ def get_from_gitlab() -> Optional[dict]:
 _release_cache: dict = {}
 _CACHE_TTL = 3 * 3600  # 3 часа
 
+# Бета-канал: строка beta = true в [updater] config.toml (в интерфейсе её нет).
+# FlowZap видит и пре-релизы самого FlowZap — автор публикует новую версию
+# пре-релизом (publish_release.py → 2), обновляется на неё обычной кнопкой и
+# только потом открывает её всем (→ 3). Пре-релизы есть только на GitHub.
+_beta_channel = False
+
+
+def set_beta_channel(enabled: bool) -> None:
+    global _beta_channel
+    _beta_channel = bool(enabled)
+    _release_cache.pop(FLOWZAP_REPO, None)
+    if _beta_channel:
+        logger.info("Бета-канал: FlowZap видит и пре-релизы")
+
+
+def _version_key(tag: str) -> tuple[int, ...]:
+    import re
+    m = re.match(r"\s*[vV]?(\d+(?:\.\d+)*)", tag or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def _newest_including_prereleases(repo: str) -> dict:
+    """Самый новый по номеру версии релиз или пре-релиз (черновики — нет)."""
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=20"
+    req = urllib.request.Request(url, headers=github_headers())
+    with urllib.request.urlopen(req, timeout=10, context=ssl_context()) as r:
+        releases = [x for x in json.load(r) if isinstance(x, dict) and not x.get("draft")]
+    if not releases:
+        raise ValueError("на GitHub нет релизов")
+    return max(releases, key=lambda x: _version_key(x.get("tag_name", "")))
+
 
 def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optional[dict]:
     """Последний релиз с GitHub (кэш на 3 часа). Для самого FlowZap при
@@ -195,10 +226,13 @@ def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False) -> Optiona
             return cached
 
     try:
-        url = f"https://api.github.com/repos/{repo}/releases/latest"
-        req = urllib.request.Request(url, headers=github_headers())
-        with urllib.request.urlopen(req, timeout=10, context=ssl_context()) as r:
-            result = json.load(r)
+        if _beta_channel and repo == FLOWZAP_REPO:
+            result = _newest_including_prereleases(repo)
+        else:
+            url = f"https://api.github.com/repos/{repo}/releases/latest"
+            req = urllib.request.Request(url, headers=github_headers())
+            with urllib.request.urlopen(req, timeout=10, context=ssl_context()) as r:
+                result = json.load(r)
     except Exception as e:
         if isinstance(e, urllib.error.HTTPError) and e.code == 403:
             logger.warning(f"GitHub: лимит запросов ({repo})")
