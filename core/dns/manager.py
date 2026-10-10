@@ -46,7 +46,13 @@ _PS_TIMEOUT = 30
 _state_lock = threading.Lock()
 _active_pair: Optional[dict] = None
 _generation = 0
+# Повтор без DNS (retry_without_dns) — одно окно на все загрузки: кто упёрся
+# в лимит, пока DNS уже выключен для другой, повторяет заодно; включает
+# обратно последний. _bypass_pair/_bypass_generation — что было до окна.
 _bypass_lock = threading.Lock()
+_bypass_users = 0
+_bypass_pair: Optional[dict] = None
+_bypass_generation = 0
 _bypass = threading.local()
 
 T = TypeVar("T")
@@ -268,8 +274,11 @@ def retry_without_dns(attempt: Callable[[], T], should_retry: Callable[[Exceptio
     attempt() как есть; не удалось (should_retry(ошибка)) и DNS включён
     FlowZap — DNS на время повтора сбрасывается на автоматический (через
     службу это доли секунды) и включается обратно. Если пользователь сам
-    переключил DNS за это время — обратно не включаем. Вложенный вызов
-    внутри повтора не повторяет ещё раз — DNS и так выключен."""
+    переключил DNS за это время — обратно не включаем. Несколько загрузок
+    сразу (проверка FlowZap, zapret и TG Proxy) повторяют в одно общее
+    выключение DNS, а не по очереди. Вложенный вызов внутри повтора не
+    повторяет ещё раз — DNS и так выключен."""
+    global _bypass_users, _bypass_pair, _bypass_generation
     try:
         return attempt()
     except Exception as e:
@@ -280,22 +289,30 @@ def retry_without_dns(attempt: Callable[[], T], should_retry: Callable[[Exceptio
         if pair is None:
             raise
         first = e
+    (log or logger.info)("С включённым DNS не удалось скачать — повторяю без него")
     with _bypass_lock:
-        (log or logger.info)("С включённым DNS не удалось скачать — повторяю без него")
-        error = _set_dns(False, None)
-        if error:
-            logger.error(f"DNS не выключился для повтора загрузки: {error}")
-            raise first
-        _bypass.active = True
-        try:
-            return attempt()
-        finally:
-            _bypass.active = False
-            with _state_lock:
-                untouched = _generation == generation
-            if untouched:
-                error = _set_dns(True, pair)
-                if error:
-                    logger.error(f"DNS не включился обратно после загрузки: {error}")
-                else:
-                    logger.info("DNS включён обратно после загрузки")
+        if _bypass_users == 0:
+            error = _set_dns(False, None)
+            if error:
+                logger.error(f"DNS не выключился для повтора загрузки: {error}")
+                raise first
+            _bypass_pair, _bypass_generation = pair, generation
+        _bypass_users += 1
+    _bypass.active = True
+    try:
+        result = attempt()
+        logger.info("Без DNS получилось")
+        return result
+    finally:
+        _bypass.active = False
+        with _bypass_lock:
+            _bypass_users -= 1
+            if _bypass_users == 0:
+                with _state_lock:
+                    untouched = _generation == _bypass_generation
+                if untouched:
+                    error = _set_dns(True, _bypass_pair)
+                    if error:
+                        logger.error(f"DNS не включился обратно после загрузки: {error}")
+                    else:
+                        logger.info("DNS включён обратно после загрузки")
