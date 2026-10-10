@@ -183,6 +183,9 @@ def get_from_gitlab() -> Optional[dict]:
 # Кэш релизов: repo -> (timestamp, release_dict)
 _release_cache: dict = {}
 _CACHE_TTL = 3 * 3600  # 3 часа
+# «Проверить» — ответ не старше 5 минут: кнопка действительно проверяет,
+# а несколько нажатий подряд не тратят лимит GitHub
+_MANUAL_CHECK_TTL = 5 * 60
 
 # Бета-канал: строка beta = true в [updater] config.toml (в интерфейсе её нет).
 # FlowZap видит и пре-релизы самого FlowZap — автор публикует новую версию
@@ -217,15 +220,15 @@ def _newest_including_prereleases(repo: str) -> dict:
 
 
 def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False,
-                       gitlab: bool = True) -> Optional[dict]:
-    """Последний релиз с GitHub (кэш на 3 часа). Для самого FlowZap при
-    любой ошибке GitHub (лимит запросов, блокировка, 404) — релиз с GitLab;
-    gitlab=False — без него (и без взятого с него в кэше): см.
-    latest_release_for_user."""
+                       gitlab: bool = True, max_age: float = _CACHE_TTL) -> Optional[dict]:
+    """Последний релиз с GitHub (кэш на max_age секунд, по умолчанию 3 часа).
+    Для самого FlowZap при любой ошибке GitHub (лимит запросов, блокировка,
+    404) — релиз с GitLab; gitlab=False — без него (и без взятого с него в
+    кэше): см. latest_release_for_user."""
     if not force and repo in _release_cache:
         ts, cached = _release_cache[repo]
         from_gitlab = isinstance(cached, dict) and cached.get("_source") == "gitlab"
-        if time.time() - ts < _CACHE_TTL and (gitlab or not from_gitlab):
+        if time.time() - ts < max_age and (gitlab or not from_gitlab):
             logger.debug(f"Релиз из кэша: {repo}")
             return cached
 
@@ -252,7 +255,7 @@ def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False,
     return result
 
 
-def latest_release_for_user(repo: str) -> dict:
+def latest_release_for_user(repo: str, max_age: float = _CACHE_TTL) -> dict:
     """Последний релиз, когда его просит пользователь («Проверить»,
     «Обновить», установка): GitHub → GitHub без своего DNS (на пару секунд:
     через DNS-прокси GitHub часто отвечает «лимит запросов» — один адрес на
@@ -260,7 +263,7 @@ def latest_release_for_user(repo: str) -> dict:
     пре-релизов (бета-канал) и он мог отстать. Автопроверка при запуске DNS
     не трогает — она зовёт get_latest_release. NetworkError — нигде нет."""
     def _attempt() -> dict:
-        release = get_latest_release(repo, gitlab=False)
+        release = get_latest_release(repo, gitlab=False, max_age=max_age)
         if release is None:
             raise NetworkError("Не удалось получить информацию о релизе")
         return release
@@ -286,10 +289,11 @@ def check_release_async(
     Проверить последний релиз в фоновом потоке — get_latest_release() блокирующий
     (до ~20 с с учётом GitLab-fallback). Сам создаёт поток и зовёт on_done(release | None),
     как download_and_install_*: вызывающий UI-код только оборачивает on_done в Signal.emit.
+    Это кнопка «Проверить» — кэш не старше 5 минут (_MANUAL_CHECK_TTL).
     """
     def _worker() -> None:
         try:
-            release = latest_release_for_user(repo)
+            release = latest_release_for_user(repo, max_age=_MANUAL_CHECK_TTL)
         except Exception:
             release = None
         on_done(release)
