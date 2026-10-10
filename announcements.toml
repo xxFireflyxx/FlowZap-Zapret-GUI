@@ -1,0 +1,9 @@
+# Объявления FlowZap — плашка на главной (core/announcements.py).
+# Правится через menu.py → «Объявления»: он же подписывает и отправляет.
+# Изменили вручную — подпишите: python release/signing.py sign-file announcements.toml
+
+[[announcement]]
+id = "2026-10-10-1"
+title = "ОБНОВЛЕНИЕ"
+text = "Необходимо скачать в ручную новые файлы в репозитории проекта."
+tone = "warning"
