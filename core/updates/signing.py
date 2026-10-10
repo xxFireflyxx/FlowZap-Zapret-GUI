@@ -13,6 +13,10 @@ core/updates/signing.py
 Рядом с архивом в релизе лежит <архив>.sig — JSON: формат, тег, имя файла,
 sha256, id ключа и подпись. Подписываются тег и имя вместе с содержимым —
 старую подписанную версию не выдать за новую и один архив за другой.
+
+Тем же ключом подписываются файлы из репозитория, которые FlowZap
+скачивает и которым должен доверять (объявления — core/announcements.py):
+make_file_signature / verify_file — без тега, имя файла вместо него.
 """
 
 import base64
@@ -52,9 +56,42 @@ def make_signature(private_key, key_id: str, tag: str, name: str, data: bytes) -
 def verify(data: bytes, name: str, tag: str, sig_file: bytes) -> str:
     """Проверить архив name релиза tag по содержимому его .sig. Возвращает
     id ключа, которым подписано; иначе SignatureError с причиной."""
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    info, signature = _parse_sig(sig_file)
+    if info.get("tag") != tag or info.get("name") != name:
+        raise SignatureError(f"подпись от другого файла ({info.get('name')} {info.get('tag')})")
+    digest = hashlib.sha256(data).hexdigest()
+    if info.get("sha256") != digest:
+        raise SignatureError("архив не совпадает с подписанным")
+    return _check(signed_message(tag, name, digest), signature, info.get("key"))
 
+
+def file_message(name: str, sha256_hex: str) -> bytes:
+    return f"FlowZap file\n{_FORMAT}\n{name}\n{sha256_hex}".encode("utf-8")
+
+
+def make_file_signature(private_key, key_id: str, name: str, data: bytes) -> bytes:
+    """.sig для файла из репозитория (release/signing.py sign-file)."""
+    digest = hashlib.sha256(data).hexdigest()
+    sig = private_key.sign(file_message(name, digest))
+    return (json.dumps({
+        "format": _FORMAT, "kind": "file", "name": name, "sha256": digest,
+        "key": key_id, "signature": base64.b64encode(sig).decode("ascii"),
+    }, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
+def verify_file(data: bytes, name: str, sig_file: bytes) -> str:
+    """Проверить файл name из репозитория по его .sig. Подпись архива
+    релиза сюда не подойдёт (другое сообщение) — и наоборот."""
+    info, signature = _parse_sig(sig_file)
+    if info.get("kind") != "file" or info.get("name") != name:
+        raise SignatureError(f"подпись от другого файла ({info.get('name')})")
+    digest = hashlib.sha256(data).hexdigest()
+    if info.get("sha256") != digest:
+        raise SignatureError("файл не совпадает с подписанным")
+    return _check(file_message(name, digest), signature, info.get("key"))
+
+
+def _parse_sig(sig_file: bytes) -> tuple[dict, bytes]:
     try:
         info = json.loads(sig_file.decode("utf-8"))
         signature = base64.b64decode(info["signature"], validate=True)
@@ -62,15 +99,15 @@ def verify(data: bytes, name: str, tag: str, sig_file: bytes) -> str:
         raise SignatureError("файл подписи повреждён")
     if info.get("format") != _FORMAT:
         raise SignatureError(f"неизвестный формат подписи ({info.get('format')!r})")
-    if info.get("tag") != tag or info.get("name") != name:
-        raise SignatureError(f"подпись от другого файла ({info.get('name')} {info.get('tag')})")
-    digest = hashlib.sha256(data).hexdigest()
-    if info.get("sha256") != digest:
-        raise SignatureError("архив не совпадает с подписанным")
+    return info, signature
 
-    message = signed_message(tag, name, digest)
+
+def _check(message: bytes, signature: bytes, hinted_key) -> str:
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
     # Сначала ключ, указанный в подписи, потом остальные — id лишь подсказка
-    order = sorted(PUBLIC_KEYS, key=lambda k: k != info.get("key"))
+    order = sorted(PUBLIC_KEYS, key=lambda k: k != hinted_key)
     for key_id in order:
         public_hex = PUBLIC_KEYS[key_id]
         if not public_hex:

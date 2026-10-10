@@ -310,6 +310,15 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
         background-color: {_mix(p.bg_card, p.error, 0.14 if p.is_dark else 0.06)};
         border: 1px solid {_mix(p.bg_card, p.error, 0.70)};
     }}
+    QFrame#announce {{
+        background-color: {_mix(p.bg_card, p.accent, 0.14 if p.is_dark else 0.07)};
+        border: 1px solid {_mix(p.bg_card, p.accent, 0.40)};
+        border-radius: {r}px;
+    }}
+    QFrame#announce[tone="warning"] {{
+        background-color: {_mix(p.bg_card, p.warning, 0.14 if p.is_dark else 0.08)};
+        border: 1px solid {_mix(p.bg_card, p.warning, 0.55)};
+    }}
     QFrame#bestRow {{
         background-color: {_mix(p.bg_card, p.accent, 0.10 if p.is_dark else 0.05)};
         border: 1px solid {_mix(p.bg_card, p.accent, 0.30)};

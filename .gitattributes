@@ -1,0 +1,5 @@
+# Подписанные файлы (core/updates/signing.py): git не должен менять в них
+# концы строк — иначе на GitHub лежат не те байты, что подписаны, и FlowZap
+# отклоняет файл. core.autocrlf=true на Windows делал бы CRLF → LF.
+announcements.toml -text
+*.sig -text
