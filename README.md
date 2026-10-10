@@ -43,6 +43,7 @@ FlowZap — приложение для Windows, которое возвраща
 
 - 🔍 **Проверка пресетов** — FlowZap по очереди пробует каждый пресет и показывает, что с ним работает: Discord, YouTube, Google и Cloudflare — отдельными цветными метками (🟢 работает · 🟡 частично · 🔴 нет). Лучший — сверху: с ним полностью работают Discord и YouTube, а при равенстве он самый быстрый.
 - ✍️ **Подписанные обновления** — каждое обновление FlowZap подписано автором; поддельное или повреждённое FlowZap не установит.
+- 📢 **Объявления от автора** — если нужно сообщить что-то важное (например, обновиться вручную), на главной появится плашка. Без рекламы; закрыли крестиком — больше не покажется.
 - 🔐 **Без прав администратора** — один раз ставится фоновая служба FlowZap Service (одно окно Windows), дальше FlowZap запускается как обычная программа.
 - ⬇️ **Всё скачивается само** — при первом нажатии «Включить» FlowZap загрузит zapret и проверит файлы по контрольной сумме.
 - 🔄 **Обновления в один клик** — FlowZap, zapret и TG Proxy обновляются на вкладке «Обновления». Если загрузка с GitHub упёрлась в лимит из-за DNS, FlowZap сам повторит её без него.
@@ -70,7 +71,7 @@ FlowZap — приложение для Windows, которое возвраща
 > [!NOTE]
 > **🛡️ Безопасность.** Kaspersky проверил FlowZap, в том числе запустив его в песочнице: **«Безопасный объект»** — угроз и подозрительных действий не найдено. [Отчёт Kaspersky OpenTIP](https://opentip.kaspersky.com/136CE0263449C42A76ABEBEB008F4711790AA1911449AAA14C2D8F490AADE561/results?tab=upload)
 >
-> Начиная с версии 1.1 обновления FlowZap подписаны цифровой подписью автора: перед установкой FlowZap проверяет подпись и не поставит подменённый или повреждённый файл — даже если его подложат на страницу релизов.
+> Начиная с версии 1.1 обновления FlowZap подписаны цифровой подписью автора: перед установкой FlowZap проверяет подпись и не поставит подменённый или повреждённый файл — даже если его подложат на страницу релизов. Так же подписаны объявления на главной: показать там что-то от имени FlowZap может только автор.
 
 ---
 
@@ -299,6 +300,7 @@ FlowZap is a Windows app that brings back Discord and YouTube, connects Telegram
 
 - 🛡️ **Block bypass** — FlowZap tests every zapret preset against Discord, YouTube, Google and Cloudflare, shows per-service results as colored tags and picks the best one.
 - ✍️ **Signed updates** — every FlowZap update is signed by the author; a tampered or corrupted one won't be installed.
+- 📢 **Announcements** — important notes from the author appear as a dismissible banner on the home screen; they are signed too, no ads.
 - 🌐 **Custom DNS** — opens ChatGPT, Gemini and other AI services that geo-block Russia; one switch, applied in a fraction of a second.
 - ✈️ **Telegram Proxy** — built into FlowZap, no extra apps or tray icons; connect Telegram with one button.
 - 🔐 **No admin rights** — a small background service (FlowZap Service) is installed once with a single UAC prompt.
