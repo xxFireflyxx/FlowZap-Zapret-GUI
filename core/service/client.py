@@ -210,14 +210,20 @@ _OPEN_EXISTING = 3
 # Асинхронный ввод-вывод (для тайм-аутов) + уровень олицетворения
 # «только опознание»: подставной сервер не сможет действовать от нашего имени
 _PIPE_FLAGS = 0x40000000 | 0x00100000 | 0x00010000
+# Для обновления FlowZap — «олицетворение»: служба меняет файлы и запускает
+# FlowZap от нашего имени, с нашими правами. Подлинность службы проверяется
+# по PID до того, как мы что-либо отправим, а пока мы ничего не отправили,
+# сервер канала олицетворить нас не может
+_PIPE_FLAGS_IMPERSONATE = 0x40000000 | 0x00100000 | 0x00020000
 
 
 class _Pipe:
-    def __init__(self, name: str, server_pid: Optional[int]) -> None:
+    def __init__(self, name: str, server_pid: Optional[int], impersonate: bool = False) -> None:
         path = "\\\\.\\pipe\\" + name
+        flags = _PIPE_FLAGS_IMPERSONATE if impersonate else _PIPE_FLAGS
         deadline = time.monotonic() + 5
         while True:
-            handle = _kernel32.CreateFileW(path, _PIPE_ACCESS, 0, None, _OPEN_EXISTING, _PIPE_FLAGS, None)
+            handle = _kernel32.CreateFileW(path, _PIPE_ACCESS, 0, None, _OPEN_EXISTING, flags, None)
             if handle != _INVALID_HANDLE:
                 break
             err = ctypes.get_last_error()
@@ -354,6 +360,33 @@ class ServiceSession:
         сверяет sha256 и ставит себе winws. Без UAC. Версия, что встала."""
         reply = self.request({"op": "engine-update", "tag": tag or ""}, timeout=300)
         return reply.get("engine_version") or ""
+
+    def update_app(self, exe: Path, payload: Path, wait: int = 90) -> None:
+        """Попросить службу поставить обновление FlowZap: дождаться выхода
+        этого процесса, заменить exe (+ _internal/ из payload — распакованного
+        рядом с exe, подпись уже проверена) с откатом и запустить FlowZap.
+        Отдельное соединение с уровнем «олицетворение» (см.
+        _PIPE_FLAGS_IMPERSONATE): файлы служба меняет нашими правами.
+        Служба только принимает задание и отвечает сразу; ServiceError —
+        не приняла (нет службы, старая версия) — обновлять по-старому."""
+        server_pid = _wait_running(15) if self._authenticate else None
+        pipe = _Pipe(self._pipe_name, server_pid, impersonate=True)
+        try:
+            def send(message: dict) -> dict:
+                try:
+                    reply = pipe.request(message)
+                except (OSError, ConnectionError, ValueError) as e:
+                    raise ServiceError(f"Связь с фоновой службой прервалась: {e}") from e
+                if not reply.get("ok"):
+                    raise ServiceError(reply.get("error") or "Фоновая служба отказала")
+                return reply
+
+            hello = send({"op": "hello"})
+            if "app-update" not in (hello.get("features") or []):
+                raise ServiceError(f"Служба {hello.get('version') or '?'} не умеет обновлять FlowZap")
+            send({"op": "app-update", "exe": str(exe), "payload": str(payload), "wait": int(wait)})
+        finally:
+            pipe.close()
 
 
 session = ServiceSession()
