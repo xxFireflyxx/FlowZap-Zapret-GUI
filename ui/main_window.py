@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
     _updatesFound = Signal(bool)   # (есть ли обновление GUI/Core/TG Proxy) — из _do_check_updates
     _releasesFetched = Signal(object)  # {"gui"/"core"/"tg": release} — из _do_check_updates
     _builtinDnsFetched = Signal(object)  # ((version, entries) | None) — из fetch_builtin_dns_async
+    _announcementsFetched = Signal(object)  # (list | None) — из announcements.fetch_async
 
     def __init__(self, root: Path, config: dict = None, config_path: Path = None, manager=None):
         super().__init__()
@@ -105,6 +106,7 @@ class MainWindow(QMainWindow):
         # чтобы при входе на неё было видно, что именно обновлять.
         self._releasesFetched.connect(self.updates.apply_background_check)
         self._builtinDnsFetched.connect(self._on_builtin_dns_fetched)
+        self._announcementsFetched.connect(self._on_announcements_fetched)
         self._start_update_autocheck()
 
     def save_config(self) -> None:
@@ -117,6 +119,19 @@ class MainWindow(QMainWindow):
                 tomli_w.dump(data, f)
         except Exception:
             logging.getLogger(__name__).exception("Ошибка сохранения конфига")
+
+    def start_announcements_fetch(self) -> None:
+        """Объявления автора — в фоне при запуске (core/announcements.py)."""
+        from core.announcements import fetch_async
+        fetch_async(lambda items: self._announcementsFetched.emit(items))
+
+    def _on_announcements_fetched(self, items) -> None:
+        from core.announcements import relevant
+        from core.version import GUI_VERSION
+        if items is None:
+            return
+        dismissed = set(self.config.get("announcements", {}).get("dismissed", []))
+        self.dashboard.show_announcements(relevant(items, GUI_VERSION, dismissed))
 
     def start_builtin_dns_sync(self) -> None:
         """Скачать список встроенных DNS в фоне (вызывается при запуске)."""

@@ -276,6 +276,7 @@ def main() -> None:
 
     _migrate_win_autostart_async()
     window.start_builtin_dns_sync()
+    window.start_announcements_fetch()
 
     def _on_wake_request() -> None:
         """Второй экземпляр достучался через single-instance порт —

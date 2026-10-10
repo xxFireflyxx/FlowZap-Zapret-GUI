@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 from ui.theme import theme
 from ui.widgets.popup import HelpIcon
 from ui.widgets.animation import CheckProgress, RippleOverlay, shake
+from ui.widgets.announcement import AnnouncementBar
 from ui.widgets.base import Glyph, button, dot_icon, label, restyle, set_tone
 from ui.widgets.controls import CircleBadge, FieldButton, StatusDot, Switch
 from ui.widgets.layout import Page
@@ -882,6 +883,11 @@ class DashboardTab(QWidget):
         page = Page("")
         root.addWidget(page)
 
+        # Объявления автора (core/announcements.py) — над плитками
+        self._announce_box = QVBoxLayout()
+        self._announce_box.setSpacing(theme.metrics.padding_md)
+        page.body.addLayout(self._announce_box)
+
         page.body.addLayout(self._build_services_row())
 
         self._presets_panel = PresetsPanel(self._ping_mgr)
@@ -894,6 +900,34 @@ class DashboardTab(QWidget):
         self._preset_menu = self._presets_panel
         self._btn_refresh = self._presets_panel.btn_check
         self._btn_toggle = self._sw_zapret
+
+    # ── Объявления ──
+
+    def show_announcements(self, items: list[dict]) -> None:
+        """Показать объявления (уже отобранные под эту версию) вместо прежних."""
+        while self._announce_box.count():
+            widget = self._announce_box.takeAt(0).widget()
+            if widget is not None:
+                widget.deleteLater()
+        for item in items:
+            bar = AnnouncementBar(item, self)
+            bar.dismissed.connect(self._dismiss_announcement)
+            self._announce_box.addWidget(bar)
+
+    def _dismiss_announcement(self, aid: str) -> None:
+        dismissed = self._config.setdefault("announcements", {}).setdefault("dismissed", [])
+        if aid not in dismissed:
+            dismissed.append(aid)
+            if self._save_config_fn:
+                self._save_config_fn()
+        log.info(f"Объявление «{aid}» скрыто")
+        for i in range(self._announce_box.count()):
+            widget = self._announce_box.itemAt(i).widget()
+            if isinstance(widget, AnnouncementBar) and widget.property("aid") == aid:
+                widget.hide()
+                widget.deleteLater()
+                self._announce_box.removeWidget(widget)
+                break
 
     def _build_services_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
