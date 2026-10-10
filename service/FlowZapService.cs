@@ -25,6 +25,9 @@
 //   * DNS — только IP-адреса (проверяются как IP); ставятся через Windows
 //     API, запасной путь — свой скрипт PowerShell, от клиента в него
 //     попадают лишь адреса;
+//   * обновление самого FlowZap (замена FlowZap.exe и _internal после его
+//     закрытия, перезапуск) служба делает от имени попросившего
+//     пользователя — с его правами, не с правами системы (см. AppUpdate);
 //   * winws в job-объекте: падение службы гасит и его; отключение FlowZap,
 //     запустившего обход, — тоже. DNS, включённый FlowZap, при его
 //     отключении (закрыли, упал) сбрасывается на автоматический.
@@ -55,8 +58,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyTitle("FlowZap Service")]
 [assembly: AssemblyDescription("Фоновая служба FlowZap: запуск обхода и системные настройки")]
 [assembly: AssemblyProduct("FlowZap")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 namespace FlowZap.Service
 {
@@ -64,7 +67,7 @@ namespace FlowZap.Service
     {
         public const string ServiceName = "FlowZapService";
         public const string DisplayName = "FlowZap Service";
-        public const string Version = "1.3.0";
+        public const string Version = "1.4.0";
         public const int Protocol = 1;
         public const int MaxRequestBytes = 64 * 1024 * 1024;
         public const int MaxLines = 300;
@@ -72,6 +75,7 @@ namespace FlowZap.Service
         public static readonly string[] EngineFiles = { "winws.exe", "cygwin1.dll", "WinDivert.dll", "WinDivert64.sys" };
         // Для --console (разработка): своя папка и своё имя канала
         public static string PipeName = "flowzap-service";
+        public static bool ConsoleMode;
     }
 
     static class Paths
@@ -178,6 +182,44 @@ namespace FlowZap.Service
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern bool MoveFileEx(string existing, string replacement, int flags);
+
+        // ── запуск программы от имени пользователя (обновление FlowZap) ──
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct STARTUPINFO
+        {
+            public int cb;
+            public string lpReserved, lpDesktop, lpTitle;
+            public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+            public short wShowWindow, cbReserved2;
+            public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PROCESS_INFORMATION
+        {
+            public IntPtr hProcess, hThread;
+            public int dwProcessId, dwThreadId;
+        }
+
+        public const uint TOKEN_ALL_ACCESS = 0xF01FF;
+        public const int SecurityImpersonation = 2, TokenPrimary = 1;
+        public const uint CREATE_UNICODE_ENVIRONMENT = 0x400;
+        public const int ERROR_PRIVILEGE_NOT_HELD = 1314;
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        public static extern bool DuplicateTokenEx(IntPtr token, uint access, IntPtr attributes, int level, int type, out IntPtr newToken);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool CreateProcessAsUser(IntPtr token, string application, StringBuilder commandLine,
+            IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint flags, IntPtr environment,
+            string currentDirectory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        public static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        public static extern bool DestroyEnvironmentBlock(IntPtr environment);
 
         // Аргумент командной строки по правилам Windows (CommandLineToArgvW)
         public static string Quote(string arg)
@@ -571,6 +613,7 @@ namespace FlowZap.Service
             s["exit_code"] = exitCode;
             s["owner"] = running && client == ownerClient;
             s["engine_version"] = ReadEngineVersion();
+            s["features"] = new[] { "app-update" };
             s["seq"] = seq;
             if (since >= 0)
             {
@@ -729,6 +772,309 @@ namespace FlowZap.Service
             if (!Directory.Exists(path)) return;
             Installer.CheckNoReparse(path);
             Directory.Delete(path, true);
+        }
+    }
+
+    // ── Обновление самого FlowZap ─────────────────────────────────────────
+    //
+    // Замена FlowZap.exe и _internal\ после закрытия FlowZap — то же, что
+    // скрипт PowerShell в core/updates/app.py, но делает это процесс, который
+    // не заменяется, не умирает вместе с приложением и не зависит от
+    // PowerShell (политики, антивирус, кодировки путей). Подпись архива уже
+    // проверил FlowZap и распаковал его рядом с собой (_flowzap_update_*).
+    //
+    // Безопасность: со всеми файлами служба работает от имени того, кто
+    // попросил (олицетворение клиента канала), — с его правами, а не с
+    // правами системы. Через неё нельзя прочитать, заменить или удалить то,
+    // что пользователь не может сам; ссылки и junction в папке FlowZap ничего
+    // не дают. Новый FlowZap запускается тоже от его имени и в его сеансе.
+    sealed class AppUpdate
+    {
+        const int MinWait = 5, MaxWait = 300, DefaultWait = 90;
+        static int busy;    // одно обновление за раз
+
+        WindowsIdentity user;
+        Process app;
+        int wait;
+        string exe, dir, payload, newExe, newInt, curInt, exeOld, intOld, userLog;
+
+        public static Dictionary<string, object> Begin(Dictionary<string, object> request, NamedPipeServerStream pipe, uint pid)
+        {
+            string exeArg = request.ContainsKey("exe") ? request["exe"] as string : null;
+            string payloadArg = request.ContainsKey("payload") ? request["payload"] as string : null;
+            if (string.IsNullOrEmpty(exeArg) || string.IsNullOrEmpty(payloadArg) || pid == 0)
+                throw new ArgumentException("Некорректный запрос на обновление FlowZap");
+            int wait = request.ContainsKey("wait") ? Convert.ToInt32(request["wait"]) : DefaultWait;
+            if (Interlocked.CompareExchange(ref busy, 1, 0) != 0)
+                throw new InvalidOperationException("Обновление FlowZap уже идёт");
+
+            AppUpdate u = new AppUpdate();
+            try
+            {
+                u.user = ClientIdentity(pipe);
+                // Процесс FlowZap открываем сейчас, пока он на связи: ждать будем
+                // именно его, а не программу, которой Windows потом отдаст тот же PID
+                u.app = Process.GetProcessById((int)pid);
+                IntPtr handle = u.app.Handle;
+                u.wait = Math.Max(MinWait, Math.Min(MaxWait, wait));
+                u.exe = Path.GetFullPath(exeArg);
+                u.dir = Path.GetDirectoryName(u.exe);
+                u.payload = Path.GetFullPath(payloadArg).TrimEnd('\\');
+                u.newExe = Path.Combine(u.payload, "FlowZap.exe");
+                u.newInt = Path.Combine(u.payload, "_internal");
+                u.curInt = Path.Combine(u.dir, "_internal");
+                u.exeOld = u.exe + ".old";
+                u.intOld = u.curInt + ".old";
+                u.userLog = Path.Combine(u.dir, "logs", "update.log");
+
+                string error = null;
+                u.AsUser(delegate { error = u.Check(); });
+                if (error != null) throw new ArgumentException(error);
+
+                // До запуска потока: после Start() объект принадлежит ему (Release)
+                Log.Write("Обновление FlowZap принято: " + u.exe + " (жду закрытия PID " + pid + ", пользователь " + u.user.Name + ")");
+                Thread t = new Thread(u.Run);
+                t.IsBackground = true;
+                t.Name = "app-update";
+                t.Start();
+            }
+            catch (Exception)
+            {
+                u.Release();
+                throw;
+            }
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            result["ok"] = true;
+            result["accepted"] = true;
+            return result;
+        }
+
+        // Кто на том конце канала. FlowZap подключается для этой команды с
+        // уровнем «олицетворение» (обычное соединение — только «опознание»)
+        static WindowsIdentity ClientIdentity(NamedPipeServerStream pipe)
+        {
+            WindowsIdentity result = null;
+            pipe.RunAsClient(delegate
+            {
+                using (WindowsIdentity current = WindowsIdentity.GetCurrent(true))
+                    if (current != null) result = new WindowsIdentity(current.Token);
+            });
+            if (result == null) throw new InvalidOperationException("Не удалось определить пользователя FlowZap");
+            if (result.ImpersonationLevel != TokenImpersonationLevel.Impersonation &&
+                result.ImpersonationLevel != TokenImpersonationLevel.Delegation)
+            {
+                result.Dispose();
+                throw new InvalidOperationException("FlowZap подключился без права действовать от имени пользователя");
+            }
+            return result;
+        }
+
+        void Release()
+        {
+            if (app != null) { app.Dispose(); app = null; }
+            if (user != null) { user.Dispose(); user = null; }
+            Interlocked.Exchange(ref busy, 0);
+        }
+
+        void AsUser(Action action)
+        {
+            using (WindowsImpersonationContext context = user.Impersonate())
+                action();
+        }
+
+        string Check()
+        {
+            if (!string.Equals(Path.GetFileName(exe), "FlowZap.exe", StringComparison.OrdinalIgnoreCase))
+                return "Обновлять можно только FlowZap.exe";
+            if (!File.Exists(exe)) return "Не найден " + exe;
+            if (!string.Equals(Path.GetDirectoryName(payload), dir, StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetFileName(payload).StartsWith("_flowzap_update_", StringComparison.OrdinalIgnoreCase))
+                return "Папка обновления должна лежать рядом с FlowZap.exe";
+            if (!File.Exists(newExe)) return "В папке обновления нет FlowZap.exe";
+            return null;
+        }
+
+        void Run()
+        {
+            try
+            {
+                bool closed;
+                try { closed = app.WaitForExit(wait * 1000); }
+                catch (Exception) { closed = true; }
+                if (!closed)
+                {
+                    AsUser(delegate
+                    {
+                        UserLog("Обновление отменено: FlowZap не закрылся за " + wait + " с");
+                        DeleteDir(payload);
+                    });
+                    Log.Write("Обновление FlowZap отменено: приложение не закрылось за " + wait + " с");
+                    return;
+                }
+                bool ok = false, haveExe = false;
+                AsUser(delegate
+                {
+                    ok = Swap();
+                    DeleteDir(payload);
+                    haveExe = File.Exists(exe);
+                });
+                Log.Write(ok ? "Обновление FlowZap установлено"
+                             : "Обновление FlowZap не встало, вернул прежнюю версию (подробности в logs\\update.log FlowZap)");
+                if (haveExe) Launch();
+            }
+            catch (Exception e)
+            {
+                Log.Write("Обновление FlowZap: " + e);
+            }
+            finally
+            {
+                Release();
+            }
+        }
+
+        // Старое в сторону, новое на место; при любой ошибке — всё как было
+        bool Swap()
+        {
+            TryDeleteFile(exeOld);
+            if (!TryMove(exe, exeOld, false)) { UserLog("Обновление отменено: FlowZap.exe занят"); return false; }
+            bool intMoved = false;
+            if (Directory.Exists(newInt))
+            {
+                DeleteDir(intOld);
+                if (Directory.Exists(curInt))
+                {
+                    if (!TryMove(curInt, intOld, true))
+                    {
+                        RestoreExe();
+                        UserLog("Обновление отменено: папка _internal занята");
+                        return false;
+                    }
+                    intMoved = true;
+                }
+                if (!TryMove(newInt, curInt, true))
+                {
+                    if (intMoved) RestoreInt();
+                    RestoreExe();
+                    UserLog("Откат: новая папка _internal не встала на место");
+                    return false;
+                }
+            }
+            if (!TryMove(newExe, exe, false))
+            {
+                if (intMoved) RestoreInt();
+                RestoreExe();
+                UserLog("Откат: новый FlowZap.exe не встал на место");
+                return false;
+            }
+            TryDeleteFile(exeOld);
+            DeleteDir(intOld);
+            UserLog("Обновление установлено службой: " + exe);
+            return true;
+        }
+
+        void RestoreExe()
+        {
+            if (File.Exists(exeOld)) TryMove(exeOld, exe, false);
+        }
+
+        void RestoreInt()
+        {
+            if (!Directory.Exists(intOld)) return;
+            DeleteDir(curInt);
+            TryMove(intOld, curInt, true);
+        }
+
+        // Несколько попыток: антивирус или индексатор могут ненадолго держать файл
+        bool TryMove(string from, string to, bool isDir)
+        {
+            string last = null;
+            for (int i = 0; i < 20; i++)
+            {
+                try
+                {
+                    if (isDir) Directory.Move(from, to);
+                    else File.Move(from, to);
+                    return true;
+                }
+                catch (Exception e)
+                {
+                    last = e.Message;
+                    Thread.Sleep(500);
+                }
+            }
+            UserLog("Не удалось перенести " + from + " → " + to + ": " + last);
+            return false;
+        }
+
+        static void TryDeleteFile(string path)
+        {
+            try { if (File.Exists(path)) File.Delete(path); } catch (Exception) { }
+        }
+
+        static void DeleteDir(string path)
+        {
+            for (int i = 0; i < 5 && Directory.Exists(path); i++)
+            {
+                try { Directory.Delete(path, true); }
+                catch (Exception) { Thread.Sleep(300); }
+            }
+        }
+
+        void UserLog(string message)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(userLog));
+                File.AppendAllText(userLog, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + message + Environment.NewLine, Encoding.UTF8);
+            }
+            catch (Exception) { }
+        }
+
+        // Запустить новый FlowZap от имени пользователя в его сеансе, с его
+        // переменными окружения (не системными: иначе APPDATA, TEMP — чужие)
+        void Launch()
+        {
+            IntPtr primary = IntPtr.Zero, env = IntPtr.Zero;
+            try
+            {
+                if (!Native.DuplicateTokenEx(user.Token, Native.TOKEN_ALL_ACCESS, IntPtr.Zero,
+                        Native.SecurityImpersonation, Native.TokenPrimary, out primary))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (!Native.CreateEnvironmentBlock(out env, primary, false)) env = IntPtr.Zero;
+                Native.STARTUPINFO si = new Native.STARTUPINFO();
+                si.cb = Marshal.SizeOf(typeof(Native.STARTUPINFO));
+                si.lpDesktop = @"winsta0\default";
+                Native.PROCESS_INFORMATION pi;
+                if (!Native.CreateProcessAsUser(primary, exe, new StringBuilder(Native.Quote(exe)), IntPtr.Zero, IntPtr.Zero,
+                        false, env != IntPtr.Zero ? Native.CREATE_UNICODE_ENVIRONMENT : 0, env, dir, ref si, out pi))
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    // --console (разработка): у обычного процесса нет права
+                    // запускать от чужого маркера, а пользователь и так тот же
+                    if (error == Native.ERROR_PRIVILEGE_NOT_HELD && Const.ConsoleMode)
+                    {
+                        ProcessStartInfo psi = new ProcessStartInfo(exe);
+                        psi.UseShellExecute = false;
+                        psi.WorkingDirectory = dir;
+                        using (Process p = Process.Start(psi))
+                            Log.Write("FlowZap запущен заново (консольный режим), PID " + p.Id);
+                        return;
+                    }
+                    throw new System.ComponentModel.Win32Exception(error);
+                }
+                Native.CloseHandle(pi.hThread);
+                Native.CloseHandle(pi.hProcess);
+                Log.Write("FlowZap запущен заново, PID " + pi.dwProcessId);
+            }
+            catch (Exception e)
+            {
+                Log.Write("Не удалось запустить FlowZap после обновления: " + e.Message);
+            }
+            finally
+            {
+                if (env != IntPtr.Zero) Native.DestroyEnvironmentBlock(env);
+                if (primary != IntPtr.Zero) Native.CloseHandle(primary);
+            }
         }
     }
 
@@ -1211,7 +1557,7 @@ try {
                     {
                         Dictionary<string, object> request = json.DeserializeObject(Encoding.UTF8.GetString(body)) as Dictionary<string, object>;
                         if (request == null) throw new ArgumentException("Некорректный запрос");
-                        reply = Handle(request, client);
+                        reply = Handle(request, client, pipe, pid);
                     }
                     catch (Exception e)
                     {
@@ -1238,7 +1584,7 @@ try {
             }
         }
 
-        Dictionary<string, object> Handle(Dictionary<string, object> request, int client)
+        Dictionary<string, object> Handle(Dictionary<string, object> request, int client, NamedPipeServerStream pipe, uint pid)
         {
             string op = request.ContainsKey("op") ? request["op"] as string : null;
             long since = request.ContainsKey("since") ? Convert.ToInt64(request["since"]) : -1;
@@ -1257,6 +1603,8 @@ try {
                     return dns.Reset(null);
                 case "engine-update":
                     return EngineUpdater.Update(request.ContainsKey("tag") ? request["tag"] as string : null, engine);
+                case "app-update":
+                    return AppUpdate.Begin(request, pipe, pid);
                 default:
                     throw new ArgumentException("Неизвестная команда: " + op);
             }
@@ -1585,6 +1933,7 @@ try {
                 // Разработка: служба в обычном процессе, со своей папкой и каналом
                 Paths.Root = Path.GetFullPath(args[1]);
                 Const.PipeName = args[2];
+                Const.ConsoleMode = true;
                 Server server = new Server(new Engine());
                 server.Start();
                 Console.WriteLine("FlowZap Service " + Const.Version + " (console): \\\\.\\pipe\\" + Const.PipeName);

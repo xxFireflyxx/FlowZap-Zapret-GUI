@@ -128,7 +128,7 @@ def _extract_update_payload(data: bytes, parent: Path) -> Optional[Path]:
     Возвращает временную папку с FlowZap.exe (и, если был в архиве,
     подпапкой _internal/) или None, если exe в архиве не нашёлся.
     """
-    import zipfile, io, tempfile
+    import zipfile, io
 
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
@@ -367,14 +367,35 @@ def cleanup_old_update_leftovers(root: Path) -> None:
             logger.warning(f"Не удалось удалить {path.name}: {e}")
 
 
+def _install_via_service(current_exe: Path, payload_dir: Path) -> bool:
+    """Отдать замену файлов фоновой службе (FlowZapService.cs, AppUpdate):
+    она дождётся выхода FlowZap, заменит FlowZap.exe и _internal/ с откатом и
+    запустит новую версию — от имени пользователя, его правами. Бета:
+    включается строкой via_service = true в [updater] config.toml.
+    False — служба задание не приняла (нет её, старая версия, ошибка):
+    обновляем по-старому, скриптом PowerShell."""
+    from core.service import client as service_client
+    try:
+        if not service_client.service_installed():
+            logger.info("Обновление через службу: служба не установлена — ставлю скриптом")
+            return False
+        service_client.session.update_app(current_exe, payload_dir)
+    except Exception as e:
+        logger.warning(f"Обновление через службу не вышло ({e}) — ставлю скриптом")
+        return False
+    logger.info("Обновление ставит фоновая служба (бета): после закрытия FlowZap")
+    return True
+
+
 def download_and_install_exe(
     install_dir: Path,
     repo: str = FLOWZAP_REPO,
     on_progress: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
+    via_service: bool = False,
 ) -> None:
     def body(log: Callable[[str], None]) -> str:
-        import sys, tempfile, zipfile, io
+        import sys, zipfile, io
 
         tag, asset = latest_asset(repo, find_exe_asset, "Файл для обновления", log)
 
@@ -427,6 +448,10 @@ def download_and_install_exe(
         else:
             payload_dir = _new_update_dir(target_dir)
             (payload_dir / "FlowZap.exe").write_bytes(data)
+
+        if via_service and _install_via_service(current_exe, payload_dir):
+            log(f"✓ Обновление до {tag} готово. Приложение перезапустится...")
+            return f"Обновлено до {tag}. Перезапускаем..."
 
         new_internal = payload_dir / "_internal"
         # Скрипт замены ждёт выхода этого процесса по PID и откатывает всё
