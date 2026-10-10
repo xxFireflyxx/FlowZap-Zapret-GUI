@@ -296,6 +296,9 @@ def main() -> None:
     if gh_token:
         set_github_token(gh_token)
         log.info("GitHub токен установлен")
+    # Бета-канал — только строкой в config.toml (core/updates/releases.py)
+    from core.updates.releases import set_beta_channel
+    set_beta_channel(config.get("updater", {}).get("beta", False) is True)
 
     from core.zapret.manager import ZapretManager
     _exe_raw = Path(config["zapret"]["exe_path"])

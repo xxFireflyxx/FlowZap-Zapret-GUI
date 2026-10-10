@@ -4,7 +4,8 @@ core/dns/builtin.py
 Встроенные DNS-серверы: прописаны в FlowZap, пользователь не может их удалить
 или изменить. Список меняется только обновлениями — новой версией FlowZap
 (BUILTIN_DNS ниже) или файлом core/dns/builtin-dns.toml в репозитории (скачивается
-при запуске). Обновление может добавить пару, поменять её имя/адреса или
+при запуске и принимается только с подписью автора — builtin-dns.toml.sig,
+release/dns_list.py). Обновление может добавить пару, поменять её имя/адреса или
 удалить её совсем; свои пары пользователя не трогаются.
 
 В config.toml встроенная пара отмечена ключом builtin = "<id>" — по id её и
@@ -21,6 +22,7 @@ import ipaddress
 import logging
 import threading
 import tomllib
+from pathlib import Path
 from typing import Callable, Optional
 
 logger = logging.getLogger("flowzap.dns.builtin")
@@ -169,20 +171,41 @@ def _parse(data: bytes) -> tuple[int, list[dict]] | None:
 
 
 def fetch_builtin_dns() -> tuple[int, list[dict]] | None:
-    """Скачать список встроенных DNS: GitHub, при неудаче — GitLab."""
+    """Скачать список встроенных DNS: GitHub, при неудаче — GitLab. Только с
+    подписью автора (builtin-dns.toml.sig, core/updates/signing.py): эти
+    адреса FlowZap сам ставит в систему, и подменённый список (чужой доступ
+    к репозиторию) тихо увёл бы DNS всех пользователей. Нет подписи или не
+    сошлась — список не берём, остаётся встроенный в эту версию."""
     import urllib.request
+    from core.updates import signing
     from core.updates.releases import FLOWZAP_REPO, ssl_context
-    urls = (f"https://raw.githubusercontent.com/{FLOWZAP_REPO}/main/{_REPO_FILE}",
-            f"https://gitlab.com/xx_firefly_xx/flowzap/-/raw/main/{_REPO_FILE}")
-    for url in urls:
+    name = Path(_REPO_FILE).name
+    bases = (f"https://raw.githubusercontent.com/{FLOWZAP_REPO}/main/{_REPO_FILE}",
+             f"https://gitlab.com/xx_firefly_xx/flowzap/-/raw/main/{_REPO_FILE}")
+
+    def get(url: str) -> bytes:
+        req = urllib.request.Request(url, headers={"User-Agent": "FlowZap/1.0"})
+        with urllib.request.urlopen(req, timeout=10, context=ssl_context()) as r:
+            return r.read(256 * 1024)
+
+    for url in bases:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "FlowZap/1.0"})
-            with urllib.request.urlopen(req, timeout=10, context=ssl_context()) as r:
-                parsed = _parse(r.read())
-            if parsed:
-                return parsed
+            data, sig = get(url), get(url + signing.SIGNATURE_SUFFIX)
         except Exception as exc:
             logger.warning(f"Не удалось получить список встроенных DNS ({url}): {exc}")
+            continue
+        try:
+            signing.verify_file(data, name, sig)
+        except signing.SignatureError as exc:
+            logger.warning(f"Список встроенных DNS: подпись не прошла проверку ({exc}) — {url}")
+            continue
+        try:
+            parsed = _parse(data)
+        except Exception as exc:
+            logger.warning(f"Список встроенных DNS не разобран ({url}): {exc}")
+            continue
+        if parsed:
+            return parsed
     return None
 
 
