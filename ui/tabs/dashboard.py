@@ -55,7 +55,7 @@ from ui.widgets.controls import CircleBadge, FieldButton, StatusDot, Switch
 from ui.widgets.layout import Page
 from ui.widgets.popup import make_popup, show_popup_below
 from core.zapret.presets import list_presets
-from core.zapret.preset_checker import PresetPingManager, PingStatus
+from core.zapret.preset_checker import MAIN_SERVICES, PresetPingManager, PingStatus
 from core.zapret.manager import ServiceState
 from core.updates.zapret import download_and_install_core
 from core.dns import manager as dns_manager
@@ -137,18 +137,45 @@ def _glyph_label(glyph: str, px: int = 13) -> QLabel:
     return lbl
 
 
+def _service_groups(services: dict) -> tuple[list[str], list[str], list[str]]:
+    """(работают полностью, частично — «YouTube 3/4», не работают)."""
+    full, part, fail = [], [], []
+    for name, (ok, total) in services.items():
+        if total and ok == total:
+            full.append(name)
+        elif ok:
+            part.append(f"{name} {ok}/{total}")
+        else:
+            fail.append(name)
+    return full, part, fail
+
+
 def _status_word(status: PingStatus, counts: tuple[int, int] | None,
-                 ms: int | None = None) -> tuple[str, str | None]:
-    """Короткое описание результата проверки пресета: (текст, tone).
-    ms — среднее время ответа сайтов, если известно. Проверяются адреса
-    Discord и YouTube (preset_checker.DEFAULT_HTTP_TARGETS) — так и пишем,
-    а не «все сайты»: звучало, будто проверен весь интернет."""
+                 services: dict | None = None) -> tuple[str, str | None]:
+    """Короткое описание результата проверки пресета: (текст, tone). С
+    итогом по сервисам (preset_checker, utils/targets.txt) — по сервисам:
+    «работают: Discord, YouTube · нет: Cloudflare»; «5 из 8 проверок» не
+    говорило, что именно не работает. Без него (результаты до проверки по
+    сервисам) — как раньше. Время ответа не пишем: «205 / 254 мс» —
+    шум для пользователя, оно только для выбора лучшего (ranked)."""
     ok, total = counts or (0, 0)
-    speed = f" · {ms} мс" if ms is not None else ""
+    if services and status in (PingStatus.OK, PingStatus.WARN, PingStatus.FAIL):
+        full, part, fail = _service_groups(services)
+        tone = {PingStatus.OK: None, PingStatus.WARN: "warning"}.get(status, "error")
+        if not part and not fail:
+            return f"{', '.join(full)} работают", tone
+        pieces = []
+        if full:
+            pieces.append("работают: " + ", ".join(full))
+        if part:
+            pieces.append("частично: " + ", ".join(part))
+        if fail:
+            pieces.append("нет: " + ", ".join(fail))
+        return " · ".join(pieces), tone
     if status == PingStatus.OK:
-        return ("Discord и YouTube открываются" if total and ok == total else f"{ok} из {total} проверок") + speed, None
+        return ("Discord и YouTube открываются" if total and ok == total else f"{ok} из {total} проверок"), None
     if status == PingStatus.WARN:
-        return (f"частично · {ok} из {total} проверок{speed}" if total else "работает нестабильно"), "warning"
+        return (f"частично · {ok} из {total} проверок" if total else "работает нестабильно"), "warning"
     if status == PingStatus.FAIL:
         return "не работает", "error"
     if status == PingStatus.CHECKING:
@@ -156,7 +183,27 @@ def _status_word(status: PingStatus, counts: tuple[int, int] | None,
     return "не проверялся", "muted"
 
 
+def _service_chips(services: dict, role: str) -> QHBoxLayout:
+    """Чипы по сервисам (как в макете): зелёный — работает, жёлтый —
+    частично (с числом адресов), красный — нет. Время ответа не пишем —
+    «205 / 254 мс» для пользователя шум; оно только для выбора лучшего.
+    role: pill — заливные (лучший пресет), chip — рамкой (остальные)."""
+    chips = QHBoxLayout()
+    chips.setSpacing(6)
+    for name, (ok, total) in services.items():
+        tone = "success" if total and ok == total else ("warning" if ok else "error")
+        chip = label(name if tone != "warning" else f"{name} {ok}/{total}", role=role, tone=tone)
+        chip.setToolTip(f"{name}: открылось {ok} из {total} адресов")
+        chips.addWidget(chip, alignment=Qt.AlignVCenter)
+    chips.addStretch(1)
+    return chips
+
+
 _STATUS_ORDER = {PingStatus.OK: 0, PingStatus.WARN: 1, PingStatus.FAIL: 2}
+# С какой x (от левого края блока «Пресеты») начинаются чипы сервисов — и у
+# лучшего пресета, и в строках под ним. Хватает на «ЛУЧШИЙ» + самое длинное
+# имя Flowseal («general (FAKE TLS AUTO ALT3)»).
+_CHIPS_X = 420
 
 
 class _OptionItem(QAbstractButton):
@@ -337,7 +384,7 @@ class _PresetRow(QFrame):
     picked = Signal(dict)
 
     def __init__(self, rank: int, preset: dict, status: PingStatus, counts, active: bool,
-                 ms: int | None = None, parent=None) -> None:
+                 services: dict | None = None, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("presetRow")
         self.setFixedHeight(44)
@@ -347,15 +394,27 @@ class _PresetRow(QFrame):
         num = label(str(rank), role="hint")
         num.setFixedWidth(18)
         row.addWidget(num)
-        name_box = QHBoxLayout()
+        # Колонка имени — фиксированной ширины: чипы начинаются там же, где
+        # у лучшего пресета (_CHIPS_X)
+        name_col = QWidget()
+        name_col.setFixedWidth(_CHIPS_X - 6 - 18 - 12 * 2)
+        name_box = QHBoxLayout(name_col)
+        name_box.setContentsMargins(0, 0, 0, 0)
         name_box.setSpacing(8)
         name_box.addWidget(label(preset["name"], role="strong" if active else None), alignment=Qt.AlignVCenter)
         if active:
             name_box.addWidget(label("сейчас", role="pill", tone="accent"), alignment=Qt.AlignVCenter)
         name_box.addStretch(1)
-        row.addLayout(name_box, stretch=3)
-        text, tone = _status_word(status, counts, ms)
-        row.addWidget(label(text, role="muted", tone=tone if tone != "muted" else None), stretch=4)
+        row.addWidget(name_col)
+        if services and status in (PingStatus.OK, PingStatus.WARN, PingStatus.FAIL):
+            # Как у лучшего, но рамкой: длинная строка «Discord, YouTube, …
+            # работают» в каждой строке списка — шум
+            row.addLayout(_service_chips(services, role="chip"), stretch=1)
+        else:
+            text, tone = _status_word(status, counts, services)
+            status_lbl = label(text, role="muted", tone=tone if tone != "muted" else None)
+            status_lbl.setToolTip(text)
+            row.addWidget(status_lbl, stretch=1)
         dot = StatusDot(9)
         dot.set_color(_STATUS_COLORS.get(status, "text_muted"))
         row.addWidget(dot)
@@ -422,8 +481,10 @@ class PresetsPanel(QFrame):
         head.addWidget(label("Пресеты", role="section"))
         head.addWidget(HelpIcon(
             "Пресеты — стратегии обхода из Flowseal/zapret-discord-youtube. Проверка по очереди "
-            "запускает каждый пресет и смотрит, открываются ли Discord и YouTube (8 адресов). "
-            "Лучший — тот, с которым открылось больше всего адресов, а при равенстве — самый быстрый.",
+            "запускает каждый пресет и смотрит, открываются ли Discord, YouTube, Google и "
+            "Cloudflare — каждый по нескольким адресам (список Flowseal, utils/targets.txt). "
+            "Лучший — тот, с которым полностью работают Discord и YouTube, потом остальные "
+            "сервисы, а при равенстве — самый быстрый.",
             legend=_STATUS_LEGEND,
         ))
         head.addSpacing(6)
@@ -438,7 +499,8 @@ class PresetsPanel(QFrame):
         self._message_timer.setInterval(self.MESSAGE_MS)
         self._message_timer.timeout.connect(lambda: self.set_message(""))
         self.btn_check = button("Проверить заново", variant="ghost")
-        self.btn_check.setToolTip("По очереди запустить каждый пресет и проверить, открываются ли Discord и YouTube")
+        self.btn_check.setToolTip("По очереди запустить каждый пресет и проверить, открываются ли "
+                                  "Discord, YouTube, Google и Cloudflare")
         head.addWidget(self.btn_check)
         self.btn_game = button("Game Filter: выкл  ▾")
         self.btn_game.setToolTip("Обход для онлайн-игр")
@@ -491,15 +553,20 @@ class PresetsPanel(QFrame):
 
     def ranked(self) -> list[dict]:
         """Пресеты, прошедшие проверку (полностью или частично), от лучшего к худшему:
-        статус → доля открывшихся сайтов → среднее время ответа (быстрее —
-        выше) → порядок Flowseal (если времени нет — старые результаты)."""
+        статус → сколько из главных сервисов (Discord, YouTube) работает
+        полностью → сколько сервисов всего → доля открывшихся адресов →
+        среднее время ответа (быстрее — выше) → порядок Flowseal."""
         index = {p["name"]: i for i, p in enumerate(self._presets)}
 
         def key(p):
             ok, total = self._ping.get_counts(p["name"]) or (0, 0)
             ms = self._ping.get_ms(p["name"])
-            return (_STATUS_ORDER.get(self.status_of(p["name"]), 3), -(ok / total if total else 0),
-                    ms if ms is not None else float("inf"), index[p["name"]])
+            services = self._ping.get_services(p["name"]) or {}
+            full = [n for n, (s_ok, s_total) in services.items() if s_total and s_ok == s_total]
+            main = sum(1 for n in MAIN_SERVICES if n in full)
+            return (_STATUS_ORDER.get(self.status_of(p["name"]), 3), -main, -len(full),
+                    -(ok / total if total else 0), ms if ms is not None else float("inf"),
+                    index[p["name"]])
 
         good = [p for p in self._presets if self.status_of(p["name"]) in (PingStatus.OK, PingStatus.WARN)]
         return sorted(good, key=key)
@@ -561,7 +628,7 @@ class PresetsPanel(QFrame):
             for i, p in enumerate(others):
                 row = _PresetRow(i + 2, p, self.status_of(p["name"]), self._ping.get_counts(p["name"]),
                                  active=bool(self._selected and self._selected["name"] == p["name"]),
-                                 ms=self._ping.get_ms(p["name"]))
+                                 services=self._ping.get_services(p["name"]))
                 row.picked.connect(self.select_preset)
                 box.addWidget(row)
             self._body.addLayout(box)
@@ -573,11 +640,23 @@ class PresetsPanel(QFrame):
         row = QHBoxLayout(frame)
         row.setContentsMargins(16, 12, 14, 12)
         row.setSpacing(14)
-        row.addWidget(label("ЛУЧШИЙ", role="badge"))
-        row.addWidget(label(best["name"], role="value"))
-        text, tone = _status_word(self.status_of(best["name"]), self._ping.get_counts(best["name"]),
-                                  self._ping.get_ms(best["name"]))
-        row.addWidget(label(text, role="pill", tone="accent" if tone is None else tone))
+        # Значок и имя — в колонке той же ширины, что имя в строках ниже
+        # (рамка 1 px + поле 16 + промежуток 14): чипы стоят в одну линию
+        head = QWidget()
+        head.setFixedWidth(_CHIPS_X - 1 - 16 - 14)
+        head_row = QHBoxLayout(head)
+        head_row.setContentsMargins(0, 0, 0, 0)
+        head_row.setSpacing(14)
+        head_row.addWidget(label("ЛУЧШИЙ", role="badge"))
+        head_row.addWidget(label(best["name"], role="value"))
+        head_row.addStretch(1)
+        row.addWidget(head)
+        services = self._ping.get_services(best["name"])
+        if services:
+            row.addLayout(_service_chips(services, role="pill"))
+        else:
+            text, tone = _status_word(self.status_of(best["name"]), self._ping.get_counts(best["name"]))
+            row.addWidget(label(text, role="pill", tone="accent" if tone is None else tone))
         row.addStretch(1)
         if self._selected and self._selected["name"] == best["name"]:
             used = label("Используется", role="strong", tone="accent")
@@ -609,11 +688,16 @@ class PresetsPanel(QFrame):
         self.render()
 
     def _all_item_view(self, preset: dict):
-        """(значок, текст) строки пресета в списке «Все пресеты»."""
-        status = self.status_of(preset["name"])
-        text, _tone = _status_word(status, self._ping.get_counts(preset["name"]),
-                                   self._ping.get_ms(preset["name"]))
-        return dot_icon(_status_color(status)), f"{preset['name']}   ·   {text}"
+        """(значок, текст, подсказка) строки пресета в списке «Все пресеты».
+        Текст короткий — «работает»: перечень сервисов в каждой строке не
+        читался; он — в подсказке."""
+        name = preset["name"]
+        status = self.status_of(name)
+        short = {PingStatus.OK: "работает", PingStatus.WARN: "частично",
+                 PingStatus.FAIL: "не работает", PingStatus.CHECKING: "проверяется…"}.get(status, "не проверялся")
+        detail, _tone = _status_word(status, self._ping.get_counts(name), self._ping.get_services(name))
+        tip = "\n".join(t for t in (detail, preset.get("desc", "")) if t)
+        return dot_icon(_status_color(status)), f"{name}   ·   {short}", tip
 
     def _update_all_item(self, name: str) -> None:
         """Открытый список «Все пресеты» — обновить строку пресета сразу
@@ -622,9 +706,10 @@ class PresetsPanel(QFrame):
         if not items or name not in items:
             return
         item = items[name]
-        icon, text = self._all_item_view(item.data(Qt.UserRole))
+        icon, text, tip = self._all_item_view(item.data(Qt.UserRole))
         item.setIcon(icon)
         item.setText(text)
+        item.setToolTip(tip)
 
     def _open_all(self, anchor: QWidget) -> None:
         popup, layout = make_popup(anchor)
@@ -643,9 +728,10 @@ class PresetsPanel(QFrame):
 
         popup.destroyed.connect(_forget)
         for preset in self._presets:
-            item = QListWidgetItem(*self._all_item_view(preset))
+            icon, text, tip = self._all_item_view(preset)
+            item = QListWidgetItem(icon, text)
             item.setData(Qt.UserRole, preset)
-            item.setToolTip(preset.get("desc", ""))
+            item.setToolTip(tip)
             list_widget.addItem(item)
             self._all_items[preset["name"]] = item
             if self._selected and preset["name"] == self._selected["name"]:
@@ -658,7 +744,7 @@ class PresetsPanel(QFrame):
             self.select_preset(preset)
 
         list_widget.itemClicked.connect(_pick)
-        popup.setFixedWidth(540)     # «general (FAKE TLS AUTO ALT3) · Discord и YouTube открываются · 212 мс»
+        popup.setFixedWidth(460)     # «general (FAKE TLS AUTO ALT3) · не проверялся»
         popup.setFixedHeight(min(34 * len(self._presets) + 16, 380))
         show_popup_below(popup, anchor)
         if current is not None:
