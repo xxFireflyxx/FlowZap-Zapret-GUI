@@ -372,6 +372,16 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     QLabel[role="pill"][tone="warning"] {{ background-color: {p.warning_soft}; color: {readable(p.warning, p.warning_soft, p.text_primary)}; }}
     QLabel[role="pill"][tone="error"]   {{ background-color: {p.error_soft}; color: {readable(p.error, p.error_soft, p.text_primary)}; }}
     QLabel[role="pill"][tone="accent"]  {{ background-color: {p.accent_soft}; color: {readable(p.accent, p.accent_soft, p.text_primary)}; }}
+    /* Чип сервиса рамкой — в строках пресетов (у лучшего — заливные pill) */
+    QLabel[role="chip"] {{
+        font-size: {t.size_xs}px; font-weight: 600; background: transparent;
+        color: {p.text_secondary}; border: 1px solid {p.border};
+        /* поля 9 + рамка 1 = 10, как у pill: чипы под лучшим — той же ширины */
+        border-radius: 9px; padding: 1px 9px;
+    }}
+    QLabel[role="chip"][tone="success"] {{ color: {readable(p.success, p.bg_card, p.text_primary)}; border-color: {_mix(p.bg_card, p.success, 0.55)}; }}
+    QLabel[role="chip"][tone="warning"] {{ color: {readable(p.warning, p.bg_card, p.text_primary)}; border-color: {_mix(p.bg_card, p.warning, 0.65)}; }}
+    QLabel[role="chip"][tone="error"]   {{ color: {readable(p.error, p.bg_card, p.text_primary)}; border-color: {_mix(p.bg_card, p.error, 0.65)}; }}
     QLabel[role="badge"] {{
         font-size: 11px; font-weight: 700; letter-spacing: 1px;
         color: {p.accent_text}; background-color: {p.accent};

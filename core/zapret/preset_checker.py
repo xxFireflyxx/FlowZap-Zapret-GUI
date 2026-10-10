@@ -34,22 +34,49 @@ _ANALYTICS_RE = re.compile(
     r'^(?P<name>.+?)\s*:\s*HTTP OK:\s*(?P<ok>\d+),\s*ERR:\s*(?P<err>\d+),'
     r'\s*UNSUP:\s*(?P<unsup>\d+),\s*Ping OK:\s*(?P<ping_ok>\d+),\s*Fail:\s*(?P<fail>\d+)'
     r'(?:,\s*RETRY:(?P<retry>\d))?'
-    r'(?:,\s*TIME:\s*(?P<ms>\d+))?',
+    r'(?:,\s*TIME:\s*(?P<ms>\d+))?'
+    r'(?:,\s*SERVICES:\s*(?P<services>[^\r\n]*))?',
     re.MULTILINE,
 )
+_SERVICE_RE = re.compile(r'([^=;]+)=(\d+)/(\d+)')
 
-# Хосты для проверки — HTTP и ping
-# Хосты которые заблокированы в РФ — именно их zapret должен разблокировать
-DEFAULT_HTTP_TARGETS = [
-    "https://discord.com",
-    "https://gateway.discord.gg",
-    "https://cdn.discordapp.com",
-    "https://updates.discord.com",
-    "https://www.youtube.com",
-    "https://youtu.be",
-    "https://i.ytimg.com",
-    "https://redirector.googlevideo.com",
+# Что проверяем — по сервисам, как в utils/targets.txt Flowseal (его и
+# читаем, см. load_targets; этот список — если файла нет). Итог по каждому
+# сервису отдельно: «5 из 8» не говорило, что именно не работает.
+DEFAULT_SERVICES: list[tuple[str, list[str]]] = [
+    ("Discord", ["https://discord.com", "https://gateway.discord.gg",
+                 "https://cdn.discordapp.com", "https://updates.discord.com"]),
+    ("YouTube", ["https://www.youtube.com", "https://youtu.be",
+                 "https://i.ytimg.com", "https://redirector.googlevideo.com"]),
+    ("Google", ["https://www.google.com", "https://www.gstatic.com"]),
+    ("Cloudflare", ["https://www.cloudflare.com", "https://cdnjs.cloudflare.com"]),
 ]
+# Ради них FlowZap и нужен — они важнее при выборе лучшего пресета
+MAIN_SERVICES = ("Discord", "YouTube")
+_TARGET_LINE_RE = re.compile(r'^\s*\w+\s*=\s*"(https://[^"\s]+)"')
+
+
+def load_targets(zapret_dir: Path) -> list[tuple[str, list[str]]]:
+    """Сервисы и их адреса из utils/targets.txt Flowseal (секции «### Имя»,
+    строки «Ключ = "https://…"»; PING-строки не нужны — zapret не трогает
+    ICMP). Нет файла или в нём нечего проверять — DEFAULT_SERVICES."""
+    path = zapret_dir / "utils" / "targets.txt"
+    services: list[tuple[str, list[str]]] = []
+    try:
+        current = None
+        for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+            if line.startswith("###"):
+                current = (line.strip("# \t") or "Прочее", [])
+                services.append(current)
+            elif (m := _TARGET_LINE_RE.match(line)):
+                if current is None:
+                    current = ("Прочее", [])
+                    services.append(current)
+                current[1].append(m.group(1))
+    except OSError:
+        return DEFAULT_SERVICES
+    services = [s for s in services if s[1]]
+    return services or DEFAULT_SERVICES
 
 # Таймаут одной HTTP проверки (сек)
 HTTP_TIMEOUT = 4
@@ -61,8 +88,8 @@ WINWS_READY_TIMEOUT = 4
 # После сигнала готовности — короткая пауза, чтобы фильтр точно применился
 WINWS_SETTLE = 0.5
 WINWS_READY_MARK = "capture is started"
-# Максимум параллельных HTTP проверок
-MAX_WORKERS = 10
+# Максимум параллельных HTTP проверок (все адреса пресета разом)
+MAX_WORKERS = 16
 
 
 class PingStatus(Enum):
@@ -90,10 +117,27 @@ def _classify(ok: int, err: int, needed_retry: bool = False) -> PingStatus:
     return PingStatus.FAIL
 
 
-def parse_results_details(path: Path) -> dict[str, tuple[PingStatus, int, int, Optional[int]]]:
+Services = dict[str, tuple[int, int]]      # {сервис: (открылось, проверялось)}
+
+
+def format_services(services: Services) -> str:
+    return ";".join(f"{name}={ok}/{total}" for name, (ok, total) in services.items())
+
+
+def parse_services(text: Optional[str]) -> Optional[Services]:
+    if not text:
+        return None
+    found = {m.group(1).strip(): (int(m.group(2)), int(m.group(3)))
+             for m in _SERVICE_RE.finditer(text)}
+    return found or None
+
+
+def parse_results_details(path: Path) -> dict[str, tuple[PingStatus, int, int, Optional[int],
+                                                         Optional[Services]]]:
     """Распарсить файл test_results_*.txt: {пресет: (статус, HTTP OK, HTTP всего,
-    среднее время ответа в мс или None — в старых файлах его нет)}."""
-    results: dict[str, tuple[PingStatus, int, int, Optional[int]]] = {}
+    среднее время ответа в мс, итог по сервисам)}. В старых файлах времени
+    и сервисов нет — None."""
+    results = {}
     try:
         text = path.read_text(encoding="utf-8-sig", errors="replace")
         for m in _ANALYTICS_RE.finditer(text):
@@ -103,7 +147,7 @@ def parse_results_details(path: Path) -> dict[str, tuple[PingStatus, int, int, O
             ok, err = int(m.group("ok")), int(m.group("err"))
             status = _classify(ok, err, needed_retry=needed_retry)
             ms = int(m.group("ms")) if m.group("ms") else None
-            results[name] = (status, ok, ok + err, ms)
+            results[name] = (status, ok, ok + err, ms, parse_services(m.group("services")))
     except Exception as e:
         logger.error(f"Ошибка парсинга {path}: {e}")
     return results
@@ -181,18 +225,24 @@ def _check_http(url: str, timeout: int = HTTP_TIMEOUT) -> tuple[str, Optional[fl
         return "ERR", None, None
 
 
-def _run_checks_parallel(http_targets: list[str]) -> tuple[int, int, Optional[int], Optional[int]]:
-    """Параллельно проверить все сайты. Возвращает (открылось, не открылось,
-    среднее время ответа открывшихся в мс или None, из него DNS в мс — для лога)."""
+def _run_checks_parallel(targets: list[tuple[str, list[str]]]
+                         ) -> tuple[int, int, Optional[int], Optional[int], Services]:
+    """Параллельно проверить все адреса всех сервисов. Возвращает (открылось,
+    не открылось, среднее время ответа открывшихся в мс или None, из него
+    DNS в мс — для лога, итог по сервисам)."""
     http_ok = http_err = 0
     times: list[float] = []
     dns_times: list[float] = []
+    services: Services = {name: (0, len(urls)) for name, urls in targets}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(_check_http, url) for url in http_targets]
+        futures = {executor.submit(_check_http, url): name
+                   for name, urls in targets for url in urls}
         for future in as_completed(futures):
             result, took, dns = future.result()
             if result == "OK":
                 http_ok += 1
+                ok, total = services[futures[future]]
+                services[futures[future]] = (ok + 1, total)
                 if took is not None:
                     times.append(took)
                 if dns is not None:
@@ -201,7 +251,7 @@ def _run_checks_parallel(http_targets: list[str]) -> tuple[int, int, Optional[in
                 http_err += 1
     avg_ms = round(sum(times) / len(times) * 1000) if times else None
     dns_ms = round(sum(dns_times) / len(dns_times) * 1000) if dns_times else None
-    return http_ok, http_err, avg_ms, dns_ms
+    return http_ok, http_err, avg_ms, dns_ms, services
 
 
 # ─────────────────────────────────────────────
@@ -232,6 +282,7 @@ class PresetPingManager:
         self._statuses: dict[str, PingStatus] = {}
         self._counts: dict[str, tuple[int, int]] = {}   # (HTTP OK, HTTP всего)
         self._times: dict[str, int] = {}                 # среднее время ответа сайтов, мс
+        self._services: dict[str, Services] = {}         # итог по сервисам
         self._checked_at: Optional[float] = None         # время последней проверки (unix)
         self._testing = False
         self._stop_event = threading.Event()
@@ -246,6 +297,11 @@ class PresetPingManager:
     def get_ms(self, preset_name: str) -> Optional[int]:
         """Среднее время ответа сайтов через пресет (мс) или None."""
         return self._times.get(preset_name)
+
+    def get_services(self, preset_name: str) -> Optional[Services]:
+        """{сервис: (открылось, проверялось)} или None — не проверялся или
+        результат из старого файла (до проверки по сервисам)."""
+        return self._services.get(preset_name)
 
     @property
     def checked_at(self) -> Optional[float]:
@@ -270,6 +326,7 @@ class PresetPingManager:
         self._statuses.update(results)
         self._counts.update({name: (d[1], d[2]) for name, d in details.items()})
         self._times.update({name: d[3] for name, d in details.items() if d[3] is not None})
+        self._services.update({name: d[4] for name, d in details.items() if d[4]})
         self._checked_at = latest.stat().st_mtime
         logger.info(f"Загружены результаты из {latest.name} ({len(results)} пресетов)")
 
@@ -348,7 +405,10 @@ class PresetPingManager:
                     self._on_tests_done(False, "Пресеты не найдены")
                 return
 
-            logger.info(f"Начинаем тесты: {len(presets)} пресетов")
+            targets = load_targets(self._zapret_dir)
+            total_urls = sum(len(urls) for _, urls in targets)
+            logger.info(f"Начинаем тесты: {len(presets)} пресетов, "
+                        + ", ".join(f"{name} ({len(urls)})" for name, urls in targets))
             analytics: dict[str, dict] = {}
             start_time = time.time()
 
@@ -394,7 +454,7 @@ class PresetPingManager:
                     continue
 
                 try:
-                    http_ok, http_err, avg_ms, dns_ms = _run_checks_parallel(DEFAULT_HTTP_TARGETS)
+                    http_ok, http_err, avg_ms, dns_ms, services = _run_checks_parallel(targets)
                     if self._stop_event.is_set():
                         # Прервали посреди проверки — результат неполный, не сохраняем
                         self._statuses[name] = prev_status
@@ -405,13 +465,15 @@ class PresetPingManager:
                     if proc.poll() is not None:
                         # winws упал уже во время проверки — сайты открывались без обхода
                         logger.warning(f"  {name}: winws завершился во время проверки (код {proc.returncode})")
-                        http_ok, http_err, avg_ms = 0, len(DEFAULT_HTTP_TARGETS), None
+                        http_ok, http_err, avg_ms = 0, total_urls, None
+                        services = {svc: (0, total) for svc, (_ok, total) in services.items()}
 
-                    analytics[name] = {"ok": http_ok, "err": http_err, "ms": avg_ms}
+                    analytics[name] = {"ok": http_ok, "err": http_err, "ms": avg_ms, "services": services}
 
                     status = _classify(http_ok, http_err)
                     self._statuses[name] = status
                     self._counts[name] = (http_ok, http_ok + http_err)
+                    self._services[name] = services
                     if avg_ms is None:
                         self._times.pop(name, None)
                     else:
@@ -419,7 +481,7 @@ class PresetPingManager:
                     if self._on_update:
                         self._on_update(name, status)
 
-                    logger.info(f"  {name}: HTTP OK={http_ok} ERR={http_err} "
+                    logger.info(f"  {name}: {format_services(services)} "
                                 f"время={avg_ms if avg_ms is not None else '—'} мс "
                                 f"(DNS {dns_ms if dns_ms is not None else '—'} мс) → {status.name}")
 
@@ -489,10 +551,13 @@ class PresetPingManager:
 
             # Формат строки прежний (его же пишет test zapret.bat Flowseal) —
             # колонки UNSUP/Ping/RETRY больше не используются и пишутся нулями;
-            # в конце — среднее время ответа (TIME, мс), если сайты открывались.
+            # в конце — среднее время ответа (TIME, мс), если сайты открывались,
+            # и итог по сервисам (SERVICES: Discord=4/4;YouTube=3/4;…).
             lines = ["=== ANALYTICS ==="]
             for name, a in analytics.items():
                 tail = f", TIME: {a['ms']}" if a.get("ms") is not None else ""
+                if a.get("services"):
+                    tail += f", SERVICES: {format_services(a['services'])}"
                 lines.append(
                     f"{name}.bat : HTTP OK: {a['ok']}, ERR: {a['err']}, "
                     f"UNSUP: 0, Ping OK: 0, Fail: 0, RETRY:0{tail}"
