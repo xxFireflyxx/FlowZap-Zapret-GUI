@@ -370,8 +370,8 @@ def cleanup_old_update_leftovers(root: Path) -> None:
 def _install_via_service(current_exe: Path, payload_dir: Path) -> bool:
     """Отдать замену файлов фоновой службе (FlowZapService.cs, AppUpdate):
     она дождётся выхода FlowZap, заменит FlowZap.exe и _internal/ с откатом и
-    запустит новую версию — от имени пользователя, его правами. Бета:
-    включается строкой via_service = true в [updater] config.toml.
+    запустит новую версию — от имени пользователя, его правами. По
+    умолчанию (с 1.1.2); выключается строкой via_service = false в [updater].
     False — служба задание не приняла (нет её, старая версия, ошибка):
     обновляем по-старому, скриптом PowerShell."""
     from core.service import client as service_client
@@ -383,7 +383,7 @@ def _install_via_service(current_exe: Path, payload_dir: Path) -> bool:
     except Exception as e:
         logger.warning(f"Обновление через службу не вышло ({e}) — ставлю скриптом")
         return False
-    logger.info("Обновление ставит фоновая служба (бета): после закрытия FlowZap")
+    logger.info("Обновление ставит фоновая служба: после закрытия FlowZap")
     return True
 
 

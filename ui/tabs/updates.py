@@ -397,9 +397,10 @@ class UpdatesTab(QWidget):
     def _update_gui(self) -> None:
         self._gui.set_updating(True)
         self._gui.set_status("Начинаем загрузку…", "muted")
-        # Бета: обновление через фоновую службу — только по строке
-        # via_service = true в [updater] config.toml (в интерфейсе её нет)
-        via_service = bool(self._config.get("updater", {}).get("via_service", False))
+        # Через фоновую службу (с 1.1.2 — у всех); нет службы 1.4.0 или она
+        # отказала — скриптом PowerShell. Выключить: via_service = false в
+        # [updater] config.toml (в интерфейсе нет — на случай проблем)
+        via_service = self._config.get("updater", {}).get("via_service", True) is not False
         download_and_install_exe(install_dir=self._app_dir, via_service=via_service, **self._callbacks("gui"))
 
     def _on_gui_done(self, ok: bool, message: str) -> None:
