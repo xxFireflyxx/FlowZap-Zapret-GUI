@@ -131,6 +131,27 @@ def _valid_list_entry(value: str) -> bool:
     return bool(_RE_LIST_DOMAIN.match(value)) or _valid_ip_entry(value)
 
 
+def _display(value: str) -> str:
+    """Как запись видит человек: xn--…-метки домена — обратно в буквы
+    (xn--c1aqbeec.xn--p1ai → госуслуги.рф). В файле остаётся punycode —
+    так имя сайта видит winws."""
+    if "xn--" not in value:
+        return value
+    labels = []
+    for part in value.split("."):
+        if part.startswith("xn--"):
+            try:
+                part = part.encode("ascii").decode("idna")
+            except UnicodeError:
+                pass        # не настоящий punycode — показываем как есть
+        labels.append(part)
+    return ".".join(labels)
+
+
+def _shown(values) -> str:
+    return ", ".join(_display(v) for v in values)
+
+
 def _is_comment(line: str) -> bool:
     return line.startswith(("#", ";", "//"))
 
@@ -355,15 +376,16 @@ class _EntryRow(QFrame):
         row.setSpacing(8)
         text = QLabel()
         text.setTextFormat(Qt.RichText)
-        if query and query in value:
-            i = value.index(query)
+        shown, query = _display(value), _display(query)
+        if query and query in shown:
+            i = shown.index(query)
             accent = theme.palette.accent
-            text.setText(f"{html.escape(value[:i])}<b style='color:{accent}'>{html.escape(query)}</b>"
-                         f"{html.escape(value[i + len(query):])}")
+            text.setText(f"{html.escape(shown[:i])}<b style='color:{accent}'>{html.escape(query)}</b>"
+                         f"{html.escape(shown[i + len(query):])}")
         else:
-            text.setText(html.escape(value))
+            text.setText(html.escape(shown))
         row.addWidget(text, stretch=1)
-        remove = IconButton(Glyph.CLOSE, f"Удалить {value}", size=36, danger=True)
+        remove = IconButton(Glyph.CLOSE, f"Удалить {shown}", size=36, danger=True)
         remove.clicked.connect(lambda: self.removeRequested.emit(value))
         row.addWidget(remove)
 
@@ -658,7 +680,10 @@ class ParametersTab(QWidget):
         all_lines = self._read_list(self._list_file)
         query = self._query()
         _, allow_add, _, _ = _list_meta(self._list_file)
-        found = [v for v in all_lines if query in v] if query else all_lines
+        # Ищем и в punycode, и в буквах: «госус» — начало «госуслуги.рф»,
+        # а его punycode — не начало xn--c1aqbeec
+        shown_query = _display(query)
+        found = [v for v in all_lines if query in v or shown_query in _display(v)] if query else all_lines
         exact = bool(query) and query in all_lines
         self._btn_list_add.setEnabled(not exact)
 
@@ -666,7 +691,7 @@ class ParametersTab(QWidget):
             if exact:
                 self._set_list_status("Уже есть в этом списке")
             elif query and allow_add and not found:
-                self._set_list_status(f"«{query}» нет в списке — нажмите «Добавить»")
+                self._set_list_status(f"«{shown_query}» нет в списке — нажмите «Добавить»")
             else:
                 self._set_list_status("")
 
@@ -773,7 +798,7 @@ class ParametersTab(QWidget):
 
         invalid = [e for e in entries if not _valid_list_entry(e)]
         if invalid:
-            self._set_list_status(f"Некорректный формат: {', '.join(invalid)} — нужен домен или IP.", "error")
+            self._set_list_status(f"Некорректный формат: {_shown(invalid)} — нужен домен или IP.", "error")
             return
 
         current = self._read_list(filename)
@@ -785,7 +810,7 @@ class ParametersTab(QWidget):
             if other:
                 conflicts = [v for v in entries if v in set(self._read_list(other))]
                 if conflicts:
-                    warnings.append(f"{', '.join(conflicts)} — уже есть в «{_list_meta(other)[2]}»")
+                    warnings.append(f"{_shown(conflicts)} — уже есть в «{_list_meta(other)[2]}»")
         if warnings:
             reply = QMessageBox.question(
                 self, "FlowZap — конфликт списков",
@@ -802,12 +827,12 @@ class ParametersTab(QWidget):
         self._list_entry.clear()
         self._list_entry.blockSignals(False)
         if to_add:
-            text = f"✓ Добавлено: {', '.join(to_add)}"
+            text = f"✓ Добавлено: {_shown(to_add)}"
             if duplicates:
-                text += f" · уже были: {', '.join(duplicates)}"
+                text += f" · уже были: {_shown(duplicates)}"
             self._set_list_status(text, "success")
         else:
-            self._set_list_status(f"Уже есть: {', '.join(duplicates)}", "warning")
+            self._set_list_status(f"Уже есть: {_shown(duplicates)}", "warning")
         self._render_entries()
 
     def _remove_value(self, value: str) -> None:
@@ -816,5 +841,5 @@ class ParametersTab(QWidget):
         if value not in current:
             return
         self._write_list(filename, [l for l in current if l != value])
-        self._set_list_status(f"✓ Удалено: {value}", "success")
+        self._set_list_status(f"✓ Удалено: {_display(value)}", "success")
         self._render_entries()
