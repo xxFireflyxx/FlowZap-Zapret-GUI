@@ -47,6 +47,7 @@ from core.version import GUI_VERSION
 from core.system.autostart import autostart_enabled_async, set_autostart_async
 from core.system.shortcut import create_desktop_shortcut_async
 from core.service import client as service_client
+from core.zapret import runner
 
 log = logging.getLogger(__name__)
 
@@ -537,6 +538,9 @@ class SettingsTab(QWidget):
                 log.error(f"Фоновая служба: {e}", exc_info=True)
                 self._serviceDone.emit(False, str(e))
                 return
+            finally:
+                # Служба (пере)ставилась или удалена — winws у неё сверить заново
+                runner.forget_engine_sync()
             self._serviceDone.emit(True, "")
 
         threading.Thread(target=_worker, daemon=True, name="service-install").start()

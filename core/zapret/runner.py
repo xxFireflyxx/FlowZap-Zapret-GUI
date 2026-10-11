@@ -146,6 +146,14 @@ def sync_engine(engine_dir: Path) -> None:
         _synced_version = local
 
 
+def forget_engine_sync() -> None:
+    """Службу переустановили, обновили или удалили — её winws мог смениться
+    или пропасть, а sync_engine помнит «уже сверено». Следующий запуск
+    спросит службу заново (иначе — только после перезапуска FlowZap)."""
+    global _synced_version
+    _synced_version = None
+
+
 class _ServiceHandle(WinwsHandle):
     """winws, запущенный фоновой службой. Состояние и вывод — опросом
     службы в отдельном потоке (poll/wait сами канал не трогают)."""
@@ -216,7 +224,10 @@ def ensure_backend(engine_dir: Path, allow_install: bool) -> None:
     engine_dir = Path(engine_dir)
     version_file = engine_dir.parent / "version.txt"
     version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else ""
-    service_client.install(engine_dir, version)
+    try:
+        service_client.install(engine_dir, version)
+    finally:
+        forget_engine_sync()
 
 
 def launch(cmd: list[str], cwd: Path, on_line: Optional[Callable[[str], None]] = None,
