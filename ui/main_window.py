@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
     _updatesFound = Signal(bool)   # (есть ли обновление GUI/Core/TG Proxy) — из _do_check_updates
     _releasesFetched = Signal(object)  # {"gui"/"core"/"tg": release} — из _do_check_updates
     _builtinDnsFetched = Signal(object)  # ((version, entries) | None) — из fetch_builtin_dns_async
-    _announcementsFetched = Signal(object)  # (list | None) — из announcements.fetch_async
+    _announcementsFetched = Signal(object)  # (объявления, исправления): list | None — из start_announcements_fetch
 
     def __init__(self, root: Path, config: dict = None, config_path: Path = None, manager=None):
         super().__init__()
@@ -128,19 +128,27 @@ class MainWindow(QMainWindow):
             logging.getLogger(__name__).exception("Ошибка сохранения конфига")
 
     def start_announcements_fetch(self) -> None:
-        """Объявления автора — в фоне при запуске (core/announcements.py)."""
-        from core.announcements import fetch_async
-        fetch_async(lambda items: self._announcementsFetched.emit(items))
+        """Объявления и исправления автора — в фоне при запуске
+        (core/announcements.py, core/repairs.py)."""
+        import threading
+        from core import announcements, repairs
 
-    def _on_announcements_fetched(self, items) -> None:
-        from core.announcements import relevant
+        def _worker() -> None:
+            self._announcementsFetched.emit((announcements.fetch(), repairs.fetch()))
+        threading.Thread(target=_worker, daemon=True, name="announcements").start()
+
+    def _on_announcements_fetched(self, result) -> None:
+        from core import announcements, repairs
         from core.version import GUI_VERSION
-        if items is None:
-            return
+        items, fixes = result
         dismissed = set(self.config.get("announcements", {}).get("dismissed", []))
-        shown = relevant(items, GUI_VERSION, dismissed)
-        if not shown:
+        shown = announcements.relevant(items, GUI_VERSION, dismissed) if items else []
+        done = set(self.config.get("repairs", {}).get("done", []))
+        beta = self.config.get("updater", {}).get("beta", False) is True
+        shown_fixes = repairs.relevant(fixes, GUI_VERSION, done, beta) if fixes else []
+        if not shown and not shown_fixes:
             return
+        shown = (shown, shown_fixes)
         # Окно ещё не показано (запуск в трей) или идёт заставка — подождать,
         # пока блоки встанут на места; без анимаций ждать нечего
         if getattr(self, "_ui_settled", False) or not theme.animations:
@@ -148,11 +156,12 @@ class MainWindow(QMainWindow):
         else:
             self._pending_announcements = shown
 
-    def _show_announcements(self, items: list) -> None:
+    def _show_announcements(self, shown: tuple) -> None:
         # Анимация — только если главная на экране; иначе плашки уже стоят,
         # когда на неё перейдут (и всплывут вместе с каскадом вкладки)
+        items, fixes = shown
         animate = self.isVisible() and self.stack.currentWidget() is self.dashboard
-        self.dashboard.show_announcements(items, animate=animate)
+        self.dashboard.show_announcements(items, animate=animate, repairs=fixes)
 
     def start_builtin_dns_sync(self) -> None:
         """Скачать список встроенных DNS в фоне (вызывается при запуске)."""

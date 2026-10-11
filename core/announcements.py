@@ -26,10 +26,9 @@ core/announcements.py
 import datetime
 import logging
 import re
-import threading
 import tomllib
 import urllib.request
-from typing import Callable, Optional
+from typing import Callable, Optional, TypeVar
 
 from core.updates import signing
 
@@ -38,6 +37,7 @@ logger = logging.getLogger(__name__)
 FILE_NAME = "announcements.toml"
 _TONES = ("info", "warning")
 _MAX_ITEMS = 5          # больше плашек на главной — уже не объявления
+T = TypeVar("T")
 
 
 def _version(text: str) -> tuple[int, ...]:
@@ -118,31 +118,34 @@ def _get(url: str) -> bytes:
         return r.read(256 * 1024)
 
 
-def fetch() -> Optional[list[dict]]:
-    """Скачать и проверить объявления. None — не удалось (нет файла, сеть,
-    подпись не сошлась); [] — файл есть, объявлений нет."""
-    for data_url, sig_url in zip(_urls(FILE_NAME), _urls(FILE_NAME + signing.SIGNATURE_SUFFIX)):
+def fetch_signed(name: str, parse: Callable[[bytes], T], what: str) -> Optional[T]:
+    """Файл name из корня репозитория: GitHub, при неудаче GitLab. Берётся
+    только с верной подписью автора (name + .sig) и только если parse его
+    разобрал; иначе пробуем следующий адрес. None — не получилось нигде.
+    what — как назвать файл в логе («Объявления», «Исправления»)."""
+    for data_url, sig_url in zip(_urls(name), _urls(name + signing.SIGNATURE_SUFFIX)):
         try:
             data, sig = _get(data_url), _get(sig_url)
         except Exception as exc:
-            logger.debug(f"Объявления: {data_url} — {exc}")
+            logger.debug(f"{what}: {data_url} — {exc}")
             continue
         try:
-            signing.verify_file(data, FILE_NAME, sig)
+            signing.verify_file(data, name, sig)
         except signing.SignatureError as exc:
             # Подменённый файл — повод насторожиться, а не просто сбой сети
-            logger.warning(f"Объявления: подпись не прошла проверку ({exc}) — {data_url}")
+            logger.warning(f"{what}: подпись не прошла проверку ({exc}) — {data_url}")
             continue
         try:
-            items = parse(data)
+            result = parse(data)
         except Exception as exc:
-            logger.warning(f"Объявления: файл не разобран — {exc}")
+            logger.warning(f"{what}: файл не разобран — {exc}")
             continue
-        logger.info(f"Объявления: {len(items)} шт. ({data_url.split('/')[2]})")
-        return items
+        logger.info(f"{what}: {len(result)} шт. ({data_url.split('/')[2]})")
+        return result
     return None
 
 
-def fetch_async(on_done: Callable[[Optional[list[dict]]], None]) -> None:
-    """fetch() в фоновом потоке; on_done зовётся из него же."""
-    threading.Thread(target=lambda: on_done(fetch()), daemon=True, name="announcements").start()
+def fetch() -> Optional[list[dict]]:
+    """Скачать и проверить объявления. None — не удалось (нет файла, сеть,
+    подпись не сошлась); [] — файл есть, объявлений нет."""
+    return fetch_signed(FILE_NAME, parse, "Объявления")

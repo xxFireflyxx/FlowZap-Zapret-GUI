@@ -463,6 +463,15 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     QLineEdit:focus, QComboBox:focus {{ border-color: {p.accent}; }}
     QLineEdit[readOnly="true"] {{ color: {p.text_secondary}; }}
     QLineEdit[error="true"] {{ border: 1px solid {p.error}; }}
+    QPlainTextEdit {{
+        background-color: {p.bg_input};
+        border: 1px solid {p.border};
+        border-radius: {rs}px;
+        padding: 6px 8px;
+        color: {p.text_secondary};
+        selection-background-color: {p.accent};
+        selection-color: {p.accent_text};
+    }}
     QComboBox::drop-down {{ border: none; width: 30px; }}
     QComboBox::down-arrow {{ image: none; width: 0; height: 0; }}
     QComboBox QAbstractItemView {{

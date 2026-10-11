@@ -2,5 +2,6 @@
 # концы строк — иначе на GitHub лежат не те байты, что подписаны, и FlowZap
 # отклоняет файл. core.autocrlf=true на Windows делал бы CRLF → LF.
 announcements.toml -text
+repairs.toml -text
 *.sig -text
 core/dns/builtin-dns.toml -text

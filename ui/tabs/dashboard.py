@@ -24,6 +24,7 @@ DNS — тумблер читает активную пару из config["dns"]
 """
 
 import logging
+import subprocess
 import time
 import threading
 from pathlib import Path
@@ -51,6 +52,9 @@ from ui.widgets.animation import (
 )
 from ui.widgets.announcement import AnnouncementBar
 from ui.widgets.base import Glyph, button, dot_icon, label, restyle, set_tone
+from ui.widgets.repair import RepairDialog
+from core import repairs as repairs_core
+from core.version import GUI_VERSION
 from ui.widgets.controls import CircleBadge, FieldButton, StatusDot, Switch
 from ui.widgets.layout import Page
 from ui.widgets.popup import make_popup, show_popup_below
@@ -766,6 +770,7 @@ class DashboardTab(QWidget):
     _tgInstallProgress   = Signal(str)
     _tgInstallDone       = Signal(bool, str)
     _warmupDone          = Signal()              # прогрев WinDivert завершён (core/windivert_warmup)
+    _repairDone          = Signal(str, bool, str)  # (id плашки, успех, текст) — из repairs.run_async
 
     # Состояние TG Proxy изменилось — «Параметры» перерисовывают свою строку статуса
     tgStatusChanged      = Signal()
@@ -868,6 +873,9 @@ class DashboardTab(QWidget):
         self._on_manager_state_change(self.manager.state if self.manager is not None else ServiceState.STOPPED)
 
         self._warmupDone.connect(self._on_warmup_done)
+        self._repairDone.connect(self._on_repair_done)
+        self._repairs: dict[str, dict] = {}     # id плашки → исправление (core/repairs.py)
+        self._repair_failed: set[str] = set()   # не получилось — кнопка открывает лог
         self._start_windivert_warmup()
 
         self._idle_check_timer = QTimer(self)
@@ -1015,13 +1023,18 @@ class DashboardTab(QWidget):
         return box.totalHeightForWidth(width) if box.hasHeightForWidth() \
             else box.totalSizeHint().height()
 
-    def show_announcements(self, items: list[dict], animate: bool = False) -> None:
-        """Показать объявления (уже отобранные под эту версию) вместо прежних.
-        animate — плитки плавно съезжают вниз, в открывшееся место всплывают
-        плашки (как блоки при запуске окна)."""
+    def show_announcements(self, items: list[dict], animate: bool = False,
+                           repairs: list[dict] = ()) -> None:
+        """Показать объявления и исправления (уже отобранные под эту версию)
+        вместо прежних; исправления — первыми. animate — плитки плавно
+        съезжают вниз, в открывшееся место всплывают плашки (как блоки при
+        запуске окна)."""
         for bar in self._announce_bars():
             self._announce_box.removeWidget(bar)
             bar.deleteLater()
+        self._repairs = {f"{self.REPAIR_PREFIX}{r['id']}": r for r in repairs}
+        self._repair_failed.clear()
+        items = [self._repair_bar_item(r) for r in repairs] + list(items)
         if not items:
             self._announce_holder.hide()
             return
@@ -1029,6 +1042,7 @@ class DashboardTab(QWidget):
         for item in items:
             bar = AnnouncementBar(item, self._announce_holder)
             bar.dismissed.connect(self._dismiss_announcement)
+            bar.actionRequested.connect(self._on_repair_action)
             self._announce_box.addWidget(bar)
             bars.append(bar)
         if not (animate and theme.animations and self.isVisible()):
@@ -1046,12 +1060,16 @@ class DashboardTab(QWidget):
         QTimer.singleShot(0, _expand)               # после раскладки — ширина известна
 
     def _dismiss_announcement(self, aid: str) -> None:
-        dismissed = self._config.setdefault("announcements", {}).setdefault("dismissed", [])
-        if aid not in dismissed:
-            dismissed.append(aid)
-            if self._save_config_fn:
-                self._save_config_fn()
-        log.info(f"Объявление «{aid}» скрыто")
+        if aid.startswith(self.REPAIR_PREFIX):
+            # Исправление крестиком только откладывается — до следующего запуска
+            log.info(f"Исправление «{aid[len(self.REPAIR_PREFIX):]}» отложено")
+        else:
+            dismissed = self._config.setdefault("announcements", {}).setdefault("dismissed", [])
+            if aid not in dismissed:
+                dismissed.append(aid)
+                if self._save_config_fn:
+                    self._save_config_fn()
+            log.info(f"Объявление «{aid}» скрыто")
         bar = next((b for b in self._announce_bars() if b.property("aid") == aid), None)
         if bar is None or getattr(bar, "_fz_fading", False):
             return      # второй щелчок по крестику, пока плашка тает
@@ -1081,6 +1099,85 @@ class DashboardTab(QWidget):
             bar.deleteLater()
 
         fade_out(bar, self.ANNOUNCE_FADE_MS, on_done=_faded)
+
+    # ── Исправления (core/repairs.py) — те же плашки, с кнопкой ──
+
+    REPAIR_PREFIX = "repair:"       # id плашки исправления — не путать с объявлениями
+
+    def _repair_bar_item(self, repair: dict) -> dict:
+        return {
+            "id": f"{self.REPAIR_PREFIX}{repair['id']}", "title": repair["title"],
+            "text": repair["text"], "tone": "warning", "link": "", "link_text": "",
+            "action": "Исправить…", "close_tip": "Скрыть до следующего запуска FlowZap",
+        }
+
+    def _repair_bar(self, aid: str) -> AnnouncementBar | None:
+        return next((b for b in self._announce_bars() if b.property("aid") == aid), None)
+
+    def _on_repair_action(self, aid: str) -> None:
+        repair = self._repairs.get(aid)
+        bar = self._repair_bar(aid)
+        if repair is None or bar is None:
+            return
+        root = Path(self._config.get("_app_dir", "."))
+        if aid in self._repair_failed:
+            self._open_repair_log(root)
+            return
+        dialog = RepairDialog(repair, elevated=service_client.is_admin(), parent=self.window())
+        if dialog.exec() != RepairDialog.Accepted:
+            return
+        if repair["exit_flowzap"]:
+            try:
+                repairs_core.launch_detached(repair, root, GUI_VERSION)
+            except Exception as e:
+                log.error(f"Исправление «{repair['id']}» не запустилось: {e}")
+                bar.set_text(f"Не удалось запустить исправление: {e}", "error")
+                return
+            # Результат узнать неоткуда: FlowZap закрывается, скрипт работает
+            # без него. Считаем применённым, иначе оно предлагалось бы снова
+            # и после успеха.
+            self._mark_repair_done(repair["id"])
+            bar.set_text("Исправление запущено — FlowZap закроется и запустится снова.")
+            bar.set_action(None)
+            QTimer.singleShot(400, QApplication.quit)
+            return
+        bar.set_text("Выполняю исправление…")
+        bar.set_action("Исправляю…", enabled=False)
+        repairs_core.run_async(repair, root, GUI_VERSION,
+                               on_done=lambda ok, msg: self._repairDone.emit(aid, ok, msg))
+
+    def _on_repair_done(self, aid: str, ok: bool, message: str) -> None:
+        repair = self._repairs.get(aid)
+        if repair is not None and ok:
+            self._mark_repair_done(repair["id"])
+        bar = self._repair_bar(aid)         # могли скрыть крестиком, пока шло
+        if bar is None:
+            return
+        if ok:
+            bar.set_text("Готово — исправление применено.", "success")
+            bar.set_action(None)
+        else:
+            self._repair_failed.add(aid)
+            bar.set_text(f"Не получилось: {message}. Подробности — в logs/{repairs_core.LOG_NAME}; "
+                         "FlowZap предложит исправление снова при следующем запуске.", "error")
+            bar.set_action("Открыть лог")
+
+    def _mark_repair_done(self, rid: str) -> None:
+        done = self._config.setdefault("repairs", {}).setdefault("done", [])
+        if rid not in done:
+            done.append(rid)
+            if self._save_config_fn:
+                self._save_config_fn()
+
+    def _open_repair_log(self, root: Path) -> None:
+        path = root / "logs" / repairs_core.LOG_NAME
+        try:
+            if path.exists():
+                subprocess.Popen(f'explorer /select,"{path}"')
+            else:
+                subprocess.Popen(f'explorer "{path.parent}"')
+        except Exception as exc:
+            log.error(f"Не удалось открыть лог исправлений: {exc}")
 
     def _build_services_row(self) -> QHBoxLayout:
         row = QHBoxLayout()
