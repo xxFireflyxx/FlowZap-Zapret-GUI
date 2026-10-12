@@ -450,12 +450,18 @@ class MainWindow(QMainWindow):
             # DNS ждёт проверки (DashboardTab._restore_dns): проверяем сразу,
             # без DNS-прокси GitHub не упирается в общий лимит запросов.
             # Конец проверки — _releasesFetched; не дождались — включаем так.
-            self._releasesFetched.connect(lambda _releases: self.dashboard.restore_dns_now())
+            self._releasesFetched.connect(self._on_startup_check_done)
             QTimer.singleShot(DNS_RESTORE_MAX_WAIT_MS, self.dashboard.restore_dns_now)
             self._check_updates_bg()
         else:
             QTimer.singleShot(UPDATE_CHECK_STARTUP_DELAY_MS, self._check_updates_bg)
         self._update_timer.start(UPDATE_CHECK_INTERVAL_MS)
+
+    def _on_startup_check_done(self, _releases) -> None:
+        """Проверка обновлений закончилась — отложенный DNS можно включать
+        (метод окна, а не lambda: сигнал из фонового потока — так слот
+        гарантированно выполнится в GUI-потоке)."""
+        self.dashboard.restore_dns_now()
 
     def set_update_autocheck(self, enabled: bool) -> None:
         """Переключатель «Проверять автоматически» на вкладке «Обновления»."""

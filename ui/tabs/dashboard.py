@@ -103,6 +103,9 @@ IDLE_PRESET_CHECK_INTERVAL_SEC       = 3 * 24 * 3600  # раз в 3 дня
 IDLE_PRESET_CHECK_IDLE_THRESHOLD_SEC = 2 * 3600        # простой от 2 часов
 IDLE_PRESET_CHECK_POLL_MS            = 10 * 60 * 1000  # как часто проверяем условия
 
+# Как часто проверять связь со службой, пока DNS включён (core/dns/manager.check_service_link)
+DNS_LINK_CHECK_MS = 30 * 1000
+
 # «Запускается / Останавливается» на плитке — только если дольше этого
 ZAPRET_BUSY_DELAY_MS = 500
 
@@ -764,6 +767,7 @@ class DashboardTab(QWidget):
     _coreInstallProgress = Signal(str)
     _coreInstallDone     = Signal(bool, str)
     _dnsToggleDone       = Signal(bool, str)     # (ok, error) — из dns_manager.apply_dns_async
+    _dnsRestoreFailed    = Signal(str)           # после обрыва связи со службой DNS не включился
     _tgProxyDone         = Signal(bool, str)     # (running, error) — из TgProxyManager.*_async
     _tgPolled            = Signal(int, bool, object, bool, str, object)  # (поколение, жив, клиенты, Telegram запущен, его exe, кому отказ)
     _tgMigrated          = Signal()              # переход со старого TgWsProxy завершён
@@ -807,6 +811,13 @@ class DashboardTab(QWidget):
 
         self._zapret_error = False   # плитка обхода красная, пока пользователь не включит снова
         self._dnsToggleDone.connect(self._on_dns_toggle_done)
+        self._dnsRestoreFailed.connect(self._on_dns_restore_failed)
+        dns_manager.on_restore_failed = lambda error: self._dnsRestoreFailed.emit(error)
+        # Пока DNS включён — проверять, жива ли связь со службой (см. check_service_link)
+        self._dns_link_timer = QTimer(self)
+        self._dns_link_timer.setInterval(DNS_LINK_CHECK_MS)
+        self._dns_link_timer.timeout.connect(dns_manager.check_service_link_async)
+        self._dns_link_timer.start()
         self._dns_enabled = False
         # Отмечает, идёт ли сейчас apply_dns_async в фоновом потоке — shutdown()
         # дожидается его завершения перед своим решением, иначе быстрое закрытие
@@ -1602,6 +1613,16 @@ class DashboardTab(QWidget):
         self._remember_state("dns", self._dns_enabled)
         self._refresh_dns_button_style()
 
+    def _on_dns_restore_failed(self, error: str) -> None:
+        """Связь со службой обрывалась (она сбросила DNS), и включить его
+        снова не вышло — плитка не должна показывать «Включён»."""
+        if not self._dns_enabled or not self._sw_dns.isEnabled():
+            return      # пользователь как раз переключает сам — его результат и покажем
+        self._dns_enabled = False
+        self._refresh_dns_button_style()
+        self._tile_dns.set_hint(f"Связь со службой прерывалась, DNS не включился: {error}", "error")
+        self._tile_dns.set_error(True)
+
     def _refresh_dns_button_style(self) -> None:
         self._sw_dns.setChecked(self._dns_enabled)
         pair = dns_manager.get_active_pair(self._config)
@@ -1612,8 +1633,11 @@ class DashboardTab(QWidget):
             self._dns_field.setText(pair.get("name") or pair.get("ipv4_main") or "")
             self._dns_field.set_secondary(pair.get("ipv4_main") or pair.get("ipv6_main") or "")
         self._tile_dns.set_state(self._dns_enabled, "Включён" if self._dns_enabled else "Выключен")
-        self._tile_dns.set_hint("При выходе вернётся DNS провайдера" if self._dns_enabled
-                                else "Сейчас используется DNS провайдера")
+        if getattr(self, "_dns_restore_pending", False):
+            self._tile_dns.set_hint(self.DNS_PENDING_HINT, "accent")
+        else:
+            self._tile_dns.set_hint("При выходе вернётся DNS провайдера" if self._dns_enabled
+                                    else "Сейчас используется DNS провайдера")
 
     def _open_dns_menu(self) -> None:
         """Выбор активного сервера: он всегда первый в config["dns"]["pairs"]
@@ -1655,6 +1679,8 @@ class DashboardTab(QWidget):
             if self._save_config_fn:
                 self._save_config_fn()
 
+    DNS_PENDING_HINT = "Включится после проверки обновлений"
+
     def _restore_dns(self) -> None:
         """При запуске: DNS был включён при выходе — включить снова. Если
         FlowZap проверяет обновления при запуске, DNS ждёт конца проверки
@@ -1668,7 +1694,7 @@ class DashboardTab(QWidget):
         self._dns_restore_pending = True
         if self._config.get("updater", {}).get("check_on_start", True):
             log.info("DNS был включён при выходе — включу после проверки обновлений")
-            self._tile_dns.set_hint("Включится после проверки обновлений", "accent")
+            self._tile_dns.set_hint(self.DNS_PENDING_HINT, "accent")
             return
         self.restore_dns_now()
 

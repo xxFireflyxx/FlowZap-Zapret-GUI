@@ -54,6 +54,11 @@ _bypass_users = 0
 _bypass_pair: Optional[dict] = None
 _bypass_generation = 0
 _bypass = threading.local()
+# apply_dns и повторное включение после обрыва связи со службой — по очереди:
+# иначе включение по старому состоянию могло бы перебить выключение
+_apply_lock = threading.Lock()
+# UI: «после обрыва связи DNS включить не вышло» — on_restore_failed(текст)
+on_restore_failed: Optional[Callable[[str], None]] = None
 
 T = TypeVar("T")
 
@@ -150,12 +155,64 @@ def apply_dns(enable: bool, pair: dict | None, allow_install: bool = False,
 
     Выполняется синхронно — для UI есть apply_dns_async()."""
     global _active_pair, _generation
-    error = _set_dns(enable, pair, allow_install, engine_dir)
-    if not error:
-        with _state_lock:
-            _active_pair = pair if enable else None
-            _generation += 1
+    with _apply_lock:
+        error = _set_dns(enable, pair, allow_install, engine_dir)
+        if not error:
+            with _state_lock:
+                _active_pair = pair if enable else None
+                _generation += 1
     return error
+
+
+def _restore_after_reconnect() -> None:
+    """Связь со службой оборвалась и восстановилась (core/service/client.py
+    ServiceSession.on_reconnect): служба сочла FlowZap отключившимся и
+    сбросила его DNS. Включаем то, что включал пользователь. Не вышло — UI
+    показывает DNS выключенным (on_restore_failed)."""
+    global _active_pair, _generation
+    with _apply_lock:
+        with _state_lock:
+            pair = _active_pair
+        with _bypass_lock:
+            bypassing = _bypass_users > 0
+        if pair is None or bypassing:
+            return      # DNS выключен — или выключен на время повтора загрузки, тот вернёт сам
+        error = _set_dns(True, pair)
+        if not error:
+            logger.info("DNS включён снова после обрыва связи со службой")
+            return
+        with _state_lock:
+            _active_pair = None         # в системе он и правда выключен
+            _generation += 1
+    logger.error(f"После обрыва связи со службой DNS не включился: {error}")
+    if on_restore_failed:
+        on_restore_failed(error)
+
+
+service_client.session.on_reconnect.append(_restore_after_reconnect)
+
+
+def check_service_link() -> None:
+    """Пока DNS включён через службу — убедиться, что связь с ней жива.
+    Служба могла перезапуститься, пока FlowZap ничего у неё не спрашивал
+    (включён только DNS): она тогда сбросила DNS, а узнали бы мы об этом лишь
+    при следующем действии пользователя. Первый запрос после обрыва
+    упадёт, второй переподключится — и DNS включится снова
+    (_restore_after_reconnect). Синхронно, для фонового потока."""
+    with _state_lock:
+        enabled = _active_pair is not None
+    if not enabled or not service_client.service_installed():
+        return
+    for _ in range(2):
+        try:
+            service_client.session.status()
+            return
+        except ServiceError:
+            continue
+
+
+def check_service_link_async() -> None:
+    threading.Thread(target=check_service_link, daemon=True, name="service-link").start()
 
 
 def _set_dns(enable: bool, pair: dict | None, allow_install: bool = False,

@@ -299,14 +299,22 @@ class _Pipe:
 
 
 class ServiceSession:
-    """Одно постоянное соединение со службой на всё приложение."""
+    """Одно постоянное соединение со службой на всё приложение.
+
+    Обрыв связи (служба не ответила вовремя, перезапустилась) служба считает
+    отключением FlowZap: гасит его обход и сбрасывает включённый им DNS.
+    Когда связь после обрыва восстановилась, зовутся on_reconnect — DNS
+    включает заново core/dns/manager.py. Закрытие по close() (выход,
+    переустановка службы) обрывом не считается."""
 
     def __init__(self, pipe_name: str = PIPE_NAME, authenticate: bool = True) -> None:
         self._pipe_name = pipe_name
         self._authenticate = authenticate
         self._pipe: Optional[_Pipe] = None
         self._lock = threading.RLock()
+        self._lost = False
         self.info: dict = {}
+        self.on_reconnect: list = []    # функции без аргументов; зовутся в отдельном потоке
 
     def connect(self) -> dict:
         with self._lock:
@@ -319,19 +327,31 @@ class ServiceSession:
                     raise ServiceError("Версия фоновой службы не подходит к FlowZap — переустановите её в настройках")
                 self.info = hello
                 logger.info(f"Связь со службой: версия {hello.get('version')}, zapret {hello.get('engine_version') or '—'}")
+                if self._lost:
+                    self._lost = False
+                    logger.warning("Связь со службой восстановлена после обрыва — служба сбросила "
+                                   "DNS и обход этого FlowZap")
+                    for callback in list(self.on_reconnect):
+                        # Не здесь: соединение занято запросом, ради которого переподключались
+                        threading.Thread(target=callback, daemon=True, name="service-reconnect").start()
             return self.info
 
     def close(self) -> None:
         with self._lock:
-            if self._pipe is not None:
-                self._pipe.close()
-                self._pipe = None
+            self._lost = False
+            self._close_pipe()
+
+    def _close_pipe(self) -> None:
+        if self._pipe is not None:
+            self._pipe.close()
+            self._pipe = None
 
     def _send(self, message: dict, timeout: Optional[float] = None) -> dict:
         try:
             reply = self._pipe.request(message, timeout)
         except (OSError, ConnectionError, ValueError) as e:
-            self.close()
+            self._close_pipe()
+            self._lost = True
             raise ServiceError(f"Связь с фоновой службой прервалась: {e}") from e
         if not reply.get("ok"):
             error = reply.get("error") or "Фоновая служба отказала"
