@@ -309,7 +309,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.parameters)
         # Выбор активной пары на главной — Параметры перечитывают список.
         self.dashboard.on_pairs_changed = self.parameters.reload_dns
-        self.dashboard.on_open_parameters = lambda: self.show_tab(1)
+        self.dashboard.on_open_parameters = self._open_dns_parameters
 
         self.updates = UpdatesTab(
             config=self.config, manager=self.manager, dashboard=self.dashboard,
@@ -410,6 +410,11 @@ class MainWindow(QMainWindow):
             self._mode_timer.stop()
         elif not self._mode_timer.isActive():
             self._mode_timer.start()
+
+    def _open_dns_parameters(self) -> None:
+        """С главной (нет DNS-серверов) — «Параметры», раздел DNS."""
+        self.parameters.show_section("dns")
+        self.show_tab(1)
 
     def show_tab(self, index: int):
         changed = index != self.stack.currentIndex()

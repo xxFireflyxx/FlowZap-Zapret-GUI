@@ -2,13 +2,17 @@
 ui/tabs/parameters.py — Вкладка «Параметры» (PySide6): DNS-серверы, списки
 zapret и Telegram Proxy.
 
-Две колонки: список DNS-серверов (добавить / изменить / удалить / замерить;
-встроенные — только замерить)
-и списки сайтов zapret вкладками. Активный сервер — всегда
-config["dns"]["pairs"][0]; выбирается он на главной (DashboardTab), здесь
-только помечен — одно действие, одно место.
+Три раздела, на экране один — переключатель в шапке страницы (SECTIONS;
+выбранный запоминается в config["ui"]["parameters_section"]): список
+DNS-серверов (добавить / изменить / удалить / замерить; встроенные — только
+замерить), списки сайтов zapret вкладками и карточка Telegram Proxy
+(ui/tabs/parameters_tgproxy.py). Раньше всё стояло одной страницей, и
+длинный список сайтов уводил Telegram Proxy за край окна. Спрятанные
+разделы живут как обычно — сигналы и фоновые результаты обновляют их и
+скрытыми.
 
-Под ними на всю ширину — карточка Telegram Proxy (ui/tabs/parameters_tgproxy.py).
+Активный сервер — всегда config["dns"]["pairs"][0]; выбирается он на главной
+(DashboardTab), здесь только помечен — одно действие, одно место.
 """
 
 import html
@@ -39,6 +43,7 @@ from PySide6.QtWidgets import (
 from core.dns.builtin import builtin_names, is_builtin_dns
 from ui.tabs.parameters_tgproxy import TgProxyCard
 from ui.theme import theme
+from ui.widgets.animation import cascade_in, page_steps
 from ui.widgets.base import AutoHideLabel, Glyph, button, label, set_tone
 from ui.widgets.controls import IconButton, SegmentedControl
 from ui.widgets.layout import Page
@@ -457,18 +462,46 @@ class ParametersTab(QWidget):
 
     # ── UI ──────────────────────────────────────────
 
+    SECTIONS = [("dns", "DNS"), ("lists", "Сайты"), ("tg", "Telegram Proxy")]
+
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         page = Page("Параметры", "DNS-серверы, сайты для обхода и Telegram Proxy")
         root.addWidget(page)
-        columns = QHBoxLayout()
-        columns.setSpacing(theme.metrics.padding_md)
-        columns.addWidget(self._build_dns_block(), stretch=1)
-        columns.addWidget(self._build_lists_block(), stretch=1)
-        page.body.addLayout(columns)
+        self._sections: dict[str, QWidget] = {
+            "dns": self._build_dns_block(),
+            "lists": self._build_lists_block(),
+        }
         if self._tg_controller is not None:
-            page.body.addWidget(TgProxyCard(self._config, self._save_config_fn, self._tg_controller))
+            self._sections["tg"] = TgProxyCard(self._config, self._save_config_fn, self._tg_controller)
+        for card in self._sections.values():
+            page.body.addWidget(card)
+        self._section_tabs = SegmentedControl([(k, t) for k, t in self.SECTIONS if k in self._sections])
+        self._section_tabs.setFixedWidth(120 * len(self._sections))
+        self._section_tabs.changed.connect(lambda key: self.show_section(key, remember=True))
+        page.header_actions.addWidget(self._section_tabs, alignment=Qt.AlignVCenter)
+        saved = self._config.get("ui", {}).get("parameters_section", "")
+        self._section = ""
+        self.show_section(saved if saved in self._sections else "dns")
+
+    def show_section(self, key: str, remember: bool = False) -> None:
+        """Показать раздел key («dns» / «lists» / «tg»), остальные спрятать.
+        remember — выбор пользователя: запомнить до следующего запуска."""
+        if key not in self._sections:
+            return
+        changed = key != self._section
+        self._section = key
+        for k, card in self._sections.items():
+            card.setVisible(k == key)
+        self._section_tabs.set_current(key)
+        if remember and self._config.get("ui", {}).get("parameters_section") != key:
+            self._config.setdefault("ui", {})["parameters_section"] = key
+            if self._save_config_fn:
+                self._save_config_fn()
+        # Новый раздел всплывает, как блоки при переходе на вкладку
+        if changed and remember and self.isVisible():
+            cascade_in(page_steps(self))
 
     def _build_dns_block(self) -> QFrame:
         card, actions, body = _section_card(

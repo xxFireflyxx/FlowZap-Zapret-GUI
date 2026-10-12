@@ -278,8 +278,8 @@ class TgProxyManager:
             if busy is not None:
                 name = winproc.process_names().get(busy, "")
                 who = client_title(name) if name else "другая программа"
-                return (f"Порт {port} занят ({who}). Закройте её или смените порт "
-                        "в «Параметрах»")
+                return (f"Порт {port} занят ({who}). Закройте её или смените порт: "
+                        "«Параметры» → «Telegram Proxy»")
 
             self._rejects.reset()
             try:
