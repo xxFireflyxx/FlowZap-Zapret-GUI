@@ -51,6 +51,7 @@ class Page(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(scroll)
+        self.scroll = scroll
 
         content = QWidget()
         content.setObjectName("pageContent")

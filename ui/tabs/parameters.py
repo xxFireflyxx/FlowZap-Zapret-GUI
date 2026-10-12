@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 from urllib.parse import urlparse
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -400,7 +400,8 @@ class ParametersTab(QWidget):
 
     _pingUpdated = Signal(str, str)  # (ipv4_main, результат) — из фонового потока пинга
     MAX_SHOWN = 200                  # длиннее — показываем начало и просим уточнить поиск
-    VISIBLE_ROWS = 7                 # выше — список прокручивается внутри карточки
+    VISIBLE_ROWS = 7                 # пока размер окна неизвестен (см. _fit_entries)
+    MIN_ROWS = 3                     # ниже не ужимаем — в совсем низком окне листается и страница
     ROW_HEIGHT = 44                  # _EntryRow
 
     def __init__(self, parent=None, manager=None, config: dict = None,
@@ -469,6 +470,8 @@ class ParametersTab(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         page = Page("Параметры", "DNS-серверы, сайты для обхода и Telegram Proxy")
         root.addWidget(page)
+        self._page = page
+        page.scroll.viewport().installEventFilter(self)     # см. eventFilter
         self._sections: dict[str, QWidget] = {
             "dns": self._build_dns_block(),
             "lists": self._build_lists_block(),
@@ -499,6 +502,8 @@ class ParametersTab(QWidget):
             self._config.setdefault("ui", {})["parameters_section"] = key
             if self._save_config_fn:
                 self._save_config_fn()
+        if key == "lists":
+            QTimer.singleShot(0, self._fit_entries)     # после раскладки
         # Новый раздел всплывает, как блоки при переходе на вкладку
         if changed and remember and self.isVisible():
             cascade_in(page_steps(self))
@@ -665,8 +670,8 @@ class ParametersTab(QWidget):
         status_row.addWidget(self._lists_count, alignment=Qt.AlignTop)
         body.addLayout(status_row)
 
-        # Записи — в своей прокрутке не выше VISIBLE_ROWS строк: длинный список
-        # иначе растягивал карточку, и TG Proxy уезжал далеко вниз.
+        # Записи — в своей прокрутке, высотой по окну (_fit_entries): длинный
+        # список иначе растягивал карточку и страницу.
         self._entries_scroll = QScrollArea()
         self._entries_scroll.setWidgetResizable(True)
         self._entries_scroll.setFrameShape(QFrame.NoFrame)
@@ -744,10 +749,52 @@ class ParametersTab(QWidget):
             empty.setAlignment(Qt.AlignCenter)
             empty.setMinimumHeight(56)
             add(empty)
-        rows = min(len(shown), self.VISIBLE_ROWS)
-        height = 56 if not found else rows * self.ROW_HEIGHT + (extra if len(shown) <= self.VISIBLE_ROWS else 0)
-        self._entries_scroll.setFixedHeight(height)
+        self._entries_shown, self._entries_extra = (len(shown) if found else 0), extra
+        self._fit_entries()
+        QTimer.singleShot(0, self._fit_entries)     # и ещё раз, когда раскладка уляжется
         self._entries_scroll.verticalScrollBar().setValue(0)
+
+    def _fit_entries(self) -> None:
+        """Высота списка записей — по высоте окна: карточка «Сайты» помещается
+        без прокрутки страницы, листается только сам список. Иначе колесо,
+        докрутив список до конца, уводило вниз и страницу. Пока окно не
+        показано — VISIBLE_ROWS строк."""
+        count = getattr(self, "_entries_shown", 0)
+        if not count:
+            self._entries_scroll.setFixedHeight(56)
+            return
+        rows = min(count, self.VISIBLE_ROWS)
+        scroll = self._page.scroll
+        if self._section == "lists" and scroll.isVisible():
+            # Место до низа окна: верх карточки (он не двигается) + её нужная
+            # высота при нынешнем списке. Нужную высоту — из раскладки карточки,
+            # а не card.height(): размер на экране обновится только позже, и
+            # расчёт по нему раз за разом прибавлял бы то же место.
+            content = scroll.widget()
+            card = self._sections["lists"]
+            top = card.mapTo(content, QPoint(0, 0)).y()
+            need = card.heightForWidth(card.width()) if card.hasHeightForWidth() \
+                else card.sizeHint().height()
+            spare = scroll.viewport().height() - content.layout().contentsMargins().bottom() - top - need
+            fit = (self._entries_scroll.height() + spare) // self.ROW_HEIGHT
+            rows = min(count, max(fit, self.MIN_ROWS))
+        height = rows * self.ROW_HEIGHT + (self._entries_extra if count <= rows else 0)
+        if height != self._entries_scroll.height():
+            self._entries_scroll.setFixedHeight(height)
+
+    def eventFilter(self, obj, event) -> bool:
+        # Видимая область страницы сменила размер: окно потянули, или у
+        # страницы появилась/пропала полоса прокрутки (меняется ширина, а с
+        # ней переносы строк в карточке)
+        if obj is self._page.scroll.viewport() and event.type() == QEvent.Resize \
+                and getattr(self, "_section", "") == "lists":
+            QTimer.singleShot(0, self._fit_entries)
+        return super().eventFilter(obj, event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if getattr(self, "_section", "") == "lists":
+            QTimer.singleShot(0, self._fit_entries)
 
     def _on_list_text(self, _text: str) -> None:
         self._set_list_status("")
