@@ -836,6 +836,7 @@ class DashboardTab(QWidget):
         self._tg_polling = False
         self._tg_fast_until = 0.0
         self._tg_launch_app = False         # включили тумблером — после запуска открыть Telegram
+        self._tg_launch_tray = False        # ...свёрнутым в трей (прокси восстановлен при запуске)
         self._tg_restoring_off = False      # временная остановка из кода (обновление) — не запоминать
         # Задаёт MainWindow: перечитать список DNS в «Параметрах» / открыть «Параметры».
         self.on_pairs_changed = None
@@ -1222,7 +1223,7 @@ class DashboardTab(QWidget):
             "FlowZap сам видит, идёт ли он через прокси. Настройки — во вкладке «Параметры».",
         )
         self._sw_tg = self._tile_tg.switch
-        self._sw_tg.clicked.connect(self._on_tg_proxy_toggle)
+        self._sw_tg.clicked.connect(self._on_tg_switch_clicked)
         # В слоте — либо кнопка подключения (пока Telegram ни разу не подключался
         # с текущими портом и секретом), либо состояние Telegram
         self._btn_tg_open = FieldButton("Подключить в Telegram", trailing=Glyph.OPEN)
@@ -1723,8 +1724,15 @@ class DashboardTab(QWidget):
         self._poll_tg()
         if self._restore_enabled() and self._config.get("state", {}).get("tgproxy"):
             log.info("Восстанавливаю TG Proxy — был включён при выходе")
+            # Telegram — свёрнутым в трей, как при его собственном автозапуске:
+            # FlowZap стартует вместе с Windows, окно выскакивать не должно.
+            # До переключения: результат может прийти раньше, чем оно вернётся
+            self._tg_launch_tray = True
             self._on_tg_proxy_toggle()
-            self._tg_launch_app = False     # Telegram при восстановлении сам не открываем
+
+    def _on_tg_switch_clicked(self) -> None:
+        self._tg_launch_tray = False        # включил сам — Telegram обычным окном
+        self._on_tg_proxy_toggle()
 
     def _on_tg_proxy_toggle(self) -> None:
         target_enabled = not self._tg_running
@@ -1800,12 +1808,13 @@ class DashboardTab(QWidget):
             if self._tg_open_after_start:
                 self._tg.open_in_telegram()     # ссылка сама откроет Telegram
             elif self._tg_launch_app and self._tg.settings.get("launch_telegram", True):
-                self._tg.launch_telegram_async()
+                self._tg.launch_telegram_async(tray=self._tg_launch_tray)
         else:
             self._tg_poll_timer.setInterval(TG_POLL_MS)
         self._poll_tg()
         self._tg_open_after_start = False
         self._tg_launch_app = False
+        self._tg_launch_tray = False
         self._refresh_tg_tile()
         self._tg_restoring_off = False
         cb, self._tg_done_cb = self._tg_done_cb, None

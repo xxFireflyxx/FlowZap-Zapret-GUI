@@ -207,7 +207,9 @@ class TgProxyCard(QFrame):
         self._sw_launch.clicked.connect(self._apply_launch)
         col.addWidget(SettingRow(
             "Запускать Telegram вместе с прокси",
-            "Включили прокси на главной, а Telegram не запущен — FlowZap откроет его сам",
+            "Включили прокси на главной, а Telegram не запущен — FlowZap откроет его сам. "
+            "Если прокси включился сам при запуске FlowZap — Telegram запустится "
+            "свёрнутым в трей",
             self._sw_launch))
         col.addStretch(1)
         return col

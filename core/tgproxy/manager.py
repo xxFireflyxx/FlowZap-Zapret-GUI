@@ -419,11 +419,13 @@ class TgProxyManager:
         threading.Thread(target=lambda: on_done(*self.poll_clients()),
                          daemon=True, name="tgproxy-poll").start()
 
-    def launch_telegram(self) -> None:
+    def launch_telegram(self, tray: bool = False) -> None:
         """Запустить Telegram, если он ещё не запущен: по пути, запомненному,
         когда он работал (так находятся и AyuGram, и нестандартная папка),
         иначе из обычного места установки. Не нашли (например, версия из
-        Microsoft Store) — открываем tg://, Windows сама откроет Telegram."""
+        Microsoft Store) — открываем tg://, Windows сама откроет Telegram.
+        tray — свёрнутым в трей (ключ -startintray Telegram Desktop и его
+        форков); Telegram из Store так не запустить — тогда не запускаем."""
         if self._telegram_process(winproc.process_names()) is not None:
             return
         candidates = [self.settings.get("client_path", ""),
@@ -431,17 +433,22 @@ class TgProxyManager:
         for path in candidates:
             if path and os.path.isfile(path):
                 try:
-                    subprocess.Popen([path], cwd=os.path.dirname(path), close_fds=True,
+                    subprocess.Popen([path, *(["-startintray"] if tray else [])],
+                                     cwd=os.path.dirname(path), close_fds=True,
                                      creationflags=subprocess.DETACHED_PROCESS)
-                    logger.info(f"Запущен Telegram: {path}")
+                    logger.info(f"Запущен Telegram{' (в трей)' if tray else ''}: {path}")
                     return
                 except OSError as e:
                     logger.warning(f"Не удалось запустить {path}: {e}")
+        if tray:
+            logger.info("Telegram не найден на диске — в трей не запустить, не открываем")
+            return
         logger.info("Telegram не найден на диске — открываем tg://")
         webbrowser.open("tg://")
 
-    def launch_telegram_async(self) -> None:
-        threading.Thread(target=self.launch_telegram, daemon=True, name="tgproxy-launch-tg").start()
+    def launch_telegram_async(self, tray: bool = False) -> None:
+        threading.Thread(target=self.launch_telegram, args=(tray,), daemon=True,
+                         name="tgproxy-launch-tg").start()
 
     # ── Подключение Telegram ─────────────────────────────────────────────
 
