@@ -24,6 +24,10 @@ CORE_REPO = "Flowseal/zapret-discord-youtube"
 # используется как молчаливый fallback, если GitHub недоступен из сети.
 SOURCEFORGE_ZAPRET_PROJECT = "flowseal.mirror"
 
+# Какие пресеты (.bat) поставил релиз Flowseal — чтобы при обновлении
+# удалять только их, а не пресеты, которые человек сделал сам
+PRESETS_MANIFEST = "flowzap-presets.txt"
+
 
 def get_installed_core_version(zapret_dir: Path) -> Optional[str]:
     ver_file = zapret_dir / "version.txt"
@@ -88,18 +92,36 @@ def _merge_copy(src_dir: Path, dst_dir: Path) -> None:
 
 
 def _remove_stale_presets(src: Path, zapret_dir: Path) -> None:
-    """Пресеты, которых нет в новом релизе (переименовали или убрали в
-    Flowseal), иначе навсегда оставались бы в списке."""
+    """Пресеты прошлого релиза Flowseal, которых нет в новом (переименовали
+    или убрали), — иначе навсегда оставались бы в списке. Только из списка
+    PRESETS_MANIFEST: свой пресет (скопированный general.bat под другим
+    именем) обновление не трогает. Списка нет (zapret ставился FlowZap до
+    1.1.2) — в этот раз ничего не удаляем: какие пресеты чьи, неизвестно."""
     new_bats = {b.name.lower() for b in src.glob("*.bat")}
     if not new_bats:
         return
+    try:
+        manifest = (zapret_dir / PRESETS_MANIFEST).read_text(encoding="utf-8")
+    except OSError:
+        logger.info("Список пресетов прошлой версии zapret неизвестен — устаревшие не удаляю")
+        return
+    previous = {line.strip().lower() for line in manifest.splitlines() if line.strip()}
     for old_bat in zapret_dir.glob("*.bat"):
-        if old_bat.name.lower() not in new_bats:
+        name = old_bat.name.lower()
+        if name in previous and name not in new_bats:
             try:
                 old_bat.unlink()
                 logger.info(f"Удалён устаревший пресет: {old_bat.name}")
             except Exception as e:
                 logger.warning(f"Не удалось удалить {old_bat.name}: {e}")
+
+
+def _write_presets_manifest(src: Path, zapret_dir: Path) -> None:
+    names = sorted(b.name for b in src.glob("*.bat"))
+    try:
+        (zapret_dir / PRESETS_MANIFEST).write_text("\n".join(names) + "\n", encoding="utf-8")
+    except OSError as e:
+        logger.warning(f"Не удалось записать {PRESETS_MANIFEST}: {e}")
 
 
 def download_and_install_core(
@@ -129,6 +151,7 @@ def download_and_install_core(
             zapret_dir.mkdir(parents=True, exist_ok=True)
             _remove_stale_presets(src, zapret_dir)
             _merge_copy(src, zapret_dir)
+            _write_presets_manifest(src, zapret_dir)
             (zapret_dir / "version.txt").write_text(tag, encoding="utf-8")
 
         ensure_user_lists(zapret_dir / "lists")
