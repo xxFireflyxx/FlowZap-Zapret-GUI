@@ -50,11 +50,19 @@ from ui.widgets.layout import Page
 
 log = logging.getLogger(__name__)
 
-# Тот же валидатор, что был в customtkinter-версии для поля IPv4 (домен ИЛИ
-# IP) — сохраняем поведение как есть, не сужаем до чистого IP-формата.
-_RE_IP_OR_HOST = re.compile(
-    r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$|^(\d{1,3}\.){3}\d{1,3}$"
-)
+def _ip_error(value: str, version: int, what: str) -> str | None:
+    """Пусто или IP нужной версии — None, иначе текст ошибки. Только IP:
+    имя сервера (dns.google) Windows как DNS не принимает — раньше оно
+    проходило здесь, а ошибка всплывала только при включении DNS."""
+    if not value:
+        return None
+    try:
+        if ipaddress.ip_address(value).version == version:
+            return None
+    except ValueError:
+        pass
+    return f"{what}: «{value}» — не IPv{version}-адрес" + (", например 1.1.1.1" if version == 4
+                                                          else ", например 2606:4700:4700::1111")
 
 # Сайты для проверки через DNS — заблокированные/ограниченные в РФ
 _CHECK_DOMAINS = ["intel.com", "chat.openai.com", "claude.ai"]
@@ -232,14 +240,14 @@ class _AddDnsDialog(QDialog):
         ipv6_b = self._ipv6_backup.text().strip()
 
         if not ipv4_m and not ipv6_m:
-            self._fail("Укажите хотя бы один IP-адрес.")
+            self._fail("Укажите основной адрес — IPv4 или IPv6.")
             return
-        if ipv4_m and not _RE_IP_OR_HOST.match(ipv4_m):
-            self._fail(f"Некорректный IPv4: {ipv4_m}")
-            return
-        if ipv4_b and not _RE_IP_OR_HOST.match(ipv4_b):
-            self._fail(f"Некорректный запасной IPv4: {ipv4_b}")
-            return
+        for value, version, what in ((ipv4_m, 4, "IPv4 основной"), (ipv4_b, 4, "IPv4 запасной"),
+                                     (ipv6_m, 6, "IPv6 основной"), (ipv6_b, 6, "IPv6 запасной")):
+            error = _ip_error(value, version, what)
+            if error:
+                self._fail(error)
+                return
 
         name = self._name.text().strip() or ipv4_m or ipv6_m
         if name.lower() in self._reserved:
