@@ -107,16 +107,16 @@ def _dns_query_ping(server: str, timeout: float = 3.0) -> str:
 
 # ── Списки zapret (list-general-user.txt и т.д.) ────────────────────────
 
-# (файл, можно ли добавлять, понятное название, пояснение)
+# (файл, понятное название, пояснение). Только свои списки пользователя
+# (*-user.txt): списки Flowseal (вкладка «Core» до 1.1.2 — ipset-exclude.txt)
+# здесь не правятся — обновление zapret всё равно вернуло бы их как были.
 LIST_FILES = [
-    ("list-general-user.txt",  True,  "Обходить",
+    ("list-general-user.txt",  "Обходить",
      "Сайты, к которым применяется обход — вдобавок к встроенным спискам."),
-    ("list-exclude-user.txt",  True,  "Не трогать",
+    ("list-exclude-user.txt",  "Не трогать",
      "Сайты, которые обход не трогает: банки, госуслуги и всё, что ломается."),
-    ("ipset-exclude-user.txt", True,  "IP-исключения",
+    ("ipset-exclude-user.txt", "IP-исключения",
      "IP-адреса и подсети (например 1.2.3.0/24), которые обход не трогает."),
-    ("ipset-exclude.txt",      False, "Core",
-     "Встроенный список IP-исключений zapret. Можно только удалять — новые добавляйте в «IP-исключения»."),
 ]
 
 CONFLICT_PAIRS = [
@@ -146,7 +146,7 @@ def _valid_list_entry(value: str) -> bool:
 
 def _display(value: str) -> str:
     """Как запись видит человек: xn--…-метки домена — обратно в буквы
-    (xn--c1aqbeec.xn--p1ai → госуслуги.рф). В файле остаётся punycode —
+    (xn--c1aapkosapc.xn--p1ai → госуслуги.рф). В файле остаётся punycode —
     так имя сайта видит winws."""
     if "xn--" not in value:
         return value
@@ -170,7 +170,7 @@ def _is_comment(line: str) -> bool:
 
 
 def _list_meta(filename: str) -> tuple:
-    return next((m for m in LIST_FILES if m[0] == filename), (filename, True, filename, ""))
+    return next((m for m in LIST_FILES if m[0] == filename), (filename, filename, ""))
 
 
 class _AddDnsDialog(QDialog):
@@ -650,7 +650,7 @@ class ParametersTab(QWidget):
         open_folder_btn.clicked.connect(self._open_lists_folder)
         actions.addWidget(open_folder_btn, alignment=Qt.AlignTop)
 
-        self._list_tabs = SegmentedControl([(f, t) for f, _, t, _ in LIST_FILES])
+        self._list_tabs = SegmentedControl([(f, t) for f, t, _ in LIST_FILES])
         self._list_tabs.changed.connect(self._on_file_select)
         body.addWidget(self._list_tabs)
 
@@ -661,6 +661,7 @@ class ParametersTab(QWidget):
         input_row.setSpacing(8)
         self._list_entry = QLineEdit()
         self._list_entry.setClearButtonEnabled(True)
+        self._list_entry.setPlaceholderText("Найти или добавить: ссылка, домен или IP")
         self._list_entry.setMinimumHeight(44)
         self._list_entry.returnPressed.connect(self._add_entries)
         self._list_entry.textChanged.connect(self._on_list_text)
@@ -705,10 +706,7 @@ class ParametersTab(QWidget):
             return
         self._list_file = filename
         self._list_tabs.set_current(filename)
-        _, allow_add, _, desc = _list_meta(filename)
-        self._btn_list_add.setVisible(allow_add)
-        self._list_entry.setPlaceholderText(
-            ("Найти или добавить: ссылка, домен или IP" if allow_add else "Поиск по списку"))
+        _, _, desc = _list_meta(filename)
         self._list_desc.setText(desc)
         self._list_entry.clear()
         self._set_list_status("")
@@ -725,9 +723,8 @@ class ParametersTab(QWidget):
         self._entries_layout.addStretch(1)          # _clear убирает и её; строки встают перед ней
         all_lines = self._read_list(self._list_file)
         query = self._query()
-        _, allow_add, _, _ = _list_meta(self._list_file)
         # Ищем и в punycode, и в буквах: «госус» — начало «госуслуги.рф»,
-        # а его punycode — не начало xn--c1aqbeec
+        # а его punycode — не начало xn--c1aapkosapc
         shown_query = _display(query)
         found = [v for v in all_lines if query in v or shown_query in _display(v)] if query else all_lines
         exact = bool(query) and query in all_lines
@@ -736,7 +733,7 @@ class ParametersTab(QWidget):
         if self._list_entry.text().strip():
             if exact:
                 self._set_list_status("Уже есть в этом списке")
-            elif query and allow_add and not found:
+            elif query and not found:
                 self._set_list_status(f"«{shown_query}» нет в списке — нажмите «Добавить»")
             else:
                 self._set_list_status("")
@@ -805,6 +802,8 @@ class ParametersTab(QWidget):
             QTimer.singleShot(0, self._fit_entries)
 
     def _on_list_text(self, _text: str) -> None:
+        if getattr(self, "_clearing_entry", False):
+            return
         self._set_list_status("")
         self._render_entries()
 
@@ -880,9 +879,6 @@ class ParametersTab(QWidget):
             return
 
         filename = self._current_list_file()
-        _, allow_add, _, _ = _list_meta(filename)
-        if not allow_add:
-            return
 
         invalid = [e for e in entries if not _valid_list_entry(e)]
         if invalid:
@@ -898,7 +894,7 @@ class ParametersTab(QWidget):
             if other:
                 conflicts = [v for v in entries if v in set(self._read_list(other))]
                 if conflicts:
-                    warnings.append(f"{_shown(conflicts)} — уже есть в «{_list_meta(other)[2]}»")
+                    warnings.append(f"{_shown(conflicts)} — уже есть в «{_list_meta(other)[1]}»")
         if warnings:
             reply = QMessageBox.question(
                 self, "FlowZap — конфликт списков",
@@ -911,9 +907,11 @@ class ParametersTab(QWidget):
         duplicates = [v for v in entries if v in current_set]
         if to_add:
             self._write_list(filename, current + to_add)
-        self._list_entry.blockSignals(True)
+        # Не blockSignals: поле само прячет свой крестик «очистить» по
+        # textChanged — с заглушёнными сигналами он оставался на пустом поле
+        self._clearing_entry = True
         self._list_entry.clear()
-        self._list_entry.blockSignals(False)
+        self._clearing_entry = False
         if to_add:
             text = f"✓ Добавлено: {_shown(to_add)}"
             if duplicates:
