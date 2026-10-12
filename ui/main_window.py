@@ -43,6 +43,9 @@ _SETTINGS_TAB = 3
 # в тот же кэш и не находило ничего нового.
 UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000
 UPDATE_CHECK_STARTUP_DELAY_MS = 3000
+# DNS, отложенный до конца проверки обновлений, включается не позже этого
+# (GitHub не отвечает — не держать пользователя без своего DNS)
+DNS_RESTORE_MAX_WAIT_MS = 10000
 
 
 def _is_admin() -> bool:
@@ -443,7 +446,15 @@ class MainWindow(QMainWindow):
         self._update_timer.timeout.connect(self._check_updates_bg)
         if not self.config.get("updater", {}).get("check_on_start", True):
             return
-        QTimer.singleShot(UPDATE_CHECK_STARTUP_DELAY_MS, self._check_updates_bg)
+        if self.dashboard.dns_restore_pending:
+            # DNS ждёт проверки (DashboardTab._restore_dns): проверяем сразу,
+            # без DNS-прокси GitHub не упирается в общий лимит запросов.
+            # Конец проверки — _releasesFetched; не дождались — включаем так.
+            self._releasesFetched.connect(lambda _releases: self.dashboard.restore_dns_now())
+            QTimer.singleShot(DNS_RESTORE_MAX_WAIT_MS, self.dashboard.restore_dns_now)
+            self._check_updates_bg()
+        else:
+            QTimer.singleShot(UPDATE_CHECK_STARTUP_DELAY_MS, self._check_updates_bg)
         self._update_timer.start(UPDATE_CHECK_INTERVAL_MS)
 
     def set_update_autocheck(self, enabled: bool) -> None:

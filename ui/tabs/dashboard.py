@@ -1556,6 +1556,7 @@ class DashboardTab(QWidget):
             self._on_refresh_ping(auto=True)
 
     def _on_dns_toggle(self) -> None:
+        self._dns_restore_pending = False   # пользователь решил сам — отложенное не включаем
         pair = dns_manager.get_active_pair(self._config)
         if not self._dns_enabled and pair is None:
             self._tile_dns.set_hint("Нет серверов — добавьте их во вкладке «Параметры»", "warning")
@@ -1654,10 +1655,35 @@ class DashboardTab(QWidget):
                 self._save_config_fn()
 
     def _restore_dns(self) -> None:
+        """При запуске: DNS был включён при выходе — включить снова. Если
+        FlowZap проверяет обновления при запуске, DNS ждёт конца проверки
+        (MainWindow зовёт restore_dns_now): через DNS-прокси GitHub часто
+        отвечает «лимит запросов» — у прокси один адрес на многих."""
+        self._dns_restore_pending = False
         if not self._restore_enabled() or not self._config.get("state", {}).get("dns"):
             return
+        if dns_manager.get_active_pair(self._config) is None:
+            return
+        self._dns_restore_pending = True
+        if self._config.get("updater", {}).get("check_on_start", True):
+            log.info("DNS был включён при выходе — включу после проверки обновлений")
+            self._tile_dns.set_hint("Включится после проверки обновлений", "accent")
+            return
+        self.restore_dns_now()
+
+    @property
+    def dns_restore_pending(self) -> bool:
+        return self._dns_restore_pending
+
+    def restore_dns_now(self) -> None:
+        """Включить отложенный DNS (MainWindow — после проверки обновлений
+        или по тайм-ауту). Повторный вызов и вызов после того, как
+        пользователь сам нажал тумблер, ничего не делают."""
+        if not getattr(self, "_dns_restore_pending", False):
+            return
+        self._dns_restore_pending = False
         pair = dns_manager.get_active_pair(self._config)
-        if pair is None:
+        if pair is None or self._dns_enabled:
             return
         log.info("Восстанавливаю DNS — был включён при выходе")
         self._sw_dns.setEnabled(False)
