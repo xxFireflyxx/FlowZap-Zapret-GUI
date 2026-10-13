@@ -412,7 +412,7 @@ class UpdatesTab(QWidget):
             # Выход через QApplication.quit() → aboutToQuit → shutdown() остановит DNS/zapret/TG Proxy.
             QTimer.singleShot(_QUIT_DELAY_MS, QApplication.quit)
         else:
-            c.set_status("Ошибка, попробуйте позже", "error")
+            c.set_status(message, "error")
             c.set_update_enabled(True)
 
     # ── Core (zapret) ────────────────────────────────────────────────────
@@ -478,7 +478,7 @@ class UpdatesTab(QWidget):
         if ok:
             c.set_status(f"✓ {message}{extra}", "ok")
         else:
-            c.set_status(f"Ошибка, попробуйте позже{extra}", "error")
+            c.set_status(f"{message}{extra}", "error")
 
     def _resume_zapret(self) -> str:
         bat, self._core_resume_bat = self._core_resume_bat, None
@@ -551,9 +551,9 @@ class UpdatesTab(QWidget):
             c.set_update_enabled(False)
         elif not self._tg_installed_version():
             c.set_not_installed(_TG_MISSING)
-            c.set_status("Ошибка, попробуйте позже", "error")
+            c.set_status(message, "error")
         else:
-            c.set_status("Ошибка, попробуйте позже", "error")
+            c.set_status(message, "error")
             c.set_update_enabled(True)
         # Возвращаем прокси и при ошибке: прежняя версия на месте, а работала она до нажатия.
         if self._tg_resume:

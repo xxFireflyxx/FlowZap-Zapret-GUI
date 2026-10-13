@@ -129,7 +129,9 @@ def build_winws_cmd(bat_path: Path, winws_exe: Path) -> Optional[tuple[list[str]
     lists_dir = zapret_dir / "lists"
     ensure_user_lists(lists_dir)
 
-    game_ports = set(game_filter_ports(zapret_dir)) - {GAME_FILTER_OFF}
+    # Свои диапазоны Flowseal — через запятую (27015,27036-27037): сравниваем по частям,
+    # как порты профилей в add_game_lists
+    game_ports = {p for ports in game_filter_ports(zapret_dir) for p in ports.split(",")} - {GAME_FILTER_OFF}
     if game_ports:
         args = add_game_lists(args, lists_dir, game_ports)
 
@@ -140,6 +142,9 @@ def build_winws_cmd(bat_path: Path, winws_exe: Path) -> Optional[tuple[list[str]
             continue
         key, val = arg.split("=", 1)
         val = val.strip('"').strip("'")
+        if not val:                     # bin_dir / "" — сама папка: «--x=» стал бы путём к bin
+            resolved.append(arg)
+            continue
         for search_dir in (bin_dir, lists_dir):
             candidate = search_dir / val
             if candidate.exists():

@@ -415,9 +415,21 @@ class TgProxyManager:
                 clients.append(names.get(client_pid, "") if client_pid is not None else "")
         return True, clients, app_running, app_path, rejected
 
-    def poll_async(self, on_done: Callable[[bool, list[str], bool, str, set[str]], None]) -> None:
-        threading.Thread(target=lambda: on_done(*self.poll_clients()),
-                         daemon=True, name="tgproxy-poll").start()
+    def poll_async(self, on_done: Callable[[bool, list[str], bool, str, set[str]], None],
+                   on_error: Optional[Callable[[], None]] = None) -> None:
+        """on_error — опрос не удался (ответа нет, но вызывающий должен
+        узнать, что опрос закончился, иначе следующий не начнётся)."""
+        def _worker() -> None:
+            try:
+                result = self.poll_clients()
+            except Exception as e:
+                logger.warning(f"TG Proxy: опрос не удался: {e}")
+                if on_error:
+                    on_error()
+                return
+            on_done(*result)
+
+        threading.Thread(target=_worker, daemon=True, name="tgproxy-poll").start()
 
     def launch_telegram(self, tray: bool = False) -> None:
         """Запустить Telegram, если он ещё не запущен: по пути, запомненному,

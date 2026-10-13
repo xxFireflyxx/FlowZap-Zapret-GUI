@@ -38,31 +38,79 @@ _CARET_RE = re.compile(r'\^')
 GAME_FILTER_OFF = "12"  # «пустой» порт, которым service.bat выключает Game Filter
 
 
-def game_filter_ports(bat_dir: Path) -> tuple[str, str]:
-    """
-    Читает utils/game_filter.enabled и возвращает (GameFilterTCP, GameFilterUDP).
-    Если файл не существует — игровой фильтр выключен, возвращает ('12', '12').
-    Логика из service.bat:
-      all  → TCP=1024-65535, UDP=1024-65535
-      tcp  → TCP=1024-65535, UDP=12
-      udp  → TCP=12,         UDP=1024-65535
-      нет  → TCP=12,         UDP=12
-    """
-    flag_file = bat_dir / "utils" / "game_filter.enabled"
-    if not flag_file.exists():
-        return "12", "12"
-    try:
-        mode = flag_file.read_text(encoding="utf-8", errors="replace").strip().lower()
-    except Exception:
-        return "12", "12"
+GAME_FILTER_MODES = ("all", "tcp", "udp")
+_GAME_RANGE_DEFAULT = "1024-65535"
+_PORT_ITEM_RE = re.compile(r"([1-9]\d{0,4})(?:-([1-9]\d{0,4}))?")
 
-    if mode == "all":
-        return "1024-65535", "1024-65535"
-    elif mode == "tcp":
-        return "1024-65535", "12"
-    elif mode == "udp":
-        return "12", "1024-65535"
-    return "12", "12"
+
+def _game_filter_file(bat_dir: Path) -> Path:
+    return bat_dir / "utils" / "game_filter.enabled"
+
+
+def _valid_port_ranges(value: str) -> bool:
+    for item in value.split(","):
+        m = _PORT_ITEM_RE.fullmatch(item)
+        if not m or int(m.group(1)) > 65535 or int(m.group(2) or 0) > 65535:
+            return False
+    return True
+
+
+def read_game_filter(bat_dir: Path) -> tuple[str, str, str]:
+    """(режим, TCP-порты, UDP-порты) из utils/game_filter.enabled так же, как
+    читает его service.bat Flowseal: старый формат — одно слово all/tcp/udp,
+    с 1.10.3 — строки mode=…, tcp=…, udp=… (свои диапазоны портов). Режим —
+    all/tcp/udp или disabled (нет файла, mode=disabled, непонятное)."""
+    mode, tcp, udp = "disabled", _GAME_RANGE_DEFAULT, _GAME_RANGE_DEFAULT
+    try:
+        text = _game_filter_file(bat_dir).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return mode, tcp, udp
+    for line in text.splitlines():
+        key, _, value = line.strip().partition("=")
+        key, value = key.strip().lower(), value.strip().replace(" ", "")
+        if key == "mode":
+            mode = value.lower()
+        elif key == "all" or (key in ("tcp", "udp") and not value):
+            mode = key
+        elif key == "tcp" and _valid_port_ranges(value):
+            tcp = value
+        elif key == "udp" and _valid_port_ranges(value):
+            udp = value
+    return (mode if mode in GAME_FILTER_MODES else "disabled"), tcp, udp
+
+
+def write_game_filter(bat_dir: Path, mode: str) -> None:
+    """Записать режим (all/tcp/udp/disabled) в формате Flowseal 1.10.3,
+    сохранив диапазоны портов из файла."""
+    _, tcp, udp = read_game_filter(bat_dir)
+    path = _game_filter_file(bat_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"mode={mode}\ntcp={tcp}\nudp={udp}\n", encoding="utf-8")
+
+
+def game_filter_ports(bat_dir: Path) -> tuple[str, str]:
+    """(GameFilterTCP, GameFilterUDP) для подстановки в пресет — как в
+    service.bat: выключенный протокол получает «пустой» порт 12."""
+    mode, tcp, udp = read_game_filter(bat_dir)
+    return (tcp if mode in ("all", "tcp") else GAME_FILTER_OFF,
+            udp if mode in ("all", "udp") else GAME_FILTER_OFF)
+
+
+def _cut_command_tail(line: str) -> str:
+    """Строка .bat до первого & или | вне кавычек: дальше идёт уже другая
+    команда («& pause», «& exit»). Не по словам: «Exit Games» в пути или
+    echo.msk.ru в списке доменов — часть аргументов."""
+    quoted = escaped = False
+    for i, c in enumerate(line):
+        if escaped:
+            escaped = False
+        elif c == '^':
+            escaped = True
+        elif c == '"':
+            quoted = not quoted
+        elif c in '&|' and not quoted:
+            return line[:i]
+    return line
 
 
 def parse_bat(bat_path: Path) -> Optional[list[str]]:
@@ -86,7 +134,7 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
     if not match:
         return None
 
-    args_raw = match.group(1).strip()
+    args_raw = _cut_command_tail(match.group(1)).strip()
 
     # Папки рядом с .bat файлом
     bat_dir   = bat_path.parent
@@ -102,9 +150,10 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
 
     # Читаем игровой фильтр и подставляем реальные значения
     game_tcp, game_udp = game_filter_ports(bat_dir)
+    game_any = game_tcp if game_tcp != GAME_FILTER_OFF else game_udp    # как %GameFilter% в service.bat
     args_raw = re.sub(r'%GameFilterTCP%', lambda m: game_tcp, args_raw, flags=re.IGNORECASE)
     args_raw = re.sub(r'%GameFilterUDP%', lambda m: game_udp, args_raw, flags=re.IGNORECASE)
-    args_raw = re.sub(r'%GameFilter%',    lambda m: game_tcp, args_raw, flags=re.IGNORECASE)
+    args_raw = re.sub(r'%GameFilter%',    lambda m: game_any, args_raw, flags=re.IGNORECASE)
 
     # Убираем оставшиеся переменные окружения вида %VAR%
     # Порядок важен: сначала ,VAR потом VAR, потом одиночные
@@ -114,9 +163,6 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
 
     # Убираем ^
     args_raw = _CARET_RE.sub('', args_raw)
-
-    # Убираем "pause", "exit", echo и подобные хвосты
-    args_raw = re.sub(r'(?i)\b(pause|exit|echo[^\n]*).*', '', args_raw)
 
     # Парсим аргументы вручную — shlex некорректно работает
     # с кириллическими путями в кавычках на Windows

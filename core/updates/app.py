@@ -14,9 +14,10 @@ from typing import Callable, Optional
 
 from core.updates import signing
 from core.updates.releases import (
-    FLOWZAP_REPO, _fetch, download_asset, get_from_gitlab, get_latest_release, latest_asset,
+    FLOWZAP_REPO, _fetch, _version_key, download_asset, get_from_gitlab, get_latest_release, latest_asset,
     run_install,
 )
+from core.version import GUI_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +399,10 @@ def download_and_install_exe(
         import sys, zipfile, io
 
         tag, asset = latest_asset(repo, find_exe_asset, "Файл для обновления", log)
+        # Сравнивала только кнопка «Проверить», а здесь релиз берётся заново:
+        # без GitHub он мог прийти с отставшего зеркала GitLab — старее текущего
+        if _version_key(tag) <= _version_key(GUI_VERSION):
+            raise ValueError(f"На сервере {tag} — не новее установленной версии {GUI_VERSION}")
 
         # Зеркало — релиз на GitLab. Если там тот же тег и файл — сверяем с GitHub.
         from_gitlab: dict = {}

@@ -387,9 +387,13 @@ def run_install(
             message = retry_without_dns(lambda: body(_log))
         except Exception as exc:
             logger.error(f"{error_label}: {exc}")
-            _log(f"✗ Ошибка: {exc}")
+            # ValueError — свои тексты для человека (подпись, место, версия,
+            # «не скачалось»); остальное (сеть, файлы) — сырое, только в лог
+            readable = isinstance(exc, ValueError) and not isinstance(exc, (json.JSONDecodeError, UnicodeError))
+            message = str(exc) if readable else "Не удалось — попробуйте позже (подробности в логе)"
+            _log(f"✗ {message}")
             if on_done:
-                on_done(False, str(exc))
+                on_done(False, message)
             return
         if on_done:
             on_done(True, message)

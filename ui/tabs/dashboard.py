@@ -58,7 +58,7 @@ from core.version import GUI_VERSION
 from ui.widgets.controls import CircleBadge, FieldButton, StatusDot, Switch
 from ui.widgets.layout import Page
 from ui.widgets.popup import make_popup, show_popup_below
-from core.zapret.presets import list_presets
+from core.zapret.presets import GAME_FILTER_MODES, list_presets, read_game_filter, write_game_filter
 from core.zapret.preset_checker import MAIN_SERVICES, PresetPingManager, PingStatus
 from core.zapret.manager import ServiceState
 from core.updates.zapret import download_and_install_core
@@ -766,7 +766,7 @@ class DashboardTab(QWidget):
     _managerStateChanged = Signal(object)        # ServiceState — может прийти из watcher-потока
     _coreInstallProgress = Signal(str)
     _coreInstallDone     = Signal(bool, str)
-    _dnsToggleDone       = Signal(bool, str)     # (ok, error) — из dns_manager.apply_dns_async
+    _dnsToggleDone       = Signal(bool, bool, str)   # (enable, ok, error) — из dns_manager.apply_dns_async
     _dnsRestoreFailed    = Signal(str)           # после обрыва связи со службой DNS не включился
     _tgProxyDone         = Signal(bool, str)     # (running, error) — из TgProxyManager.*_async
     _tgPolled            = Signal(int, bool, object, bool, str, object)  # (поколение, жив, клиенты, Telegram запущен, его exe, кому отказ)
@@ -825,6 +825,10 @@ class DashboardTab(QWidget):
         # собственным сбросом DNS при выходе (см. shutdown()).
         self._dns_toggle_event = threading.Event()
         self._dns_toggle_event.set()
+        # DNS меняется строго по одной операции: вторая параллельно могла бы
+        # выполниться службой раньше первой — плитка показала бы не то
+        self._dns_busy = False
+        self._dns_reapply_pending = False   # пару сменили во время операции — применить после
 
         self._tgProxyDone.connect(self._on_tg_proxy_done)
         self._tgPolled.connect(self._on_tg_polled)
@@ -1449,21 +1453,11 @@ class DashboardTab(QWidget):
 
     # ── Game Filter ──────────────────────────────────
 
-    def _game_filter_flag_file(self) -> Path:
-        return self._zapret_dir / "utils" / "game_filter.enabled"
-
     def _init_game_filter_state(self) -> None:
-        self._game_filter_mode = "all"
-        self._game_filter_enabled = False
-        flag_file = self._game_filter_flag_file()
-        try:
-            if flag_file.exists():
-                content = flag_file.read_text(encoding="utf-8", errors="replace").strip().lower()
-                if content in ("tcp", "udp", "all"):
-                    self._game_filter_mode = content
-                self._game_filter_enabled = True
-        except Exception as exc:
-            log.warning(f"Не удалось прочитать game_filter.enabled: {exc}")
+        # Тот же файл, что у service.bat Flowseal: режим могли поменять и там
+        mode = read_game_filter(self._zapret_dir)[0]
+        self._game_filter_enabled = mode in GAME_FILTER_MODES
+        self._game_filter_mode = mode if self._game_filter_enabled else "all"
 
     def _refresh_game_filter_ui(self) -> None:
         mode = {"tcp": "TCP", "udp": "UDP", "all": "TCP и UDP"}[self._game_filter_mode]
@@ -1472,21 +1466,15 @@ class DashboardTab(QWidget):
         self._refresh_zapret_tile()
 
     def _apply_game_filter_state(self) -> None:
-        """Записать/удалить utils/game_filter.enabled под текущее состояние
-        и, если zapret уже запущен, перезапустить его — аргументы winws.exe
-        фиксируются при старте процесса и на лету не подхватятся (та же
-        логика, что и при смене DNS в старом коде)."""
-        flag_file = self._game_filter_flag_file()
+        """Записать режим в utils/game_filter.enabled и, если zapret уже
+        запущен, перезапустить его — аргументы winws.exe фиксируются при
+        старте процесса и на лету не подхватятся."""
         try:
-            flag_file.parent.mkdir(parents=True, exist_ok=True)
-            if self._game_filter_enabled:
-                flag_file.write_text(self._game_filter_mode, encoding="utf-8")
-            elif flag_file.exists():
-                flag_file.unlink()
-        except Exception as exc:
+            write_game_filter(self._zapret_dir, self._game_filter_mode if self._game_filter_enabled else "disabled")
+        except OSError as exc:
             log.error(f"Не удалось обновить game_filter.enabled: {exc}")
             self._set_message(f"Ошибка Game Filter: {exc}", "error")
-            self._game_filter_enabled = flag_file.exists()
+            self._init_game_filter_state()
             self._refresh_game_filter_ui()
             return
 
@@ -1591,20 +1579,25 @@ class DashboardTab(QWidget):
         нужно только shutdown()'у, чтобы не гонять netsh параллельно со своим
         сбросом DNS при быстром выходе сразу после включения/выключения."""
         self._dns_toggle_event.clear()
+        self._dns_busy = True
 
         def _on_done(ok: bool, err: str) -> None:
             self._dns_toggle_event.set()
-            self._dnsToggleDone.emit(ok, err if not ok else "")
+            self._dnsToggleDone.emit(enable, ok, err if not ok else "")
 
         # user — нажал сам: без фоновой службы можно показать окно её установки
         dns_manager.apply_dns_async(enable=enable, pair=pair, on_done=_on_done,
                                     allow_install=user, engine_dir=self._zapret_dir / "bin")
 
-    def _on_dns_toggle_done(self, ok: bool, error: str) -> None:
+    def _on_dns_toggle_done(self, enable: bool, ok: bool, error: str) -> None:
+        self._dns_busy = False
         self._sw_dns.setEnabled(True)
+        # По цели операции, а не «перевернуть»: не включился — выключен,
+        # не выключился — включён
+        self._dns_enabled = enable if ok else not enable
 
         if not ok:
-            self._dns_enabled = not self._dns_enabled  # откат
+            self._dns_reapply_pending = False   # новая пара применится при следующем включении
             self._refresh_dns_button_style()
             self._tile_dns.set_hint(f"Не удалось: {error}", "error")
             self._tile_dns.set_error(True)  # как у обхода: тряска и красная плитка
@@ -1612,6 +1605,9 @@ class DashboardTab(QWidget):
 
         self._remember_state("dns", self._dns_enabled)
         self._refresh_dns_button_style()
+        if self._dns_reapply_pending:
+            self._dns_reapply_pending = False
+            self.on_dns_changed()
 
     def _on_dns_restore_failed(self, error: str) -> None:
         """Связь со службой обрывалась (она сбросила DNS), и включить его
@@ -1724,6 +1720,9 @@ class DashboardTab(QWidget):
         выбрал другую активную DNS-пару. Если DNS сейчас включён —
         переприменяем новую пару немедленно; если выключен — только
         обновляем подпись, новая пара применится сама при следующем включении."""
+        if self._dns_busy:
+            self._dns_reapply_pending = True
+            return
         if not self._dns_enabled:
             self._refresh_dns_button_style()
             return
@@ -1858,7 +1857,9 @@ class DashboardTab(QWidget):
         self._tg_polling = True
         gen = self._tg_gen
         self._tg.poll_async(lambda alive, clients, app, path, rejected:
-                            self._tgPolled.emit(gen, alive, clients, app, path, rejected))
+                            self._tgPolled.emit(gen, alive, clients, app, path, rejected),
+                            # Устаревшее поколение: слот только снимет _tg_polling
+                            on_error=lambda: self._tgPolled.emit(-1, False, [], False, "", set()))
 
     def _on_tg_polled(self, gen: int, alive: bool, clients: list, app_running: bool, app_path: str,
                       rejected: set) -> None:

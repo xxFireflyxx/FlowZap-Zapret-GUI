@@ -134,14 +134,18 @@ def _valid_ip_entry(value: str) -> bool:
     """IPv4/IPv6 или подсеть. Не регулярка «цифры через точку»: 999.1.1.1
     проходил, а с таким адресом в списке winws может не запуститься."""
     try:
-        ipaddress.ip_network(value, strict=False)
-        return True
+        network = ipaddress.ip_network(value, strict=False)
     except ValueError:
         return False
+    return network.prefixlen > 0        # /0 — весь интернет: в исключениях обход выключился бы целиком
 
 
-def _valid_list_entry(value: str) -> bool:
-    return bool(_RE_LIST_DOMAIN.match(value)) or _valid_ip_entry(value)
+def _valid_list_entry(filename: str, value: str) -> bool:
+    """ipset-* winws сверяет с IP-адресом, остальные списки — с именем сайта:
+    домен в IP-исключениях (и IP в списке сайтов) ни на что бы не влиял."""
+    if filename.startswith("ipset"):
+        return _valid_ip_entry(value)
+    return bool(_RE_LIST_DOMAIN.match(value))
 
 
 def _display(value: str) -> str:
@@ -429,7 +433,9 @@ class ParametersTab(QWidget):
         # Path(x) всегда truthy (даже Path("")), поэтому `Path(...) or Path(...)`
         # никогда не уходил на запасной вариант — or применяем к строке ДО Path().
         _app_dir = Path(self._config.get("_app_dir") or Path(__file__).resolve().parents[2])
-        self._lists_dir: Path = _app_dir / "zapret" / "lists"
+        # Та же папка zapret, что у главной (zapret.presets_dir), — иначе правки
+        # списков не доходили бы до winws, если папка задана не по умолчанию
+        self._lists_dir: Path = _app_dir / self._config.get("zapret", {}).get("presets_dir", "zapret") / "lists"
 
         self._pingUpdated.connect(self._on_ping_updated)
 
@@ -831,7 +837,10 @@ class ParametersTab(QWidget):
             v = v.lower()
             if v.startswith("www."):
                 v = v[4:]
-            v = v.split("/")[0]
+            if "/" in v and _valid_ip_entry(v):
+                v = str(ipaddress.ip_network(v, strict=False))     # подсеть: 1.2.3.4/24 → 1.2.3.0/24
+            else:
+                v = v.split("/")[0]                                 # ссылка: site.com/page → site.com
             if not v.isascii():
                 # госуслуги.рф → xn--…: в таком виде имя сайта видит winws
                 try:
@@ -880,9 +889,10 @@ class ParametersTab(QWidget):
 
         filename = self._current_list_file()
 
-        invalid = [e for e in entries if not _valid_list_entry(e)]
+        invalid = [e for e in entries if not _valid_list_entry(filename, e)]
         if invalid:
-            self._set_list_status(f"Некорректный формат: {_shown(invalid)} — нужен домен или IP.", "error")
+            need = "IP-адрес или подсеть" if filename.startswith("ipset") else "домен сайта"
+            self._set_list_status(f"Некорректный формат: {_shown(invalid)} — здесь нужен {need}.", "error")
             return
 
         current = self._read_list(filename)

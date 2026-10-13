@@ -117,18 +117,38 @@ class MainWindow(QMainWindow):
     def save_config(self) -> None:
         if not self.config_path:
             return
+        if self.config.get("_config_readonly"):
+            # При запуске config.toml не прочитался — настройки по умолчанию
+            # затёрли бы настоящие (см. load_config в main.py)
+            logging.getLogger(__name__).warning("config.toml не сохранён: при запуске он не прочитался")
+            return
+        import os
+        import time
+        import tomli_w
+        data = {k: v for k, v in self.config.items() if not k.startswith("_")}
+        # Через временный файл: выключение или падение посреди записи не
+        # оставит обрезанный config.toml (с ним пропали бы все настройки)
+        tmp = self.config_path.with_name(self.config_path.name + ".tmp")
         try:
-            import os
-            import tomli_w
-            data = {k: v for k, v in self.config.items() if not k.startswith("_")}
-            # Через временный файл: выключение или падение посреди записи не
-            # оставит обрезанный config.toml (с ним пропали бы все настройки)
-            tmp = self.config_path.with_name(self.config_path.name + ".tmp")
             with open(tmp, "wb") as f:
                 tomli_w.dump(data, f)
-            os.replace(tmp, self.config_path)
+                f.flush()
+                os.fsync(f.fileno())
+            # Антивирус, редактор или синхронизация могут на миг держать файл
+            for attempt in range(4):
+                try:
+                    os.replace(tmp, self.config_path)
+                    return
+                except PermissionError:
+                    if attempt == 3:
+                        raise
+                    time.sleep(0.15)
         except Exception:
             logging.getLogger(__name__).exception("Ошибка сохранения конфига")
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     def start_announcements_fetch(self) -> None:
         """Объявления и исправления автора — в фоне при запуске

@@ -196,13 +196,45 @@ def _acquire_single_instance() -> "QTcpServer | None":
     return None
 
 
+_ZAPRET_DIR_DEFAULT = "zapret"
+_WINWS_DEFAULT = str(Path("zapret") / "bin" / "winws.exe")
+
+
+def _portable_path(value, default: str) -> str:
+    """Путь из config.toml — относительно папки FlowZap. До 1.1.2 туда писался
+    полный путь к своей же папке, и после переноса FlowZap он вёл в старое
+    место. Полный путь, который кончается так же, как путь по умолчанию, —
+    тот самый, заменяем; другой полный путь — чей-то свой выбор, оставляем."""
+    path = Path(str(value or default))
+    tail = Path(default).parts
+    if path.is_absolute() and [p.lower() for p in path.parts[-len(tail):]] == [p.lower() for p in tail]:
+        return default
+    return str(path)
+
+
+def _read_config_file(config_path: Path) -> dict:
+    """Антивирус или синхронизация могут на миг держать config.toml —
+    несколько попыток, а не сразу настройки по умолчанию."""
+    for attempt in range(5):
+        try:
+            with open(config_path, "rb") as f:
+                return tomllib.load(f)
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            if attempt == 4:
+                raise
+            time.sleep(0.2)
+    return {}
+
+
 def load_config(config_path: Path) -> dict:
     from core.dns.builtin import apply_builtin_dns
     from ui.theme import DEFAULT_THEME     # без Qt — модуль только с цветами
     defaults = {
         "zapret": {
-            "exe_path": str(ROOT / "zapret" / "bin" / "winws.exe"),
-            "presets_dir": str(ROOT / "zapret"),
+            "exe_path": _WINWS_DEFAULT,
+            "presets_dir": _ZAPRET_DIR_DEFAULT,
             "last_preset": "general",
             "args": [],
             "autostart": False,
@@ -212,18 +244,21 @@ def load_config(config_path: Path) -> dict:
         "dns": {"pairs": []},
     }
     try:
-        user_cfg = {}
-        if config_path.exists():
-            with open(config_path, "rb") as f:
-                user_cfg = tomllib.load(f)
+        user_cfg = _read_config_file(config_path)
         for section, values in user_cfg.items():
-            if section in defaults and isinstance(values, dict):
-                defaults[section].update(values)
-            else:
+            if section not in defaults:
                 defaults[section] = values
+            elif isinstance(values, dict):
+                defaults[section].update(values)
+            # иначе опечатка при ручной правке (zapret = 1) — раздел по умолчанию
         # dns.servers — формат до списка пар; адреса из него были адресами
         # xbox-dns, а он теперь встроенный — ключ просто убираем
         defaults.get("dns", {}).pop("servers", None)
+    except OSError as exc:
+        # Файл есть, но не читается — не затирать его настройками по умолчанию
+        defaults["_config_readonly"] = True
+        logging.getLogger(__name__).error(f"config.toml не читается: {exc} — FlowZap запущен с настройками "
+                                          "по умолчанию и не будет сохранять их до перезапуска")
     except Exception as exc:
         # Дальше FlowZap работает с настройками по умолчанию и при первом
         # сохранении перезапишет файл — испорченный (обрезан, опечатка после
@@ -235,8 +270,12 @@ def load_config(config_path: Path) -> dict:
             note = f" — файл сохранён как {backup.name}, FlowZap начал с настроек по умолчанию"
             defaults["_config_broken"] = backup.name
         except OSError:
-            note = ""
+            note = " — отложить его не вышло, FlowZap не будет сохранять настройки до перезапуска"
+            defaults["_config_readonly"] = True
         logging.getLogger(__name__).error(f"Ошибка чтения config.toml: {exc}{note}")
+    zapret_cfg = defaults["zapret"]
+    zapret_cfg["presets_dir"] = _portable_path(zapret_cfg.get("presets_dir"), _ZAPRET_DIR_DEFAULT)
+    zapret_cfg["exe_path"] = _portable_path(zapret_cfg.get("exe_path"), _WINWS_DEFAULT)
     # Встроенные DNS прописаны в приложении (core/dns/builtin.py): пропавшие
     # возвращаются, новые из этой версии добавляются, удалённые — убираются
     apply_builtin_dns(defaults)
