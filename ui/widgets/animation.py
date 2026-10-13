@@ -10,8 +10,8 @@ import math
 import time
 
 from PySide6.QtCore import (
-    QEasingCurve, QEvent, QPoint, QPointF, QRectF, QSequentialAnimationGroup, QSize, Qt, QTimer,
-    QVariantAnimation,
+    QAbstractAnimation, QEasingCurve, QEvent, QPoint, QPointF, QRectF, QSequentialAnimationGroup, QSize, Qt,
+    QTimer, QVariantAnimation,
 )
 from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QFrame, QGraphicsEffect, QWidget
@@ -227,6 +227,8 @@ class _RiseEffect(QGraphicsEffect):
         return QRectF(rect).adjusted(0, -1, 0, self.LIFT + 1)
 
     def draw(self, painter) -> None:
+        if self._t <= 0.0:
+            return          # блок ещё спрятан (заставка) — снимок раз в 200 мс ни к чему
         if self._t >= 1.0:
             self.drawSource(painter)
             return
@@ -353,6 +355,16 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
     медленнее и с большей высоты (приветствие). Повторный вызов прерывает
     предыдущий."""
     if not theme.animations:
+        # Анимации выключили, пока блоки были спрятаны cascade_hide, —
+        # снять прозрачный эффект, иначе блоки так и остались бы невидимыми
+        for w in (w for step in steps for w in step):
+            if getattr(w, "_fz_rise_effect", None) is not None and not getattr(w, "_fz_fading", False):
+                old = getattr(w, "_fz_rise", None)
+                w._fz_rise = None
+                if old is not None:
+                    old.stop()
+                w.setGraphicsEffect(None)
+                w._fz_rise_effect = None
         return
     for i, w in ((i, w) for i, step in enumerate(steps) for w in step):
         if getattr(w, "_fz_fading", False):
@@ -382,7 +394,9 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
 
         group.finished.connect(_done)
         w._fz_rise = group
-        group.start()
+        # Удалить после остановки: иначе на каждую смену вкладки по группе
+        # анимаций на блок копились бы весь сеанс
+        group.start(QAbstractAnimation.DeleteWhenStopped)
 
 
 def cascade_settle_ms(steps: int, first_delay_ms: int, step_ms: int, duration_ms: int) -> int:
@@ -525,6 +539,12 @@ class CheckProgress(QWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
+        # Своим таймером, а не singleShot: новая проверка сразу после прошлой
+        # отменяет его — иначе прятала бы полосу посреди новой
+        self._hide_timer = QTimer(self)
+        self._hide_timer.setSingleShot(True)
+        self._hide_timer.setInterval(400)
+        self._hide_timer.timeout.connect(self.stop)
         self.hide()
 
     def start(self, total: int) -> None:
@@ -532,13 +552,17 @@ class CheckProgress(QWidget):
         self._done = 0
         self._shown = 0.0
         self._t0 = self._last = time.monotonic()
+        self._hide_timer.stop()
         self.show()
-        self._timer.start()
+        if theme.animations:        # без анимаций полоса стоит — кадры не нужны
+            self._timer.start()
         self.update()
 
     def set_done(self, done: int) -> None:
         """Сколько пресетов уже проверено (0…N); сейчас идёт пресет done+1."""
         self._done = max(self._done, min(done, self._total))
+        if not self._timer.isActive():
+            self.update()
 
     def finish(self) -> None:
         self._done = self._total
@@ -560,7 +584,7 @@ class CheckProgress(QWidget):
             self._shown = min(cap, self._shown + dt / (self.STEP_SEC * self._total))
         if self._done >= self._total and self._shown >= 0.999:
             self._timer.stop()
-            QTimer.singleShot(400, self.stop)
+            self._hide_timer.start()
         self.update()
 
     def paintEvent(self, _event) -> None:

@@ -15,10 +15,13 @@ import threading
 from pathlib import Path
 from typing import Callable
 
+from core.system.winproc import system_exe
+
 
 def _ps_quote(value) -> str:
-    """Значение для одинарных кавычек PowerShell: ' удваивается."""
-    return str(value).replace("'", "''")
+    """Значение для одинарных кавычек PowerShell. Кавычкой PowerShell считает
+    не только ', но и ‘ ’ ‚ ‛ (D:\\Dima’s\\FlowZap) — удваиваются все."""
+    return "".join(c * 2 if c in "'\u2018\u2019\u201a\u201b" else c for c in str(value))
 
 
 def create_desktop_shortcut(app_dir: Path) -> None:
@@ -36,7 +39,7 @@ def create_desktop_shortcut(app_dir: Path) -> None:
         script += f"$s.IconLocation='{_ps_quote(icon_path)}';"
     script += "$s.Save()"
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", script],
+        [system_exe("powershell.exe"), "-NoProfile", "-Command", script],
         capture_output=True, text=True, timeout=10,
         encoding="cp866", errors="replace",
         creationflags=subprocess.CREATE_NO_WINDOW,

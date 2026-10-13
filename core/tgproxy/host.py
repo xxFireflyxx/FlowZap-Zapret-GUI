@@ -78,6 +78,17 @@ def probe(src: Path, timeout: float = 60) -> dict:
 
 # ── Сторона скрытого процесса ────────────────────────────────────────────
 
+def _own_source(src: Path) -> bool:
+    """Только tgproxy/src и src.new своей папки: иначе «FlowZap.exe --tgproxy
+    --src <любая папка>» выполнял бы чужой Python-код от имени FlowZap."""
+    root = Path(self_command()[-1]).resolve().parent
+    allowed = {(root / "tgproxy" / name).resolve() for name in ("src", "src.new")}
+    try:
+        return src.resolve() in allowed
+    except OSError:
+        return False
+
+
 def run(argv: list[str]) -> int:
     """Точка входа скрытого процесса; argv — sys.argv[1:]."""
     mode, own, rest = argv[0], {}, []
@@ -94,7 +105,7 @@ def run(argv: list[str]) -> int:
     sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
     src = own.get("--src", "")
-    if not src or not (Path(src) / "proxy").is_dir():
+    if not src or not (Path(src) / "proxy").is_dir() or not _own_source(Path(src)):
         return 2
     sys.path.insert(0, src)
 

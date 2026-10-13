@@ -12,6 +12,7 @@ setStyleSheet(f"color: {p.error}") им ставят динамические с
 theme.palette в paintEvent и тоже обновляются автоматически.
 """
 
+import colorsys
 from dataclasses import dataclass
 from typing import Dict
 
@@ -51,11 +52,27 @@ def readable(fg: str, bg: str, toward: str, minimum: float = 4.5) -> str:
     return toward
 
 
+def deepen(fg: str, bg: str, minimum: float = 3.0) -> str:
+    """Акцент для ссылок и значков: тот же оттенок, только темнее (на тёмном
+    фоне — светлее), пока не станет заметным. Не readable(): смесь с цветом
+    текста делала персиковый коричневым — тема теряла свой цвет. 3:1 —
+    порог для значков и полужирных ссылок."""
+    r, g, b = (int(fg[i:i + 2], 16) / 255 for i in (1, 3, 5))
+    h, light, s = colorsys.rgb_to_hls(r, g, b)
+    darker = _contrast("#000000", bg) > _contrast("#ffffff", bg)
+    c = fg
+    for step in range(51):
+        lv = light * (1 - step / 50) if darker else light + (1 - light) * step / 50
+        c = "#" + "".join(f"{round(x * 255):02x}" for x in colorsys.hls_to_rgb(h, lv, s))
+        if _contrast(c, bg) >= minimum:
+            break
+    return c
+
+
 @dataclass(frozen=True)
 class Palette:
     is_dark:        bool
     bg_root:        str     # фон окна
-    bg_sidebar:     str
     bg_card:        str
     bg_input:       str     # поля ввода, вторичные кнопки
     bg_hover:       str
@@ -76,6 +93,9 @@ class Palette:
     aurora:         tuple = ()
     aurora_alpha:   float = 0.0     # сила сияния; 0 — обычная (0.34 тёмные / 0.5 светлые)
     card_alpha:     float = 0.82    # непрозрачность карточек поверх сияния
+    # Оттенок акцента у обычных кнопок (главные — сплошной акцент): тема видна
+    # не только на главной. 0 — обычный (0.18 светлые / 0.20 тёмные)
+    button_tint:    float = 0.0
 
     # Производные «мягкие» цвета — фон плашек и подсветок.
     @property
@@ -100,10 +120,6 @@ class Palette:
         полоски (bg_input), а не карточки: иначе в «Персиковой» он мятный."""
         return _mix(self.bg_input, self.accent, 0.20 if self.is_dark else 0.16)
 
-    @property
-    def info(self) -> str:
-        return self.accent
-
 
 @dataclass(frozen=True)
 class Typography:
@@ -114,19 +130,15 @@ class Typography:
     size_sm:     int = 13
     size_md:     int = 14
     size_lg:     int = 16
-    size_xl:     int = 20
     size_xxl:    int = 24
 
 
 @dataclass(frozen=True)
 class Metrics:
-    sidebar_width:    int = 220
     corner_radius:    int = 16    # карточки, плитки
     corner_radius_sm: int = 8     # кнопки, поля
-    padding_sm:       int = 8
     padding_md:       int = 16
     padding_lg:       int = 28
-    nav_item_height:  int = 40
     button_height:    int = 34
     content_max_width: int = 1120
 
@@ -135,7 +147,7 @@ THEMES: Dict[str, Palette] = {
     # Нейтральная светлая — тема по умолчанию: белые карточки, синий акцент.
     "light": Palette(
         is_dark=False,
-        bg_root="#f3f4f6",      bg_sidebar="#fbfbfc",
+        bg_root="#f3f4f6",
         bg_card="#ffffff",      bg_input="#f2f3f5",
         bg_hover="#e9ebef",
         border="#e2e5ea",       border_strong="#cfd4db",
@@ -157,7 +169,7 @@ THEMES: Dict[str, Palette] = {
     # интерфейса он выглядел тускло, а песочный акцент на нём терялся.
     "dark": Palette(
         is_dark=True,
-        bg_root="#1f1d1a",      bg_sidebar="#2e2a25",
+        bg_root="#1f1d1a",
         bg_card="#2e2a25",      bg_input="#26231f",
         bg_hover="#3a352f",
         border="#3f3a33",       border_strong="#51493f",
@@ -171,7 +183,7 @@ THEMES: Dict[str, Palette] = {
     ),
     "carbon": Palette(
         is_dark=True,
-        bg_root="#161616",      bg_sidebar="#1e1e1e",
+        bg_root="#161616",
         bg_card="#1e1e1e",      bg_input="#262626",
         bg_hover="#2a2a2a",
         border="#2e2e2e",       border_strong="#3a3a3a",
@@ -187,7 +199,7 @@ THEMES: Dict[str, Palette] = {
     # изумруд); текст и статусы — из v0.5.x.
     "earthy": Palette(
         is_dark=False,
-        bg_root="#f8f3ea",      bg_sidebar="#f0e8da",
+        bg_root="#f8f3ea",
         bg_card="#f0e8da",      bg_input="#faf6ef",
         bg_hover="#e8dfcf",
         border="#e2d8c6",       border_strong="#d3c7b2",
@@ -202,7 +214,7 @@ THEMES: Dict[str, Palette] = {
     ),
     "peach": Palette(
         is_dark=False,
-        bg_root="#fcf9ea",      bg_sidebar="#badfdb",
+        bg_root="#fcf9ea",
         bg_card="#badfdb",      bg_input="#fcf9ea",
         bg_hover="#a8d4cf",
         border="#9ecfca",       border_strong="#86c2bc",
@@ -214,10 +226,11 @@ THEMES: Dict[str, Palette] = {
         error="#c05040",
         aurora=("#ff8a65", "#a78bdb", "#6fb7ef"),     # коралл, сирень, небо — мятное сливалось с карточками
         aurora_alpha=0.55,
+        button_tint=0.32,           # кремовые кнопки на мятном — тема выглядела мятной
     ),
     "neon": Palette(
         is_dark=True,
-        bg_root="#07080f",      bg_sidebar="#0a0c17",
+        bg_root="#07080f",
         bg_card="#0d0f1c",      bg_input="#121528",
         bg_hover="#1a1e38",
         border="#1b1f38",       border_strong="#2a2f52",
@@ -256,15 +269,20 @@ def _rgba(color: str, alpha: float) -> str:
 
 def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False) -> str:
     """Общий QSS приложения. Словарь свойств, которые понимают виджеты:
-      QLabel[role]     — title / subtitle / section / caption / muted / hint / pill / dot
+      QLabel[role]     — title / subtitle / section / caption / muted / hint / pill / chip / …
       [tone]           — success / warning / error / accent / muted (цвет текста; у pill — и фон)
-      QPushButton[variant] — primary / danger / ghost / segment; [size="lg"] — крупная
-      QFrame#card / #divider / #sidebar / #popup / #segmented / #tile[active]
-    После смены свойства на лету — ui.widgets.restyle(widget)."""
+      QPushButton[variant] — primary / ghost / link / segment
+      QFrame#card / #divider / #popup / #segmented / #tile[active]
+    После смены свойства на лету — ui.widgets.base.restyle(widget)."""
     r, rs = m.corner_radius, m.corner_radius_sm
     # С сиянием фон окна рисует ui/widgets/aurora.AuroraBackground, страницы прозрачны,
     # а карточки чуть просвечивают — шары видно и сквозь них, не только в зазорах.
     card_bg = _rgba(p.bg_card, p.card_alpha) if aurora else p.bg_card
+    tint = p.button_tint or (0.20 if p.is_dark else 0.18)
+    btn_bg = _mix(p.bg_input, p.accent, tint)
+    btn_hover = _mix(p.bg_input, p.accent, tint + 0.10)
+    btn_pressed = _mix(p.bg_input, p.accent, tint + 0.18)
+    btn_border = _mix(p.bg_input, p.accent, max(0.45, tint + 0.15))
     tile_on = _mix(p.bg_card, p.accent, 0.12 if p.is_dark else 0.07)
     tile_on_bg = _rgba(tile_on, max(0.85, p.card_alpha)) if aurora else tile_on
     return f"""
@@ -336,13 +354,6 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
         max-height: 1px;
         min-height: 1px;
     }}
-    QFrame#iconBadge {{
-        background-color: {p.bg_input};
-        border-radius: 10px;
-    }}
-    QFrame#iconBadge[active="true"] {{
-        background-color: {p.accent_soft};
-    }}
 
     /* ── Текст ── */
     QLabel {{ background: transparent; }}
@@ -355,7 +366,6 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     QLabel[role="hint"]     {{ font-size: {t.size_xs}px; color: {p.text_muted}; }}
     QLabel[role="status"]   {{ font-size: 22px; font-weight: 600; }}
     QLabel[role="value"]    {{ font-size: 17px; font-weight: 600; }}
-    QLabel[role="dot"]      {{ font-size: 10px; color: {p.text_muted}; }}
     QLabel[role="glyph"]    {{ font-family: '{t.family_icon}'; font-size: 13px; color: {p.text_muted}; }}
     QLabel[role="pill"] {{
         font-size: {t.size_xs}px; font-weight: 600;
@@ -388,20 +398,18 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
         border-radius: 7px; padding: 3px 9px;
     }}
 
-    QLabel a {{ color: {p.accent}; }}
-
     /* ── Кнопки ── */
     QPushButton {{
-        background-color: {p.bg_input};
+        background-color: {btn_bg};
         color: {p.text_primary};
-        border: 1px solid {p.border};
+        border: 1px solid {btn_border};
         border-radius: {rs}px;
         padding: 0 14px;
         min-height: {m.button_height}px;
         font-weight: 600;
     }}
-    QPushButton:hover   {{ background-color: {p.bg_hover}; border-color: {p.border_strong}; }}
-    QPushButton:pressed {{ background-color: {p.border}; }}
+    QPushButton:hover   {{ background-color: {btn_hover}; border-color: {btn_border}; }}
+    QPushButton:pressed {{ background-color: {btn_pressed}; }}
     QPushButton:disabled {{ color: {p.text_muted}; background-color: {p.bg_input}; border-color: {p.border}; }}
 
     QPushButton[variant="primary"] {{
@@ -411,10 +419,6 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     QPushButton[variant="primary"]:disabled {{
         background-color: {p.bg_hover}; color: {p.text_muted}; border-color: {p.bg_hover};
     }}
-    QPushButton[variant="danger"] {{
-        background-color: {p.error_soft}; color: {p.error}; border: 1px solid {p.error_soft};
-    }}
-    QPushButton[variant="danger"]:hover {{ border-color: {p.error}; }}
     QPushButton[variant="ghost"] {{
         background: transparent; border: 1px solid transparent; color: {p.text_secondary};
         padding: 0 10px;
@@ -422,13 +426,10 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     QPushButton[variant="ghost"]:hover {{ background-color: {p.bg_hover}; color: {p.text_primary}; }}
     QPushButton[variant="ghost"]:disabled {{ background: transparent; color: {p.text_muted}; }}
     QPushButton[variant="link"] {{
-        background: transparent; border: 1px solid transparent; color: {p.accent};
+        background: transparent; border: 1px solid transparent; color: {deepen(p.accent, p.bg_card)};
         padding: 0 10px;
     }}
     QPushButton[variant="link"]:hover {{ background-color: {p.accent_soft}; }}
-    QPushButton[size="lg"] {{
-        min-height: 46px; border-radius: 10px; padding: 0 26px; font-size: {t.size_lg}px;
-    }}
 
     /* Сегментированный переключатель */
     QFrame#segmented {{
@@ -450,7 +451,7 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     QPushButton[variant="segment"]:disabled {{ color: {p.text_muted}; }}
 
     /* ── Поля ввода ── */
-    QLineEdit, QComboBox {{
+    QLineEdit {{
         background-color: {p.bg_input};
         border: 1px solid {p.border};
         border-radius: {rs}px;
@@ -459,8 +460,8 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
         selection-background-color: {p.accent};
         selection-color: {p.accent_text};
     }}
-    QLineEdit:hover, QComboBox:hover {{ border-color: {p.border_strong}; }}
-    QLineEdit:focus, QComboBox:focus {{ border-color: {p.accent}; }}
+    QLineEdit:hover {{ border-color: {p.border_strong}; }}
+    QLineEdit:focus {{ border-color: {p.accent}; }}
     QLineEdit[readOnly="true"] {{ color: {p.text_secondary}; }}
     QLineEdit[error="true"] {{ border: 1px solid {p.error}; }}
     QPlainTextEdit {{
@@ -471,16 +472,6 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
         color: {p.text_secondary};
         selection-background-color: {p.accent};
         selection-color: {p.accent_text};
-    }}
-    QComboBox::drop-down {{ border: none; width: 30px; }}
-    QComboBox::down-arrow {{ image: none; width: 0; height: 0; }}
-    QComboBox QAbstractItemView {{
-        background-color: {p.bg_card};
-        border: 1px solid {p.border_strong};
-        border-radius: {rs}px;
-        padding: 4px;
-        selection-background-color: {p.accent_soft};
-        selection-color: {p.text_primary};
     }}
 
     /* ── Поп-апы и списки ── */
@@ -500,17 +491,6 @@ def build_stylesheet(p: Palette, t: Typography, m: Metrics, aurora: bool = False
     }}
     QListWidget::item:hover    {{ background-color: {p.bg_hover}; }}
     QListWidget::item:selected {{ background-color: {p.accent_soft}; color: {p.text_primary}; }}
-
-    QFrame#dnsRow {{
-        background-color: transparent;
-        border: 1px solid {p.border};
-        border-radius: 10px;
-    }}
-    QFrame#dnsRow:hover {{ background-color: {p.bg_hover}; }}
-    QFrame#dnsRow[active="true"] {{
-        background-color: {p.accent_soft};
-        border-color: {p.accent};
-    }}
 
     QToolTip {{
         background-color: {p.bg_card};
@@ -567,7 +547,11 @@ class Theme:
         from PySide6.QtGui import QColor, QPalette
 
         p = self.palette
-        app.setStyle("Fusion")
+        # Один раз: setStyle создаёт стиль заново и полирует все виджеты. По имени
+        # не узнать — с QSS app.style() отдаёт обёртку без имени
+        if not getattr(self, "_fusion_set", False):
+            app.setStyle("Fusion")
+            self._fusion_set = True
         pal = QPalette()
         pal.setColor(QPalette.Window, QColor(p.bg_root))
         pal.setColor(QPalette.WindowText, QColor(p.text_primary))
@@ -581,7 +565,7 @@ class Theme:
         pal.setColor(QPalette.ToolTipBase, QColor(p.bg_card))
         pal.setColor(QPalette.ToolTipText, QColor(p.text_primary))
         pal.setColor(QPalette.PlaceholderText, QColor(p.text_muted))
-        pal.setColor(QPalette.Link, QColor(p.accent))
+        pal.setColor(QPalette.Link, QColor(deepen(p.accent, p.bg_card)))
         app.setPalette(pal)
         app.setStyleSheet(build_stylesheet(p, self.typography, self.metrics, aurora=self.aurora))
         for w in app.allWidgets():

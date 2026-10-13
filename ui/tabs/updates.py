@@ -13,6 +13,7 @@ on_progress / on_done из них. Вкладка только оборачив�
 
 import logging
 import re
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QTimer, QUrl
@@ -30,44 +31,30 @@ from ui.widgets.base import Glyph, button, label, restyle, set_tone
 from ui.widgets.controls import CircleBadge, Switch
 from ui.widgets.layout import Page
 from core.updates.app import find_exe_asset, download_and_install_exe
-from core.updates.releases import FLOWZAP_REPO, check_release_async
+from core.updates.releases import FLOWZAP_REPO, version_key, check_release_async
 from core.tgproxy.manager import is_installed
 from core.updates.tgproxy import TG_PROXY_REPO, download_and_install_tg_proxy, get_installed_tg_proxy_version
+from core.updates.tgproxy import is_installing as tg_installing
 from core.updates.zapret import CORE_REPO, download_and_install_core, get_installed_core_version
+from core.updates.zapret import is_installing as core_installing
 from core.version import GUI_VERSION
 
 log = logging.getLogger(__name__)
 
 
-# ── Режим сравнения версий GUI ───────────────────────────────────────────
-# False — ТЕСТОВЫЙ режим (сейчас): сборка с «beta» НЕ считается новее релиза,
-#         проверка всегда находит последний релиз — чтобы можно было
-#         протестировать сам процесс обновления.
-# True  — БОЕВОЙ режим (включить после всех тестов): beta 0.5.2 считается новее
-#         релиза 0.5.1 (откат не предлагается), но финал 0.5.2 новее беты 0.5.2.
-BETA_IS_NEWER = False
-
 _QUIT_DELAY_MS = 2000   # пауза перед выходом после успешной загрузки обновления GUI
+# Дольше не ждать идущую установку zapret/TG: служба ждёт закрытия FlowZap 90 с
+_QUIT_WAIT_INSTALLS_SEC = 80
 
 
 _CORE_MISSING = "Не установлен — скачается при установке или первом запуске обхода"
 _TG_MISSING = "Не установлен — скачается при установке или первом включении"
 
 
-def _parse_version(v: str) -> tuple[tuple[int, ...], bool]:
-    """'0.5.2 beta 11 win' -> ((0, 5, 2), True); 'v0.5.1' -> ((0, 5, 1), False)."""
-    m = re.match(r"\s*[vV]?(\d+(?:\.\d+)*)", v)
-    nums = tuple(int(x) for x in m.group(1).split(".")) if m else (0,)
-    return nums, "beta" in v.lower()
-
-
 def gui_update_available(current: str, tag: str) -> bool:
-    """Есть ли для GUI релиз, который стоит предложить вместо current."""
-    cur, cur_beta = _parse_version(current)
-    latest, _ = _parse_version(tag)
-    if BETA_IS_NEWER:
-        return latest > cur or (latest == cur and cur_beta)
-    return cur_beta or latest > cur
+    """Есть ли для GUI релиз новее current (то же сравнение, что при установке —
+    core/updates/app.py)."""
+    return version_key(tag) > version_key(current)
 
 
 def _same_version(installed: str, tag: str) -> bool:
@@ -232,6 +219,7 @@ class UpdatesTab(QWidget):
     _releaseChecked = Signal(str, object)     # (блок, release | None) — из check_release_async
     _progress       = Signal(str, str)        # (блок, сообщение)      — из download_and_install_*
     _finished       = Signal(str, bool, str)  # (блок, ok, сообщение)  — из download_and_install_*
+    updated         = Signal(str)             # «core»/«tg» обновлён — MainWindow пересчитает точку на вкладке
 
     def __init__(self, parent=None, config: dict = None, manager=None, dashboard=None,
                  save_config_fn=None, on_autocheck_changed=None) -> None:
@@ -351,6 +339,8 @@ class UpdatesTab(QWidget):
         {"gui": self._on_gui_done,
          "core": self._on_core_done,
          "tg": self._on_tg_done}[block](ok, message)
+        if ok and block in ("core", "tg"):
+            self.updated.emit(block)
 
     def _start_check(self, block: str, repo: str) -> None:
         card = self._cards[block]
@@ -407,10 +397,20 @@ class UpdatesTab(QWidget):
         c = self._gui
         c.set_updating(False)
         if ok:
-            c.set_status(f"✓ {message}. Приложение перезапустится…", "ok")
+            c.set_status(f"✓ {message}", "ok")
             c.set_update_enabled(False)
             # Выход через QApplication.quit() → aboutToQuit → shutdown() остановит DNS/zapret/TG Proxy.
-            QTimer.singleShot(_QUIT_DELAY_MS, QApplication.quit)
+            # Сначала — дождаться установки zapret / TG Proxy, если она идёт: выход
+            # оборвал бы её посреди копирования файлов
+            deadline = time.monotonic() + _QUIT_WAIT_INSTALLS_SEC
+
+            def _quit_when_idle() -> None:
+                if (core_installing() or tg_installing()) and time.monotonic() < deadline:
+                    QTimer.singleShot(500, _quit_when_idle)
+                    return
+                QApplication.quit()
+
+            QTimer.singleShot(_QUIT_DELAY_MS, _quit_when_idle)
         else:
             c.set_status(message, "error")
             c.set_update_enabled(True)
@@ -441,7 +441,7 @@ class UpdatesTab(QWidget):
 
     def _update_core(self) -> None:
         # Пинг-тест держит свой собственный winws.exe в обход ZapretManager —
-        # обновление убило бы его через taskkill в середине прогона, и
+        # обновление остановило бы его в середине прогона, и
         # тестируемый в этот момент пресет получил бы ложный FAIL не из-за
         # себя, а из-за самого обновления (см. DashboardTab.is_testing_presets).
         if self._dashboard is not None and self._dashboard.is_testing_presets:
@@ -449,16 +449,19 @@ class UpdatesTab(QWidget):
                 "Сейчас идёт проверка пресетов — дождитесь её окончания и повторите.", "warn"
             )
             return
-        # winws.exe держит файлы Core и драйвер WinDivert — запущенный zapret останавливаем
-        # принудительно и после обновления возвращаем тот же пресет.
+        # winws.exe держит файлы Core и драйвер WinDivert — запущенный zapret
+        # останавливаем, когда архив уже скачан (в фоновом потоке установки:
+        # синхронная остановка здесь подвешивала окно), и после обновления
+        # возвращаем тот же пресет.
         self._core_resume_bat = None
+        stop = None
         if self._manager is not None and self._manager.is_running:
             self._core_resume_bat = self._manager.bat_path
-            self._manager.stop()
+            stop = self._manager.stop
         self._core.set_updating(True)
         self._core.set_status("Начинаем загрузку…", "muted")
         download_and_install_core(
-            zapret_dir=self._dashboard.zapret_dir, repo=CORE_REPO, **self._callbacks("core")
+            zapret_dir=self._dashboard.zapret_dir, repo=CORE_REPO, before_install=stop, **self._callbacks("core")
         )
 
     def _on_core_done(self, ok: bool, message: str) -> None:

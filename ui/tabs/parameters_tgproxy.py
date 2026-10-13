@@ -18,10 +18,9 @@ tgStatusChanged).
 
 import io
 import logging
-import subprocess
 
-from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QIntValidator, QPixmap
+from PySide6.QtCore import QPoint, QRegularExpression, Qt, QTimer
+from PySide6.QtGui import QPixmap, QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -34,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.system import winproc
 from core.tgproxy import settings as tg_settings
 from ui.tabs.dashboard import TG_DOT_COLORS
 from ui.widgets.base import AutoHideLabel, button, divider, label, restyle, set_tone
@@ -55,6 +55,13 @@ def _line_edit(width: int, placeholder: str = "", validator=None) -> QLineEdit:
     if validator is not None:
         edit.setValidator(validator)
     return edit
+
+
+def _digits(count: int, parent) -> QRegularExpressionValidator:
+    """Только цифры. Не QIntValidator: число вне диапазона (пусто, 0, буфер 3)
+    он считает «недописанным», и editingFinished не приходит — значение молча
+    не сохранялось, а сообщение _apply_* об ошибке не показывалось."""
+    return QRegularExpressionValidator(QRegularExpression(rf"\d{{0,{count}}}"), parent)
 
 
 def _mask(secret: str) -> str:
@@ -175,7 +182,7 @@ class TgProxyCard(QFrame):
         col.setSpacing(8)
         col.addWidget(self._column_head("ПОДКЛЮЧЕНИЕ"))
 
-        self._port = _line_edit(96, validator=QIntValidator(1, 65535, self))
+        self._port = _line_edit(96, validator=_digits(5, self))
         self._port.editingFinished.connect(self._apply_port)
         col.addWidget(SettingRow("Порт", "Telegram подключается к этому порту", self._port))
         col.addWidget(divider())
@@ -280,13 +287,13 @@ class TgProxyCard(QFrame):
             self._dc))
         body.addWidget(divider())
 
-        self._pool = _line_edit(72, validator=QIntValidator(0, 64, self))
+        self._pool = _line_edit(72, validator=_digits(2, self))
         self._pool.editingFinished.connect(lambda: self._apply_int("pool_size", self._pool, 0, 64))
         body.addWidget(SettingRow(
             "Пул соединений", "Готовых соединений на дата-центр (4). 0 — без прямого пути", self._pool))
         body.addWidget(divider())
 
-        self._buf = _line_edit(72, validator=QIntValidator(4, 4096, self))
+        self._buf = _line_edit(72, validator=_digits(4, self))
         self._buf.editingFinished.connect(lambda: self._apply_int("buf_kb", self._buf, 4, 4096))
         body.addWidget(SettingRow("Буфер, КБ", "Буфер на соединение (256)", self._buf))
         body.addWidget(divider())
@@ -523,10 +530,6 @@ class TgProxyCard(QFrame):
     def _open_log(self) -> None:
         path = self._ctl.tg_manager.log_file
         try:
-            if path.exists():
-                subprocess.Popen(f'explorer /select,"{path}"')
-            else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                subprocess.Popen(f'explorer "{path.parent}"')
-        except Exception as exc:
+            winproc.show_in_explorer(path)
+        except OSError as exc:
             log.error(f"Не удалось открыть лог TG Proxy: {exc}")

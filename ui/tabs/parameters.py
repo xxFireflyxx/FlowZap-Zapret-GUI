@@ -20,9 +20,9 @@ import ipaddress
 import logging
 import re
 import shutil
-import subprocess
 import threading
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal
@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.system import winproc
 from core.dns.builtin import builtin_names, is_builtin_dns
 from ui.tabs.parameters_tgproxy import TgProxyCard
 from ui.theme import theme
@@ -571,12 +572,21 @@ class ParametersTab(QWidget):
 
     # ── DNS: действия ───────────────────────────────
 
+    def _index_of(self, pair: dict) -> Optional[int]:
+        """Где пара сейчас. Пока было открыто окно, список могли перечитать
+        (обновились встроенные DNS) — номер, запомненный до окна, указал бы
+        уже на другую пару."""
+        key = (pair.get("name"), pair.get("ipv4_main"))
+        return next((i for i, p in enumerate(self._pairs) if (p.get("name"), p.get("ipv4_main")) == key), None)
+
     def _on_remove(self, idx: int) -> None:
         if idx >= len(self._pairs) or is_builtin_dns(self._pairs[idx]):
             return
-        name = self._pairs[idx].get("name") or self._pairs[idx].get("ipv4_main") or "этот сервер"
+        pair = self._pairs[idx]
+        name = pair.get("name") or pair.get("ipv4_main") or "этот сервер"
         reply = QMessageBox.question(self, "FlowZap — DNS", f"Удалить DNS «{name}»?")
-        if reply != QMessageBox.Yes:
+        idx = self._index_of(pair)
+        if reply != QMessageBox.Yes or idx is None:
             return
         self._pairs.pop(idx)
         self._render_pairs()
@@ -585,18 +595,27 @@ class ParametersTab(QWidget):
         if idx == 0 and self._on_dns_changed:
             self._on_dns_changed()
 
-    def _on_add_pair(self) -> None:
-        dlg = _AddDnsDialog(self, reserved=builtin_names(self._config))
-        if dlg.exec() != QDialog.Accepted or not dlg.result_pair:
-            return
+    def _ask_pair(self, pair: Optional[dict] = None) -> Optional[dict]:
+        dlg = _AddDnsDialog(self, pair=pair, reserved=builtin_names(self._config))
+        try:
+            return dlg.result_pair if dlg.exec() == QDialog.Accepted else None
+        finally:
+            dlg.deleteLater()
 
-        new_ipv4 = dlg.result_pair["ipv4_main"]
-        if new_ipv4 and any(p.get("ipv4_main") == new_ipv4 for p in self._pairs):
+    def _duplicate(self, new_pair: dict, skip: Optional[int] = None) -> bool:
+        ipv4 = new_pair["ipv4_main"]
+        if ipv4 and any(p.get("ipv4_main") == ipv4 for i, p in enumerate(self._pairs) if i != skip):
             QMessageBox.warning(self, "FlowZap — DNS", "Такой DNS уже есть.")
+            return True
+        return False
+
+    def _on_add_pair(self) -> None:
+        new_pair = self._ask_pair()
+        if not new_pair or self._duplicate(new_pair):
             return
 
         was_empty = not self._pairs
-        self._pairs.append(dlg.result_pair)
+        self._pairs.append(new_pair)
         self._render_pairs()
         self._save_dns()
         self._set_status("✓ Добавлено", "success")
@@ -606,10 +625,14 @@ class ParametersTab(QWidget):
     def _on_edit_pair(self, idx: int) -> None:
         if idx >= len(self._pairs) or is_builtin_dns(self._pairs[idx]):
             return
-        dlg = _AddDnsDialog(self, pair=self._pairs[idx], reserved=builtin_names(self._config))
-        if dlg.exec() != QDialog.Accepted or not dlg.result_pair:
+        pair = self._pairs[idx]
+        new_pair = self._ask_pair(pair)
+        idx = self._index_of(pair)
+        # Тот же адрес, что у другой пары (например, встроенной), — при следующем
+        # запуске apply_builtin_dns молча сделал бы эту пару встроенной
+        if not new_pair or idx is None or self._duplicate(new_pair, skip=idx):
             return
-        self._pairs[idx] = dlg.result_pair
+        self._pairs[idx] = new_pair
         self._render_pairs()
         self._save_dns()
         self._set_status("✓ Сохранено", "success")
@@ -671,6 +694,12 @@ class ParametersTab(QWidget):
         self._list_entry.setMinimumHeight(44)
         self._list_entry.returnPressed.connect(self._add_entries)
         self._list_entry.textChanged.connect(self._on_list_text)
+        # Поиск по мере ввода — после паузы, а не на каждую букву: каждый раз
+        # перечитывается файл и пересоздаются до 200 строк
+        self._render_timer = QTimer(self)
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(150)
+        self._render_timer.timeout.connect(self._render_entries)
         input_row.addWidget(self._list_entry, stretch=1)
         self._btn_list_add = button("Добавить", variant="primary")
         self._btn_list_add.setMinimumHeight(44)
@@ -714,8 +743,11 @@ class ParametersTab(QWidget):
         self._list_tabs.set_current(filename)
         _, _, desc = _list_meta(filename)
         self._list_desc.setText(desc)
+        self._clearing_entry = True     # textChanged от clear() — второй раз не рисовать
         self._list_entry.clear()
+        self._clearing_entry = False
         self._set_list_status("")
+        self._render_timer.stop()
         self._render_entries()
 
     def _query(self) -> str:
@@ -811,13 +843,13 @@ class ParametersTab(QWidget):
         if getattr(self, "_clearing_entry", False):
             return
         self._set_list_status("")
-        self._render_entries()
+        self._render_timer.start()
 
     def _open_lists_folder(self) -> None:
         self._lists_dir.mkdir(parents=True, exist_ok=True)
         try:
-            subprocess.Popen(f'explorer "{self._lists_dir}"')
-        except Exception as exc:
+            winproc.show_in_explorer(self._lists_dir)
+        except OSError as exc:
             log.error(f"Не удалось открыть папку списков: {exc}")
             QMessageBox.critical(self, "FlowZap", "Не удалось открыть папку")
 

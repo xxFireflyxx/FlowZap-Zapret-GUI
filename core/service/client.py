@@ -343,10 +343,20 @@ class ServiceSession:
                         threading.Thread(target=callback, daemon=True, name="service-reconnect").start()
             return self.info
 
-    def close(self) -> None:
-        with self._lock:
-            self._lost = False
-            self._close_pipe()
+    def close(self, wait: float = 2.0) -> None:
+        if self._lock.acquire(timeout=wait):
+            try:
+                self._lost = False
+                self._close_pipe()
+            finally:
+                self._lock.release()
+            return
+        # Идёт долгий запрос (обновление winws — до 5 мин): без очереди — он
+        # оборвётся, а выход и переустановка службы не повиснут
+        logger.info("Связь со службой закрыта, не дожидаясь текущего запроса")
+        pipe = self._pipe
+        if pipe is not None:
+            pipe.close()
 
     def _close_pipe(self) -> None:
         if self._pipe is not None:

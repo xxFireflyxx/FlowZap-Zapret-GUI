@@ -63,10 +63,6 @@ def github_headers() -> dict:
 
 
 # Специальное исключение для rate limit
-class RateLimitError(Exception):
-    pass
-
-
 class NetworkError(ValueError):
     """Не удалось связаться с GitHub или скачать файл — повод повторить без
     своего DNS (core.dns.manager.retry_without_dns)."""
@@ -86,8 +82,7 @@ def _verify_download(data: bytes, asset: dict, what: str) -> None:
     """Сверить скачанный файл с данными GitHub API: размер и sha256 (поле
     digest). Годится и для зеркал — там тот же файл того же релиза.
     Нет данных (релиз из GitLab-fallback) — проверка пропускается.
-    Несовпадение — ValueError: повреждённый файл не ставим, тем более что
-    он запускается с правами администратора."""
+    Несовпадение — ValueError: повреждённый файл не ставим."""
     size = asset.get("size") or 0
     if size and len(data) != size:
         logger.error(f"{what}: размер {len(data)} вместо {size}")
@@ -202,7 +197,7 @@ def set_beta_channel(enabled: bool) -> None:
         logger.info("Бета-канал: FlowZap видит и пре-релизы")
 
 
-def _version_key(tag: str) -> tuple[int, ...]:
+def version_key(tag: str) -> tuple[int, ...]:
     import re
     m = re.match(r"\s*[vV]?(\d+(?:\.\d+)*)", tag or "")
     return tuple(int(x) for x in m.group(1).split(".")) if m else ()
@@ -216,7 +211,7 @@ def _newest_including_prereleases(repo: str) -> dict:
         releases = [x for x in json.load(r) if isinstance(x, dict) and not x.get("draft")]
     if not releases:
         raise ValueError("на GitHub нет релизов")
-    return max(releases, key=lambda x: _version_key(x.get("tag_name", "")))
+    return max(releases, key=lambda x: version_key(x.get("tag_name", "")))
 
 
 def get_latest_release(repo: str = FLOWZAP_REPO, force: bool = False,

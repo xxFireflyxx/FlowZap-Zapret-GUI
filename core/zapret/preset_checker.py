@@ -3,7 +3,8 @@ core/zapret/preset_checker.py
 -----------------------------
 Статусы пресетов на основе HTTP-проверок через winws.exe.
 
-Запускает winws.exe напрямую (без bat/cmd — нет иконок в панели задач).
+Запускает winws.exe (через фоновую службу или, от администратора, напрямую) —
+без bat/cmd, нет иконок в панели задач.
 Проверки начинаются, как только winws сообщит «capture is started» (а не
 по фиксированной паузе). Все сайты проверяются параллельно через
 ThreadPoolExecutor, пресеты — последовательно (WinDivert не допускает двух
@@ -22,6 +23,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Callable, Optional
 
+from core.system import winproc
 from core.zapret import runner
 from core.zapret.runner import WinwsHandle
 from core.service.client import ServiceError
@@ -170,7 +172,7 @@ def find_latest_results(results_dir: Path) -> Optional[Path]:
 def _check_http(url: str, timeout: int = HTTP_TIMEOUT) -> tuple[str, Optional[float], Optional[float]]:
     """
     Проверить HTTP доступность URL через curl.exe — он корректно работает через WinDivert/winws.
-    Возвращает ('OK' | 'ERR' | 'UNSUP', время ответа в секундах или None,
+    Возвращает ('OK' | 'ERR', время ответа в секундах или None,
     из него — поиск адреса (DNS) в секундах или None; для лога).
     Время — от начала соединения до ответа сервера (DNS + TCP + TLS + ответ):
     на нём и сказывается стратегия обхода.
@@ -178,7 +180,7 @@ def _check_http(url: str, timeout: int = HTTP_TIMEOUT) -> tuple[str, Optional[fl
     try:
         result = subprocess.run(
             [
-                "curl.exe",
+                winproc.system_exe("curl.exe"),
                 "-I", "-s",
                 "-m", str(timeout),
                 "-o", "NUL",
@@ -193,15 +195,7 @@ def _check_http(url: str, timeout: int = HTTP_TIMEOUT) -> tuple[str, Optional[fl
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         code, took, dns = (result.stdout.strip().split(" ") + ["", "", ""])[:3]
-        stderr = result.stderr.strip().lower()
-
-        # Проверяем unsupported (TLS/protocol issues)
-        if result.returncode == 35 or any(x in stderr for x in (
-            "does not support", "not supported", "unsupported protocol",
-            "tls", "ssl", "schannel", "unrecognized option",
-        )):
-            return "UNSUP", None, None
-
+        # Ошибки TLS (код 35 и т.п.) — тоже «не открылся»: так DPI и рвёт соединения
         if result.returncode == 0 and code.isdigit() and int(code) < 500:
             try:
                 return "OK", float(took.replace(",", ".")), float(dns.replace(",", "."))
@@ -265,7 +259,7 @@ class PresetPingManager:
 
     Два режима:
     - load_cached()  — мгновенно загружает из последнего файла результатов
-    - run_tests()    — запускает winws.exe напрямую (без окон), параллельные проверки
+    - run_tests()    — запускает winws.exe (core/zapret/runner), параллельные проверки
     """
 
     def __init__(
@@ -386,128 +380,143 @@ class PresetPingManager:
             runner.stop_all()
 
     def _worker(self, presets: list[dict] | None, allow_install: bool) -> None:
+        # Сообщаем об окончании только после уборки (finally): иначе обход,
+        # запущенный сразу по сигналу «готово», мог попасть под stop_all
+        outcome = (False, "Проверка не выполнена")
+        try:
+            outcome = self._run(presets, allow_install)
+        except Exception as e:
+            logger.error(f"Ошибка тестирования: {e}", exc_info=True)
+            outcome = (False, str(e))
+        finally:
+            runner.stop_all()  # Гарантированно убиваем winws
+            self._testing = False
+            if self._on_tests_done:
+                self._on_tests_done(*outcome)
+
+    def _run(self, presets: list[dict] | None, allow_install: bool) -> tuple[bool, str]:
         from core.zapret.presets import list_presets
 
         try:
             runner.ensure_backend(self._winws_exe.parent, allow_install)
         except ServiceError as e:
-            self._testing = False
-            if self._on_tests_done:
-                self._on_tests_done(False, str(e))
-            return
+            return False, str(e)
 
-        try:
-            if presets is None:
-                presets = list_presets(self._zapret_dir)
+        if presets is None:
+            presets = list_presets(self._zapret_dir)
 
-            if not presets:
-                if self._on_tests_done:
-                    self._on_tests_done(False, "Пресеты не найдены")
-                return
+        if not presets:
+            return False, "Пресеты не найдены"
 
-            targets = load_targets(self._zapret_dir)
-            total_urls = sum(len(urls) for _, urls in targets)
-            logger.info(f"Начинаем тесты: {len(presets)} пресетов, "
-                        + ", ".join(f"{name} ({len(urls)})" for name, urls in targets))
-            analytics: dict[str, dict] = {}
-            start_time = time.time()
+        targets = load_targets(self._zapret_dir)
+        total_urls = sum(len(urls) for _, urls in targets)
+        logger.info(f"Начинаем тесты: {len(presets)} пресетов, "
+                    + ", ".join(f"{name} ({len(urls)})" for name, urls in targets))
+        analytics: dict[str, dict] = {}
+        start_time = time.time()
 
-            for i, preset in enumerate(presets):
-                if self._stop_event.is_set():
-                    logger.info("Тесты прерваны пользователем")
-                    break
+        for i, preset in enumerate(presets):
+            if self._stop_event.is_set():
+                logger.info("Тесты прерваны пользователем")
+                break
 
-                name = preset["name"]
-                # Та же команда, что у «Запустить» (игровые списки, текущий Game Filter)
-                built = build_winws_cmd(Path(preset["path"]), self._winws_exe)
+            name = preset["name"]
+            # Та же команда, что у «Запустить» (игровые списки, текущий Game Filter)
+            built = build_winws_cmd(Path(preset["path"]), self._winws_exe)
 
-                logger.info(f"[{i+1}/{len(presets)}] Тестируем: {name}")
+            logger.info(f"[{i+1}/{len(presets)}] Тестируем: {name}")
 
-                # Запомнить старый статус — откатим к нему если winws не запустится
-                prev_status = self._statuses.get(name, PingStatus.UNKNOWN)
+            # Запомнить старый статус — откатим к нему если winws не запустится
+            prev_status = self._statuses.get(name, PingStatus.UNKNOWN)
 
-                # Уведомить UI что пресет проверяется
-                self._statuses[name] = PingStatus.CHECKING
+            # Уведомить UI что пресет проверяется
+            self._statuses[name] = PingStatus.CHECKING
+            if self._on_update:
+                self._on_update(name, PingStatus.CHECKING)
+
+            # Запустить winws (через службу или напрямую) и дождаться его
+            # сигнала готовности
+            proc = None if built is None else self._start_winws(
+                *built, WINWS_READY_TIMEOUT_FIRST if i == 0 else WINWS_READY_TIMEOUT)
+            if self._stop_event.is_set():
+                if proc is not None:
+                    self._stop_winws(proc)
+                self._statuses[name] = prev_status
                 if self._on_update:
-                    self._on_update(name, PingStatus.CHECKING)
+                    self._on_update(name, prev_status)
+                logger.info("Тесты прерваны пользователем")
+                break
+            if proc is None:
+                logger.warning(f"Не удалось запустить winws для {name}")
+                # Откатываем к предыдущему статусу — не затираем кэш ложным
+                # FAIL (и в файл результатов его не пишем)
+                rollback = prev_status if prev_status != PingStatus.UNKNOWN else PingStatus.FAIL
+                self._statuses[name] = rollback
+                if self._on_update:
+                    self._on_update(name, rollback)
+                continue
 
-                # Запустить winws (через службу или напрямую) и дождаться его
-                # сигнала готовности
-                proc = None if built is None else self._start_winws(
-                    *built, WINWS_READY_TIMEOUT_FIRST if i == 0 else WINWS_READY_TIMEOUT)
+            try:
+                http_ok, http_err, avg_ms, dns_ms, services = _run_checks_parallel(targets)
                 if self._stop_event.is_set():
-                    if proc is not None:
-                        self._stop_winws(proc)
+                    # Прервали посреди проверки — результат неполный, не сохраняем
                     self._statuses[name] = prev_status
                     if self._on_update:
                         self._on_update(name, prev_status)
                     logger.info("Тесты прерваны пользователем")
                     break
-                if proc is None:
-                    logger.warning(f"Не удалось запустить winws для {name}")
-                    # Откатываем к предыдущему статусу — не затираем кэш ложным FAIL
-                    rollback = prev_status if prev_status != PingStatus.UNKNOWN else PingStatus.FAIL
-                    self._statuses[name] = rollback
-                    if self._on_update:
-                        self._on_update(name, rollback)
-                    analytics[name] = {"ok": 0, "err": 1}
-                    continue
+                if proc.poll() is not None:
+                    # winws упал уже во время проверки — сайты открывались без обхода
+                    logger.warning(f"  {name}: winws завершился во время проверки (код {proc.returncode})")
+                    http_ok, http_err, avg_ms = 0, total_urls, None
+                    services = {svc: (0, total) for svc, (_ok, total) in services.items()}
 
-                try:
-                    http_ok, http_err, avg_ms, dns_ms, services = _run_checks_parallel(targets)
-                    if self._stop_event.is_set():
-                        # Прервали посреди проверки — результат неполный, не сохраняем
-                        self._statuses[name] = prev_status
-                        if self._on_update:
-                            self._on_update(name, prev_status)
-                        logger.info("Тесты прерваны пользователем")
-                        break
-                    if proc.poll() is not None:
-                        # winws упал уже во время проверки — сайты открывались без обхода
-                        logger.warning(f"  {name}: winws завершился во время проверки (код {proc.returncode})")
-                        http_ok, http_err, avg_ms = 0, total_urls, None
-                        services = {svc: (0, total) for svc, (_ok, total) in services.items()}
+                analytics[name] = {"ok": http_ok, "err": http_err, "ms": avg_ms, "services": services}
 
-                    analytics[name] = {"ok": http_ok, "err": http_err, "ms": avg_ms, "services": services}
+                status = _classify(http_ok, http_err)
+                self._statuses[name] = status
+                self._counts[name] = (http_ok, http_ok + http_err)
+                self._services[name] = services
+                if avg_ms is None:
+                    self._times.pop(name, None)
+                else:
+                    self._times[name] = avg_ms
+                if self._on_update:
+                    self._on_update(name, status)
 
-                    status = _classify(http_ok, http_err)
-                    self._statuses[name] = status
-                    self._counts[name] = (http_ok, http_ok + http_err)
-                    self._services[name] = services
-                    if avg_ms is None:
-                        self._times.pop(name, None)
-                    else:
-                        self._times[name] = avg_ms
-                    if self._on_update:
-                        self._on_update(name, status)
+                logger.info(f"  {name}: {format_services(services)} "
+                            f"время={avg_ms if avg_ms is not None else '—'} мс "
+                            f"(DNS {dns_ms if dns_ms is not None else '—'} мс) → {status.name}")
 
-                    logger.info(f"  {name}: {format_services(services)} "
-                                f"время={avg_ms if avg_ms is not None else '—'} мс "
-                                f"(DNS {dns_ms if dns_ms is not None else '—'} мс) → {status.name}")
+            finally:
+                # Останавливаем winws перед следующим пресетом
+                self._stop_winws(proc)
 
-                finally:
-                    # Останавливаем winws перед следующим пресетом
-                    self._stop_winws(proc)
+        # Сохраняем результаты в файл
+        if analytics:
+            self._save_results(self._with_untested(analytics, presets))
+            self._checked_at = time.time()
 
-            # Сохраняем результаты в файл
-            if analytics:
-                self._save_results(analytics)
-                self._checked_at = time.time()
+        elapsed = time.time() - start_time
+        msg = f"Готово. {len(analytics)} пресетов проверено за {elapsed:.0f} сек"
+        logger.info(msg)
+        return True, msg
 
-            elapsed = time.time() - start_time
-            count = len(analytics)
-            msg = f"Готово. {count} пресетов проверено за {elapsed:.0f} сек"
-            logger.info(msg)
-            if self._on_tests_done:
-                self._on_tests_done(True, msg)
-
-        except Exception as e:
-            logger.error(f"Ошибка тестирования: {e}", exc_info=True)
-            if self._on_tests_done:
-                self._on_tests_done(False, str(e))
-        finally:
-            self._testing = False
-            runner.stop_all()  # Гарантированно убиваем winws
+    def _with_untested(self, analytics: dict, presets: list[dict]) -> dict:
+        """Результаты этого прогона + прошлые для пресетов, до которых он не
+        дошёл (прервали): файл результатов один, иначе после перезапуска они
+        остались бы без статуса. Удалённые пресеты не переносятся."""
+        latest = find_latest_results(self._results_dir)
+        if latest is None or len(analytics) == len(presets):
+            return analytics
+        merged = dict(analytics)
+        previous = parse_results_details(latest)
+        for preset in presets:
+            name = preset["name"]
+            if name not in merged and name in previous:
+                _status, ok, total, ms, services = previous[name]
+                merged[name] = {"ok": ok, "err": total - ok, "ms": ms, "services": services}
+        return merged
 
     def _start_winws(self, cmd: list[str], cwd: Path, ready_timeout: float) -> Optional[WinwsHandle]:
         """Запустить winws (core/zapret/runner) и дождаться строки «capture is

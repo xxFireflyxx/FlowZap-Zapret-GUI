@@ -32,6 +32,25 @@ from core.tgproxy.host import CREATE_NO_WINDOW, probe, serve_command
 
 logger = logging.getLogger(__name__)
 
+
+def _is_admin() -> bool:
+    from core.service.client import is_admin
+    return is_admin()
+
+
+def _open_as_user(target: str) -> None:
+    """Через explorer.exe — с правами пользователя. FlowZap от администратора
+    (запасной режим) иначе передал бы их Telegram, а с ним — всему, что из
+    него открывают (файлы, ссылки)."""
+    subprocess.Popen(["explorer.exe", target], close_fds=True, creationflags=subprocess.DETACHED_PROCESS)
+
+
+def _open_link(link: str) -> None:
+    if _is_admin():
+        _open_as_user(link)
+    else:
+        webbrowser.open(link)
+
 PROXY_DIR_NAME = "tgproxy"
 LEGACY_EXE = "TgWsProxy_windows.exe"
 _LEGACY_AUTOSTART = "TgWsProxy"         # значение в HKCU\...\Run у exe автора
@@ -440,14 +459,22 @@ class TgProxyManager:
         форков); Telegram из Store так не запустить — тогда не запускаем."""
         if self._telegram_process(winproc.process_names()) is not None:
             return
+        elevated = _is_admin()
+        if tray and elevated:
+            # explorer.exe (см. _open_as_user) не передаёт ключ -startintray
+            logger.info("FlowZap от администратора — Telegram в трей не запустить, не открываем")
+            return
         candidates = [self.settings.get("client_path", ""),
                       os.path.join(os.environ.get("APPDATA", ""), "Telegram Desktop", "Telegram.exe")]
         for path in candidates:
             if path and os.path.isfile(path):
                 try:
-                    subprocess.Popen([path, *(["-startintray"] if tray else [])],
-                                     cwd=os.path.dirname(path), close_fds=True,
-                                     creationflags=subprocess.DETACHED_PROCESS)
+                    if elevated:
+                        _open_as_user(path)
+                    else:
+                        subprocess.Popen([path, *(["-startintray"] if tray else [])],
+                                         cwd=os.path.dirname(path), close_fds=True,
+                                         creationflags=subprocess.DETACHED_PROCESS)
                     logger.info(f"Запущен Telegram{' (в трей)' if tray else ''}: {path}")
                     return
                 except OSError as e:
@@ -456,7 +483,7 @@ class TgProxyManager:
             logger.info("Telegram не найден на диске — в трей не запустить, не открываем")
             return
         logger.info("Telegram не найден на диске — открываем tg://")
-        webbrowser.open("tg://")
+        _open_link("tg://")
 
     def launch_telegram_async(self, tray: bool = False) -> None:
         threading.Thread(target=self.launch_telegram, args=(tray,), daemon=True,
@@ -468,7 +495,7 @@ class TgProxyManager:
         """Открыть tg://proxy — Telegram спросит «Подключить». Для Telegram на
         этом компьютере адрес всегда 127.0.0.1: адрес в сети может смениться."""
         logger.info("Открываем Telegram: tg://proxy (127.0.0.1)")
-        webbrowser.open(tg_settings.tg_link(self.settings))
+        _open_link(tg_settings.tg_link(self.settings))
 
     def share_link(self) -> str:
         """Ссылка для копирования: с доступом из сети — с адресом компьютера в

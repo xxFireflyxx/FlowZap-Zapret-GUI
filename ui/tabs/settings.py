@@ -12,13 +12,9 @@ ui/tabs/settings.py
 сохраняется в ui.theme; ui.tray_enabled применяется сразу через on_tray_changed.
 ui.restore_state читает DashboardTab: при запуске включает DNS и TG Proxy,
 если они были включены (config["state"], пишется при каждом переключении).
-
-TODO: карточка «Подсветка» (ui.bar_style: default / rainbow / candy / none) —
-      вернуть, когда в Dashboard появится анимированная полоса статуса.
 """
 
 import logging
-import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -42,6 +38,7 @@ from ui.theme import theme, THEMES, THEME_NAMES
 from ui.widgets.base import button, divider, label, set_tone
 from ui.widgets.controls import Switch
 from ui.widgets.layout import Page, SettingRow
+from core.system import winproc
 from core.updates.releases import FLOWZAP_REPO
 from core.version import GUI_VERSION
 from core.system.autostart import autostart_enabled_async, set_autostart_async
@@ -390,7 +387,7 @@ class SettingsTab(QWidget):
 
     def _on_win_clicked(self) -> None:
         self._win_target = self._sw_win.isChecked()
-        self._sw_win.setEnabled(False)       # пока PowerShell/schtasks работает — повторные щелчки не нужны
+        self._sw_win.setEnabled(False)       # пока пишется автозапуск — повторные щелчки не нужны
         set_autostart_async(self._win_target, lambda ok, err: self._winDone.emit(ok, err))
 
     def _on_win_done(self, ok: bool, error: str) -> None:
@@ -566,10 +563,7 @@ class SettingsTab(QWidget):
     def _open_logs_folder(self) -> None:
         """Папка logs с уже выделенным flowzap.log — его удобно сразу перетащить в обращение.
         Рядом лежит crash.log, если программа падала."""
-        logs_dir = self._app_dir / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        log_file = logs_dir / "flowzap.log"
-        if log_file.exists():
-            subprocess.Popen(f'explorer /select,"{log_file}"')
-        else:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir)))
+        try:
+            winproc.show_in_explorer(self._app_dir / "logs" / "flowzap.log")
+        except OSError as exc:
+            log.error(f"Не удалось открыть папку логов: {exc}")

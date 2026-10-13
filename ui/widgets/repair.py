@@ -7,6 +7,7 @@ ui/widgets/repair.py
 """
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QPlainTextEdit, QVBoxLayout
 
 from ui.theme import theme
@@ -37,7 +38,10 @@ class RepairDialog(QDialog):
         layout.addWidget(self._btn_script, alignment=Qt.AlignLeft)
         self._script = QPlainTextEdit(item["script"].strip("\r\n"))
         self._script.setReadOnly(True)
-        self._script.setLineWrapMode(QPlainTextEdit.NoWrap)
+        # С переносом: горизонтальная прокрутка в теме спрятана (theme.py), а
+        # скрипт, который выполнится, человек должен видеть целиком
+        self._script.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self._script.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         # Шрифт — стилем самого поля: общий QSS (* { font-family }) перебивает setFont()
         self._script.setStyleSheet(
             f"font-family: '{theme.typography.family_mono}', 'Consolas', monospace; font-size: 12px;")

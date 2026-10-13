@@ -24,6 +24,8 @@ import winreg
 from pathlib import Path
 from typing import Callable
 
+from core.system.winproc import system_exe
+
 log = logging.getLogger("flowzap.autostart")
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -53,7 +55,7 @@ def _run_value_exists() -> bool:
 def legacy_task_exists() -> bool:
     """Осталась ли задача Планировщика от FlowZap до 1.0."""
     try:
-        result = subprocess.run(["schtasks", "/query", "/tn", LEGACY_TASK],
+        result = subprocess.run([system_exe("schtasks.exe"), "/query", "/tn", LEGACY_TASK],
                                 capture_output=True, timeout=5,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
         return result.returncode == 0
@@ -65,7 +67,7 @@ def _remove_legacy_task() -> bool:
     """Удалить старую задачу. Без прав администратора обычно не выйдет — тогда
     её уберёт установщик фоновой службы."""
     try:
-        result = subprocess.run(["schtasks", "/delete", "/tn", LEGACY_TASK, "/f"],
+        result = subprocess.run([system_exe("schtasks.exe"), "/delete", "/tn", LEGACY_TASK, "/f"],
                                 capture_output=True, timeout=10,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
         return result.returncode == 0

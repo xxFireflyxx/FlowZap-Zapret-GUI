@@ -41,6 +41,10 @@ _KEEP_FILES = ("LICENSE",)
 _install_lock = threading.Lock()
 
 
+def is_installing() -> bool:
+    return _install_lock.locked()
+
+
 def get_installed_tg_proxy_version(tgproxy_dir: Path) -> Optional[str]:
     """Тег установленной версии или None, если сервер не установлен
     (version.txt без кода — остаток старой схемы, не считается)."""

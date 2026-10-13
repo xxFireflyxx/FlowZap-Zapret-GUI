@@ -12,10 +12,12 @@ core/zapret/presets.py
 и возвращает чистый список аргументов для subprocess.
 """
 
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
 
 # Регулярка: ищем строку с winws.exe — учитываем %BIN%, кавычки, /min, /max и т.п.
 # Формат: start "..." [/min|/max|...] ["%BIN%winws.exe" | "...winws.exe" | winws.exe]
@@ -30,8 +32,7 @@ _WINWS_FALLBACK_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Убираем: %ПЕРЕМЕННАЯ%, ^ (продолжение строки BAT)
-_VAR_RE = re.compile(r'%[^%]+%')
+# ^ (продолжение строки и экранирование в BAT)
 _CARET_RE = re.compile(r'\^')
 
 
@@ -202,17 +203,12 @@ def parse_bat(bat_path: Path) -> Optional[list[str]]:
             continue
 
         if tok.startswith('--'):
-            if '=' in tok:
-                key, _, val = tok.partition('=')
-                tok = f"{key}={val}"
             cleaned.append(tok)
         elif cleaned:
             # Первый не-аргумент после набора аргументов — стоп
             break
 
-    import logging
-    _log = logging.getLogger(__name__)
-    _log.debug(f"parse_bat {bat_path.name}: {len(cleaned)} args")
+    logger.debug(f"parse_bat {bat_path.name}: {len(cleaned)} args")
     return cleaned if cleaned else None
 
 

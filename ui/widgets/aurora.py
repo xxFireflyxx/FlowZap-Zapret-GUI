@@ -9,11 +9,11 @@ ui/widgets/aurora.py
 - Старт случайный при каждом включении: центры не ближе трети диагонали окна,
   и не все три летят в одну сторону.
 - Шары проходят друг сквозь друга — сталкиваются только с краями.
-- Таймер работает, только пока окно видно и сияние включено: в трее и
-  в свёрнутом окне процессор не тратится.
+- Таймер работает, только пока окно видно и сияние включено: в трее, в
+  свёрнутом окне и в окне, которое давно не активно, процессор не тратится.
 
-Цвета — ui.theme.AURORA_DARK / AURORA_LIGHT; выключенное сияние — просто
-заливка bg_root.
+Цвета — свои у каждой темы (Palette.aurora), у остальных общие
+ui.theme.AURORA_DARK / AURORA_LIGHT; выключенное сияние — просто заливка bg_root.
 """
 
 import math
@@ -69,6 +69,7 @@ class AuroraBackground(QWidget):
         self.setAttribute(Qt.WA_OpaquePaintEvent)
         self._enabled = False
         self._paused = False
+        self._idle = False                    # окно давно не активно (MainWindow)
         self._blobs: list[list[float]] = []      # [x, y, vx, vy] — центр и скорость
         self._last = 0.0
         self._noise: QPixmap | None = None
@@ -101,6 +102,12 @@ class AuroraBackground(QWidget):
         self._paused = paused
         self._sync_timer()
 
+    def set_idle(self, idle: bool) -> None:
+        """Окно давно не активно (за ним игра, другое окно): каждый кадр
+        перерисовывает всё окно — незачем, пока на него не смотрят."""
+        self._idle = idle
+        self._sync_timer()
+
     def hold(self, seconds: float = 0.4) -> None:
         """Не перерисовывать фон ближайшие seconds: короткая анимация (подсветка
         вкладок) получает всё время кадра. Шары продолжают «лететь» — после
@@ -108,7 +115,7 @@ class AuroraBackground(QWidget):
         self._hold_until = max(self._hold_until, time.monotonic() + seconds)
 
     def _sync_timer(self) -> None:
-        run = self._enabled and self.isVisible() and not self._paused
+        run = self._enabled and self.isVisible() and not self._paused and not self._idle
         if run and not self._timer.isActive():
             self._last = time.monotonic()
             self._timer.start()
@@ -210,7 +217,10 @@ class AuroraBackground(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
         for (x, y, _vx, _vy), sprite in zip(self._blobs, self._get_sprites()):
-            painter.drawPixmap(round(x - sprite.width() / 2), round(y - sprite.height() / 2), sprite)
+            # Размер в логических пикселях: width() — в физических, и при
+            # масштабе 150 % шар рисовался со сдвигом вверх-влево
+            size = sprite.deviceIndependentSize()
+            painter.drawPixmap(round(x - size.width() / 2), round(y - size.height() / 2), sprite)
         if self._noise is None:
             self._noise = _noise_tile()
         painter.drawTiledPixmap(self.rect(), self._noise)

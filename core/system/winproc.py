@@ -12,9 +12,12 @@ tasklist: быстро (миллисекунды), годится для опр�
 """
 
 import ctypes
+import functools
 import logging
+import os
 import subprocess
 from ctypes import wintypes
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,7 @@ class _ProcessEntry(ctypes.Structure):
     ]
 
 
+@functools.cache          # один раз: опрос TG зовёт это каждые 3 с
 def _kernel32():
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
@@ -108,7 +112,7 @@ def find_pid(image: str) -> Optional[int]:
     """PID первого процесса с таким именем exe или None."""
     try:
         result = subprocess.run(
-            ["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
+            [system_exe("tasklist.exe"), "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
             capture_output=True, encoding="cp866", errors="replace",
             creationflags=CREATE_NO_WINDOW, timeout=5,
         )
@@ -134,8 +138,33 @@ def kill(image: str) -> None:
     нет — taskkill просто ничего не делает."""
     try:
         subprocess.run(
-            ["taskkill", "/F", "/IM", image],
+            [system_exe("taskkill.exe"), "/F", "/IM", image],
             capture_output=True, creationflags=CREATE_NO_WINDOW, timeout=5,
         )
     except Exception as e:
         logger.warning(f"taskkill {image}: {e}")
+
+
+_SYSTEM_DIRS = {"powershell.exe": r"System32\WindowsPowerShell\v1.0", "explorer.exe": ""}
+
+
+def system_exe(name: str) -> str:
+    """Полный путь к программе Windows (System32 и т.п.). По одному имени
+    Windows ищет её сначала в папке FlowZap, а её может менять пользователь:
+    подложенный туда powershell.exe запустился бы вместо настоящего."""
+    root = os.environ.get("SystemRoot") or r"C:\Windows"
+    path = os.path.join(root, _SYSTEM_DIRS.get(name.lower(), "System32"), name)
+    return path if os.path.isfile(path) else name
+
+
+def show_in_explorer(path: Path) -> None:
+    """Проводник: папка — открыть, файл — выделить в его папке, файла ещё
+    нет — открыть папку (её создаём). OSError — проводник не запустился."""
+    explorer = system_exe("explorer.exe")
+    if path.is_dir():
+        subprocess.Popen(f'"{explorer}" "{path}"')
+    elif path.exists():
+        subprocess.Popen(f'"{explorer}" /select,"{path}"')
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(f'"{explorer}" "{path.parent}"')

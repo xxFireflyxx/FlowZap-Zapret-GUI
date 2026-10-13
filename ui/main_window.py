@@ -42,18 +42,11 @@ _SETTINGS_TAB = 3
 # core.updates.releases.get_latest_release (_CACHE_TTL), чаще всё равно ходило бы
 # в тот же кэш и не находило ничего нового.
 UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000
+INACTIVE_IDLE_MS = 30_000      # окно не активно столько — сияние на паузе
 UPDATE_CHECK_STARTUP_DELAY_MS = 3000
 # DNS, отложенный до конца проверки обновлений, включается не позже этого
 # (GitHub не отвечает — не держать пользователя без своего DNS)
 DNS_RESTORE_MAX_WAIT_MS = 10000
-
-
-def _is_admin() -> bool:
-    try:
-        import ctypes
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
 
 
 def _asset_path(root: Path, name: str) -> Path:
@@ -233,6 +226,14 @@ class MainWindow(QMainWindow):
         # Свёрнутое окно — сияние на паузе (в трее окно скрыто — это hideEvent самого фона).
         if event.type() == event.Type.WindowStateChange:
             self.aurora.pause(self.isMinimized())
+        elif event.type() == event.Type.ActivationChange:
+            # Не активно дольше INACTIVE_IDLE_MS — тоже пауза: окно может часами
+            # стоять открытым под игрой, а сияние перерисовывает его целиком
+            if self.isActiveWindow():
+                self._inactive_timer.stop()
+                self.aurora.set_idle(False)
+            else:
+                self._inactive_timer.start()
         super().changeEvent(event)
 
     def showEvent(self, event) -> None:
@@ -310,6 +311,10 @@ class MainWindow(QMainWindow):
     def _build_ui(self):
         central = AuroraBackground()
         self.aurora = central
+        self._inactive_timer = QTimer(self)
+        self._inactive_timer.setSingleShot(True)
+        self._inactive_timer.setInterval(INACTIVE_IDLE_MS)
+        self._inactive_timer.timeout.connect(lambda: self.aurora.set_idle(True))
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -338,6 +343,11 @@ class MainWindow(QMainWindow):
             config=self.config, manager=self.manager, dashboard=self.dashboard,
             save_config_fn=self.save_config, on_autocheck_changed=self.set_update_autocheck,
         )
+        # Точку ставит только фоновая проверка — после ручного обновления она
+        # горела бы до следующей (до 3 ч)
+        # (автопроверка выключена — точки и так нет, а в сеть сами не ходим)
+        self.updates.updated.connect(
+            lambda _block: self.config.get("updater", {}).get("check_on_start", True) and self._check_updates_bg())
         self.stack.addWidget(self.updates)
 
         self.settings = SettingsTab(
@@ -350,7 +360,7 @@ class MainWindow(QMainWindow):
             on_relaunch_admin=self.relaunch_as_admin,
             # Новая версия службы — та же мигающая точка, что у «Обновлений»
             on_service_outdated=lambda v: self._tabs.set_badge(_SETTINGS_TAB, v),
-            on_service_changed=self.dashboard.after_service_change,
+            on_service_changed=self._after_service_change,
         )
         self.stack.addWidget(self.settings)
         layout.addWidget(self.stack, stretch=1)
@@ -415,7 +425,7 @@ class MainWindow(QMainWindow):
     def _refresh_mode(self) -> None:
         """Надпись в правом углу шапки: как FlowZap получает права для обхода и DNS."""
         from core.service import client as service_client
-        admin = _is_admin()
+        admin = service_client.is_admin()
         via_service = not admin and service_client.service_installed()
         ok = admin or via_service
         self._mode_icon.setText(Glyph.SHIELD if ok else Glyph.WARNING)
@@ -433,6 +443,12 @@ class MainWindow(QMainWindow):
             self._mode_timer.stop()
         elif not self._mode_timer.isActive():
             self._mode_timer.start()
+
+    def _after_service_change(self, action: str, resume_bat) -> None:
+        # Таймер надписи останавливается, когда служба есть, — после удаления
+        # службы шапка показывала бы «Фоновая служба» до перезапуска
+        self._refresh_mode()
+        self.dashboard.after_service_change(action, resume_bat)
 
     def _open_dns_parameters(self) -> None:
         """С главной (нет DNS-серверов) — «Параметры», раздел DNS."""
@@ -458,10 +474,8 @@ class MainWindow(QMainWindow):
         после старта, чтобы не тормозить открытие окна), и периодической
         (раз в 3 часа). Выключено — значит фоновых сетевых запросов к
         GitHub нет вообще, только проверка руками на вкладке
-        «Обновления». Сама вкладка «Обновления» и точка на кнопке
-        считают обновления независимо друг от друга (см. docstring
-        ui/tabs/updates.py) — это разные, дублирующие друг друга проверки
-        по репозиториям, а не общий кэш."""
+        «Обновления». Результат фоновой проверки ставит точку на кнопке
+        и сразу уходит в карточки вкладки (_releasesFetched)."""
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._check_updates_bg)
         if not self.config.get("updater", {}).get("check_on_start", True):
@@ -563,7 +577,9 @@ class MainWindow(QMainWindow):
             self._restore_from_tray()
 
     def _restore_from_tray(self):
-        self.showNormal()
+        # Не showNormal(): развёрнутое окно возвращалось бы уменьшенным
+        self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        self.show()
         self.activateWindow()
         self.raise_()
 

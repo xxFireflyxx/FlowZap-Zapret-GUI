@@ -8,6 +8,7 @@ core/system/tcp.py
 """
 
 import ctypes
+import functools
 import socket
 import struct
 from ctypes import wintypes
@@ -48,12 +49,18 @@ def _port(value: int) -> int:
     return socket.ntohs(value & 0xFFFF)
 
 
-def connections() -> list[TcpConn]:
-    """Все TCP-соединения IPv4. OSError — если Windows не отдала таблицу."""
+@functools.cache          # один раз: опрос TG зовёт connections() каждые 3 с
+def _get_table():
     fn = ctypes.WinDLL("iphlpapi").GetExtendedTcpTable
     fn.restype = wintypes.DWORD
     fn.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
                    wintypes.ULONG, ctypes.c_int, wintypes.ULONG]
+    return fn
+
+
+def connections() -> list[TcpConn]:
+    """Все TCP-соединения IPv4. OSError — если Windows не отдала таблицу."""
+    fn = _get_table()
     size = wintypes.DWORD(0)
     fn(None, ctypes.byref(size), False, _AF_INET, _TCP_TABLE_OWNER_PID_ALL, 0)
     # Таблица может вырасти между вызовами — несколько попыток с запасом

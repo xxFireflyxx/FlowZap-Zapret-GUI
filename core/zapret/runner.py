@@ -261,7 +261,7 @@ def _enable_tcp_timestamps() -> None:
         return
     _timestamps_done = True
     try:
-        subprocess.run(["netsh", "interface", "tcp", "set", "global", "timestamps=enabled"],
+        subprocess.run([winproc.system_exe("netsh.exe"), "interface", "tcp", "set", "global", "timestamps=enabled"],
                        capture_output=True, creationflags=winproc.CREATE_NO_WINDOW, timeout=5)
     except Exception:
         pass

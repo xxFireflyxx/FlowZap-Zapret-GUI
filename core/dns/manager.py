@@ -33,6 +33,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional, TypeVar
 
+from core.system import winproc
 from core.zapret import runner
 from core.service import client as service_client
 from core.service.client import ServiceError
@@ -259,7 +260,7 @@ def _apply_direct(enable: bool, pair: dict | None, addresses: list[str]) -> str:
               .replace("__ADDRESSES__", ", ".join(f"'{a}'" for a in addresses)))
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            [winproc.system_exe("powershell.exe"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
              "-Command", script],
             capture_output=True, timeout=_PS_TIMEOUT,
             creationflags=subprocess.CREATE_NO_WINDOW,

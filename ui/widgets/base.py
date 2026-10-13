@@ -19,32 +19,17 @@ from ui.theme import theme
 
 class Glyph:
     """Коды значков шрифта Segoe MDL2 Assets (есть в Windows 10 и 11)."""
-    HOME      = ""
-    SLIDERS   = ""
-    SYNC      = ""
-    SETTINGS  = ""
-    REFRESH   = ""
-    ADD       = ""
     DELETE    = ""
     CLOSE     = ""
     EDIT      = ""
-    FOLDER    = ""
-    PLAY      = ""
-    STOP      = ""
     CHEVRON   = ""
-    CHECK     = ""
     INFO      = ""
-    GAME      = ""
     GLOBE     = ""
     SEND      = ""
     SHIELD    = ""
-    DOWNLOAD  = ""
     OPEN      = ""
-    COPY      = ""
     WARNING   = ""
-    PALETTE   = ""
     MONITOR   = ""
-    LIST      = ""
 
 
 def restyle(widget: QWidget) -> None:

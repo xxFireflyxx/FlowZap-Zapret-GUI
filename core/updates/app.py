@@ -12,9 +12,10 @@ import shutil
 from pathlib import Path
 from typing import Callable, Optional
 
+from core.system.winproc import system_exe
 from core.updates import signing
 from core.updates.releases import (
-    FLOWZAP_REPO, _fetch, _version_key, download_asset, get_from_gitlab, get_latest_release, latest_asset,
+    FLOWZAP_REPO, _fetch, version_key, download_asset, get_from_gitlab, get_latest_release, latest_asset,
     run_install,
 )
 from core.version import GUI_VERSION
@@ -50,70 +51,29 @@ def _fetch_signature(repo: str, name: str, tag: str) -> bytes:
 
 
 def find_exe_asset(release: dict) -> Optional[dict]:
-    """
-    Найти asset для обновления FlowZap GUI.
-    Приоритеты:
-      1. flowzap-vX.X.X.zip
-      2. flowzap-*.zip
-      3. release-*.zip (старый формат)
-      4. release.zip
-      5. любой zip
-      6. прямой exe
-    """
-    assets = release.get("assets", [])
-
-    real_assets = [
-        a for a in assets
-        if "/archive/" not in a.get("browser_download_url", "")
-        and a.get("browser_download_url", "")
-    ]
-
-    # Приоритет 0: flowzap-full-vX.X.X.zip — запас на случай, если в релизе
-    # появятся два архива (полный и служебный); обычно его нет
-    for asset in real_assets:
-        name = asset.get("name", "").lower()
-        if name.startswith("flowzap-full-") and name.endswith(".zip"):
-            return asset
-
-    # Приоритет 1: flowzap-vX.X.X.zip
-    for asset in real_assets:
-        name = asset.get("name", "").lower()
-        if name.startswith("flowzap-v") and name.endswith(".zip"):
-            return asset
-
-    # Приоритет 2: flowzap-*.zip
-    for asset in real_assets:
-        name = asset.get("name", "").lower()
-        if name.startswith("flowzap-") and name.endswith(".zip"):
-            return asset
-
-    # Приоритет 3: release-*.zip (старый формат)
-    for asset in real_assets:
-        name = asset.get("name", "").lower()
-        if name.startswith("release-") and name.endswith(".zip"):
-            return asset
-
-    # Приоритет 4: release.zip
-    for asset in real_assets:
-        name = asset.get("name", "").lower()
-        if name == "release.zip":
-            return asset
-
-    # Приоритет 5: любой zip
-    for asset in real_assets:
-        name = asset.get("name", "").lower()
-        if name.endswith(".zip"):
-            return asset
-
-    # Fallback: прямой exe
-    for asset in real_assets:
-        if asset.get("name", "").lower().endswith(".exe"):
-            return asset
-
-    return None
+    """Архив обновления FlowZap в релизе: flowzap-vX.Y.Z.zip (так его собирает
+    release/release.py), иначе любой flowzap-*.zip. Других форматов (release.zip,
+    exe из 0.x) не ищем: без подписи <архив>.sig их всё равно не поставить."""
+    archives = [a for a in release.get("assets", [])
+                if a.get("browser_download_url") and a.get("name", "").lower().startswith("flowzap-")
+                and a["name"].lower().endswith(".zip")]
+    return next((a for a in archives if a["name"].lower().startswith("flowzap-v")),
+                archives[0] if archives else None)
 
 
-def _extract_update_payload(data: bytes, parent: Path) -> Optional[Path]:
+def _safe_member_path(base: Path, rel: str) -> Optional[Path]:
+    """Куда положить элемент архива rel внутри base, или None, если он вышел
+    бы за её пределы: «..», диск (C:x), корень (/x, //сервер), двоеточие
+    (поток NTFS x:поток). Подпись проверена раньше — это запасная защита."""
+    from pathlib import PureWindowsPath
+    pure = PureWindowsPath(rel)
+    if not rel or pure.drive or pure.root or any(p == ".." or ":" in p for p in pure.parts):
+        return None
+    dest = (base / rel).resolve()
+    return dest if dest.is_relative_to(base.resolve()) else None
+
+
+def _extract_update_payload(data: bytes, parent: Path) -> Path:
     """Распаковать архив обновления во временную папку внутри parent (папки
     приложения): перенос _internal на место — это переименование, а оно
     работает только в пределах одного диска. Из %TEMP% на C: в D:\\FlowZap
@@ -127,10 +87,11 @@ def _extract_update_payload(data: bytes, parent: Path) -> Optional[Path]:
     пользователя.
 
     Возвращает временную папку с FlowZap.exe (и, если был в архиве,
-    подпапкой _internal/) или None, если exe в архиве не нашёлся.
+    подпапкой _internal/). ValueError с понятной причиной — не вышло.
     """
     import zipfile, io
 
+    temp_dir = None
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             names = zf.namelist()
@@ -139,8 +100,7 @@ def _extract_update_payload(data: bytes, parent: Path) -> Optional[Path]:
                 None,
             )
             if exe_member is None:
-                logger.error("FlowZap.exe не найден в архиве обновления")
-                return None
+                raise ValueError("В архиве обновления нет FlowZap.exe")
 
             root = Path(exe_member).parent.as_posix()
             internal_prefix = f"{root}/_internal/" if root not in ("", ".") else "_internal/"
@@ -152,14 +112,12 @@ def _extract_update_payload(data: bytes, parent: Path) -> Optional[Path]:
                 m for m in names
                 if m.replace("\\", "/").startswith(internal_prefix) and not m.endswith("/")
             ]
+            internal_dir = temp_dir / "_internal"
             for member in internal_members:
-                rel = member.replace("\\", "/")[len(internal_prefix):]
-                # Защита от zip-slip: ни один элемент не должен выходить за
-                # пределы temp_dir/_internal через "..".
-                if not rel or ".." in Path(rel).parts:
-                    logger.warning(f"Пропущен подозрительный путь в архиве: {member}")
-                    continue
-                dest = temp_dir / "_internal" / rel
+                dest = _safe_member_path(internal_dir, member.replace("\\", "/")[len(internal_prefix):])
+                if dest is None:
+                    # Не пропускать: без файла _internal неполная — FlowZap бы не запустился
+                    raise ValueError(f"В архиве обновления недопустимый путь: {member} — не устанавливаю")
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(zf.read(member))
 
@@ -169,7 +127,16 @@ def _extract_update_payload(data: bytes, parent: Path) -> Optional[Path]:
             return temp_dir
     except Exception as e:
         logger.error(f"Ошибка распаковки обновления: {e}")
-    return None
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        if isinstance(e, ValueError):
+            raise
+        if isinstance(e, zipfile.BadZipFile):
+            raise ValueError("Архив обновления повреждён — попробуйте ещё раз") from e
+        if isinstance(e, PermissionError):
+            raise ValueError(f"Нет прав на запись в папку FlowZap ({parent}) — "
+                             "обновите FlowZap вручную или перенесите его в свою папку") from e
+        raise ValueError(f"Не удалось распаковать обновление: {e}") from e
 
 
 def _check_disk_space(paths: list, required_bytes: int) -> Optional[str]:
@@ -203,8 +170,10 @@ def _check_disk_space(paths: list, required_bytes: int) -> Optional[str]:
 
 
 def _ps_str(value) -> str:
-    """Строка в одинарных кавычках PowerShell ('  удваивается)."""
-    return "'" + str(value).replace("'", "''") + "'"
+    """Строка в одинарных кавычках PowerShell. Кавычкой PowerShell считает не
+    только ', но и ‘ ’ ‚ ‛ (C:\\Users\\O’Neil) — удваиваются все, иначе
+    скрипт замены не разбирался и FlowZap не возвращался после обновления."""
+    return "'" + "".join(c * 2 if c in "'\u2018\u2019\u201a\u201b" else c for c in str(value)) + "'"
 
 
 def _build_swap_script(
@@ -316,13 +285,13 @@ def _launch_swap_script(script_path: Path) -> None:
     params = f'-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{script_path}"'
     ret = 0
     try:
-        ret = ctypes.windll.shell32.ShellExecuteW(None, "open", "powershell.exe", params, None, 0)
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "open", system_exe("powershell.exe"), params, None, 0)
     except Exception as e:
         logger.warning(f"ShellExecute: {e}")
     if ret > 32:
         return
     logger.warning(f"ShellExecute вернул {ret} — запускаю напрямую")
-    cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    cmd = [system_exe("powershell.exe"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
            "-WindowStyle", "Hidden", "-File", str(script_path)]
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     try:
@@ -401,7 +370,7 @@ def download_and_install_exe(
         tag, asset = latest_asset(repo, find_exe_asset, "Файл для обновления", log)
         # Сравнивала только кнопка «Проверить», а здесь релиз берётся заново:
         # без GitHub он мог прийти с отставшего зеркала GitLab — старее текущего
-        if _version_key(tag) <= _version_key(GUI_VERSION):
+        if version_key(tag) <= version_key(GUI_VERSION):
             raise ValueError(f"На сервере {tag} — не новее установленной версии {GUI_VERSION}")
 
         # Зеркало — релиз на GitLab. Если там тот же тег и файл — сверяем с GitHub.
@@ -440,22 +409,16 @@ def download_and_install_exe(
 
         # Во временную папку рядом с приложением. Белый список — только
         # FlowZap.exe и _internal/ (см. _extract_update_payload).
-        if asset_name.lower().endswith(".zip"):
-            try:
-                with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                    total_size = sum(i.file_size for i in zf.infolist())
-            except Exception:
-                total_size = len(data) * 3  # архив не читается — грубая оценка
-            space_error = _check_disk_space([target_dir], required_bytes=total_size * 2)
-            if space_error:
-                raise ValueError(space_error)
-            log("Распаковываем...")
-            payload_dir = _extract_update_payload(data, target_dir)
-            if not payload_dir:
-                raise ValueError("FlowZap.exe не найден внутри zip архива")
-        else:
-            payload_dir = _new_update_dir(target_dir)
-            (payload_dir / "FlowZap.exe").write_bytes(data)
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                total_size = sum(i.file_size for i in zf.infolist())
+        except Exception:
+            total_size = len(data) * 3  # архив не читается — грубая оценка
+        space_error = _check_disk_space([target_dir], required_bytes=total_size * 2)
+        if space_error:
+            raise ValueError(space_error)
+        log("Распаковываем...")
+        payload_dir = _extract_update_payload(data, target_dir)
 
         if via_service and _install_via_service(current_exe, payload_dir):
             log(f"✓ Обновление до {tag} готово. Приложение перезапустится...")

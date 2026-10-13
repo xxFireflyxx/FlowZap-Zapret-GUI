@@ -17,14 +17,13 @@ set_running_async(); при первом включении сервер сна�
 ли он сейчас. То же состояние показывают «Параметры» (tgStatusChanged).
 
 DNS — тумблер читает активную пару из config["dns"]["pairs"][0]
-(core/dns/manager.get_active_pair) и применяет её через netsh
+(core/dns/manager.get_active_pair) и применяет её через фоновую службу
 (core/dns/manager.apply_dns_async). Если пара меняется в ParametersTab,
 он зовёт on_dns_changed() у этой вкладки, чтобы переприменить DNS "на
 лету", когда он уже включён.
 """
 
 import logging
-import subprocess
 import time
 import threading
 from pathlib import Path
@@ -54,10 +53,12 @@ from ui.widgets.announcement import AnnouncementBar
 from ui.widgets.base import Glyph, button, dot_icon, label, restyle, set_tone
 from ui.widgets.repair import RepairDialog
 from core import repairs as repairs_core
+from core.system import winproc
 from core.version import GUI_VERSION
 from ui.widgets.controls import CircleBadge, FieldButton, StatusDot, Switch
 from ui.widgets.layout import Page
 from ui.widgets.popup import make_popup, show_popup_below
+from core.zapret.game_lists import GAMING_UPDATE_INTERVAL, update_gaming_lists
 from core.zapret.presets import GAME_FILTER_MODES, list_presets, read_game_filter, write_game_filter
 from core.zapret.preset_checker import MAIN_SERVICES, PresetPingManager, PingStatus
 from core.zapret.manager import ServiceState
@@ -133,15 +134,6 @@ TG_DOT_COLORS = {
 
 def _status_color(status: PingStatus) -> str:
     return getattr(theme.palette, _STATUS_COLORS.get(status, "text_muted"))
-
-
-def _glyph_label(glyph: str, px: int = 13) -> QLabel:
-    """Значок шрифтом Segoe MDL2 в QLabel. Шрифт задаётся через QSS самого
-    виджета — общий QSS (`* { font-family }`) перебил бы setFont()."""
-    lbl = QLabel(glyph)
-    lbl.setStyleSheet(f"font-family: '{theme.typography.family_icon}'; font-size: {px}px;")
-    lbl.setProperty("tone", "muted")
-    return lbl
 
 
 def _service_groups(services: dict) -> tuple[list[str], list[str], list[str]]:
@@ -773,7 +765,7 @@ class DashboardTab(QWidget):
     _tgMigrated          = Signal()              # переход со старого TgWsProxy завершён
     _tgInstallProgress   = Signal(str)
     _tgInstallDone       = Signal(bool, str)
-    _warmupDone          = Signal()              # прогрев WinDivert завершён (core/windivert_warmup)
+    _warmupDone          = Signal()              # прогрев WinDivert завершён (ZapretManager.warmup_windivert)
     _repairDone          = Signal(str, bool, str)  # (id плашки, успех, текст) — из repairs.run_async
 
     # Состояние TG Proxy изменилось — «Параметры» перерисовывают свою строку статуса
@@ -803,11 +795,13 @@ class DashboardTab(QWidget):
         self._coreInstallProgress.connect(self._on_core_install_progress)
         self._coreInstallDone.connect(self._on_core_install_done)
         self._installing_core = False
-        self._auto_testing = False              # True только для авто-теста сразу после установки Core
         # Идёт проверка пресетов: свой флаг, а не PresetPingManager.is_testing —
         # тот сбрасывается в фоновом потоке и может опередить/отстать от сигнала «готово»
         self._checking = False
         self._pending_start_after_test = False   # запрос "остановить ручной тест и сразу стартовать"
+        # shutdown() начался: processEvents() в нём может доставить «проверка
+        # закончена» / «прогрев готов» — обход после этого не запускаем
+        self._shutting_down = False
 
         self._zapret_error = False   # плитка обхода красная, пока пользователь не включит снова
         self._dnsToggleDone.connect(self._on_dns_toggle_done)
@@ -818,10 +812,16 @@ class DashboardTab(QWidget):
         self._dns_link_timer.setInterval(DNS_LINK_CHECK_MS)
         self._dns_link_timer.timeout.connect(dns_manager.check_service_link_async)
         self._dns_link_timer.start()
+        # Игровые списки Game Filter: при запуске их качает main.py, а FlowZap
+        # живёт в трее неделями — освежать и потом (у загрузки свой кэш на 6 ч)
+        self._game_lists_timer = QTimer(self)
+        self._game_lists_timer.setInterval(GAMING_UPDATE_INTERVAL * 1000)
+        self._game_lists_timer.timeout.connect(self._refresh_game_lists)
+        self._game_lists_timer.start()
         self._dns_enabled = False
         # Отмечает, идёт ли сейчас apply_dns_async в фоновом потоке — shutdown()
         # дожидается его завершения перед своим решением, иначе быстрое закрытие
-        # сразу после включения/выключения DNS гоняло бы netsh параллельно с
+        # сразу после включения/выключения DNS меняло бы DNS параллельно с
         # собственным сбросом DNS при выходе (см. shutdown()).
         self._dns_toggle_event = threading.Event()
         self._dns_toggle_event.set()
@@ -928,7 +928,7 @@ class DashboardTab(QWidget):
         установлен (пресетов нет) — ничего не делаем и ничего не ждём:
         при следующем запуске FlowZap, когда Core уже будет установлен
         вручную, автозапуск сработает сам."""
-        if not self._config.get("zapret", {}).get("autostart", False):
+        if not self._config.get("zapret", {}).get("autostart", False) or self._shutting_down:
             return
         if self.manager is None or self.manager.is_running:
             return
@@ -949,9 +949,9 @@ class DashboardTab(QWidget):
         пресетов: провайдер мог сменить блокировки, и старый пресет
         перестал работать, а пользователь давно этого не видел.
         Запускается только когда точно никому не мешает:
-          - zapret сейчас не запущен — тест ненадолго держит WinDivert и
-            завершает winws.exe через taskkill; если бы zapret работал,
-            тест оборвал бы реальное соединение пользователя;
+          - zapret сейчас не запущен — тест запускает свои winws.exe (WinDivert
+            у компьютера один); если бы zapret работал, тест оборвал бы
+            реальное соединение пользователя;
           - никакой пинг-тест уже не идёт;
           - система простаивает (GetLastInputInfo — ввод с клавиатуры
             или мыши где угодно в Windows, не только в FlowZap) от
@@ -1188,11 +1188,8 @@ class DashboardTab(QWidget):
     def _open_repair_log(self, root: Path) -> None:
         path = root / "logs" / repairs_core.LOG_NAME
         try:
-            if path.exists():
-                subprocess.Popen(f'explorer /select,"{path}"')
-            else:
-                subprocess.Popen(f'explorer "{path.parent}"')
-        except Exception as exc:
+            winproc.show_in_explorer(path)
+        except OSError as exc:
             log.error(f"Не удалось открыть лог исправлений: {exc}")
 
     def _build_services_row(self) -> QHBoxLayout:
@@ -1345,6 +1342,12 @@ class DashboardTab(QWidget):
         self._set_message("")
         self._refresh_zapret_tile()
 
+    def _bypass_on(self) -> bool:
+        """Обход работает или запускается. «Запускается» — тоже: смена пресета
+        или Game Filter в это время иначе показала бы новое, а работало старое
+        (перезапуск менеджер выполнит после запуска — команды у него по очереди)."""
+        return self.manager is not None and self.manager.state in (ServiceState.RUNNING, ServiceState.STARTING)
+
     def _on_preset_selected(self, preset: dict) -> None:
         log.debug(f"Пресет выбран: {preset['name']}")
         self._config.setdefault("zapret", {})["last_preset"] = preset["name"]
@@ -1352,7 +1355,7 @@ class DashboardTab(QWidget):
             self._save_config_fn()
         self._refresh_zapret_tile()
         # Выбор применяется сразу: если обход работает — перезапуск с новым пресетом.
-        if self.manager is not None and self.manager.is_running:
+        if self._bypass_on():
             self.manager.restart_async(bat_path=preset["path"])
 
     def _on_refresh_ping(self, auto: bool = False, user: bool = True) -> None:
@@ -1360,12 +1363,13 @@ class DashboardTab(QWidget):
         «Запустить»): тогда без фоновой службы можно показать окно её установки."""
         if self._ping_mgr.is_testing:
             return
-        if self.manager is not None and self.manager.is_running:
+        if self.manager is not None and self.manager.state == ServiceState.STOPPING:
+            return      # проверка запускает свои winws — дождаться остановки
+        if self._bypass_on():
             self._set_message(
                 "Сначала остановите zapret — проверка запускает пресеты по очереди.", "warning"
             )
             return
-        self._auto_testing = auto
         self._checking = True
         self._refresh_zapret_tile()
         self._btn_refresh.setEnabled(False)
@@ -1394,7 +1398,6 @@ class DashboardTab(QWidget):
         self._btn_refresh.setEnabled(True)
         self._btn_toggle.setEnabled(True)
         self._set_message(msg, None if ok else "error")
-        self._auto_testing = False
         self._preset_menu.render()
         self._refresh_zapret_tile()
         if not ok:
@@ -1403,7 +1406,7 @@ class DashboardTab(QWidget):
         if self._pending_start_after_test:
             self._pending_start_after_test = False
             bat = self._get_current_bat()
-            if bat is not None and self.manager is not None:
+            if bat is not None and self.manager is not None and not self._shutting_down:
                 self.manager.start_async(bat_path=bat, allow_install=True)
 
     # ── Старт/стоп zapret ────────────────────────────
@@ -1480,7 +1483,7 @@ class DashboardTab(QWidget):
 
         self._refresh_game_filter_ui()
 
-        if self.manager is not None and self.manager.is_running:
+        if self._bypass_on():
             bat = self._get_current_bat()
             if bat is not None:
                 self.manager.restart_async(bat_path=bat)
@@ -1551,9 +1554,14 @@ class DashboardTab(QWidget):
             log.error(f"Установка Core не удалась: {msg}")
             return
 
+        self._refresh_game_lists()      # при запуске FlowZap их не скачали: Core не было
         self._load_presets()
         if self._preset_menu.presets:
             self._on_refresh_ping(auto=True)
+
+    def _refresh_game_lists(self) -> None:
+        if (self._zapret_dir / "bin" / "winws.exe").exists():
+            update_gaming_lists(self._zapret_dir / "lists")
 
     def _on_dns_toggle(self) -> None:
         self._dns_restore_pending = False   # пользователь решил сам — отложенное не включаем
@@ -1576,7 +1584,7 @@ class DashboardTab(QWidget):
     def _apply_dns_async_tracked(self, enable: bool, pair, user: bool = False) -> None:
         """dns_manager.apply_dns_async + отмечаем операцию как "в процессе"
         до её реального завершения в фоновом потоке (self._dns_toggle_event) —
-        нужно только shutdown()'у, чтобы не гонять netsh параллельно со своим
+        нужно только shutdown()'у, чтобы не менять DNS параллельно со своим
         сбросом DNS при быстром выходе сразу после включения/выключения."""
         self._dns_toggle_event.clear()
         self._dns_busy = True
@@ -1854,6 +1862,10 @@ class DashboardTab(QWidget):
     def _poll_tg(self) -> None:
         if self._tg_polling:
             return
+        # Прокси выключен — опрос нужен только для точки «Telegram мимо
+        # прокси»; пока главную не видно (трей, другая вкладка), её некому смотреть
+        if not self._tg_running and not self.isVisible():
+            return
         self._tg_polling = True
         gen = self._tg_gen
         self._tg.poll_async(lambda alive, clients, app, path, rejected:
@@ -2074,7 +2086,7 @@ class DashboardTab(QWidget):
         Core или фоновый при простое — см. _maybe_run_idle_preset_check).
         UpdatesTab проверяет это перед обновлением Core: тест держит
         отдельный, не связанный с ZapretManager процесс winws.exe, и
-        обновление Core прибило бы его через taskkill в середине
+        обновление Core остановило бы его в середине
         прогона — тестируемый в этот момент пресет получил бы ложный
         FAIL не из-за себя, а из-за самого обновления."""
         return self._ping_mgr.is_testing
@@ -2124,6 +2136,7 @@ class DashboardTab(QWidget):
     def on_core_updated(self) -> None:
         """Вызывается UpdatesTab после успешного обновления Core — перечитать пресеты."""
         self._load_presets()
+        self._refresh_game_lists()
 
     def shutdown(self) -> None:
         """Синхронно остановить всё, что включил пользователь: сбросить DNS на
@@ -2138,7 +2151,8 @@ class DashboardTab(QWidget):
         сначала дожидаемся его (до 5 с), а не полагаемся на _dns_enabled/
         _tg_running, которые в этот момент ещё могут отражать не завершившуюся
         операцию. Без этого ожидания собственный синхронный сброс DNS ниже мог
-        бы гонять netsh параллельно с тем же фоновым потоком."""
+        бы менять DNS параллельно с тем же фоновым потоком."""
+        self._shutting_down = True
         # Окно прячем сразу: уборка ниже может занять несколько секунд, и всё
         # это время окно висело бы «замёрзшим».
         win = self.window()

@@ -140,7 +140,9 @@ def _try_wake_existing_instance() -> bool:
         return False
     sock.write(b"WAKEUP")
     sock.waitForBytesWritten(500)
-    if not sock.waitForReadyRead(1000):
+    # Первый экземпляр отвечает из цикла событий — после сборки окна. При
+    # медленном старте Windows (автозапуск + двойной щелчок) секунды не хватало
+    if not sock.waitForReadyRead(5000):
         sock.close()
         return False
     reply = bytes(sock.readAll())
@@ -236,11 +238,10 @@ def load_config(config_path: Path) -> dict:
             "exe_path": _WINWS_DEFAULT,
             "presets_dir": _ZAPRET_DIR_DEFAULT,
             "last_preset": "general",
-            "args": [],
             "autostart": False,
         },
-        "ui":      {"theme": DEFAULT_THEME, "remember_tab": True},
-        "updater": {"repo": "Flowseal/zapret-discord-youtube", "check_on_start": True},
+        "ui":      {"theme": DEFAULT_THEME},
+        "updater": {"check_on_start": True},
         "dns": {"pairs": []},
     }
     try:
@@ -254,6 +255,10 @@ def load_config(config_path: Path) -> dict:
         # dns.servers — формат до списка пар; адреса из него были адресами
         # xbox-dns, а он теперь встроенный — ключ просто убираем
         defaults.get("dns", {}).pop("servers", None)
+        # Ключи прежних версий, которые больше нигде не читаются
+        for section, key in (("zapret", "args"), ("ui", "remember_tab"), ("updater", "repo")):
+            defaults[section].pop(key, None)
+        defaults.pop("last_state", None)
     except OSError as exc:
         # Файл есть, но не читается — не затирать его настройками по умолчанию
         defaults["_config_readonly"] = True

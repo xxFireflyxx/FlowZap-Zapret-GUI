@@ -8,6 +8,7 @@ core/updates/zapret.py
 """
 import logging
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
@@ -27,6 +28,14 @@ SOURCEFORGE_ZAPRET_PROJECT = "flowseal.mirror"
 # Какие пресеты (.bat) поставил релиз Flowseal — чтобы при обновлении
 # удалять только их, а не пресеты, которые человек сделал сам
 PRESETS_MANIFEST = "flowzap-presets.txt"
+
+# Установку могут начать и главная (первый запуск), и «Обновления» — две сразу
+# писали бы в одну папку zapret
+_install_lock = threading.Lock()
+
+
+def is_installing() -> bool:
+    return _install_lock.locked()
 
 
 def get_installed_core_version(zapret_dir: Path) -> Optional[str]:
@@ -63,12 +72,12 @@ def _unload_windivert() -> None:
     # Останавливаем и удаляем службу WinDivert (возможны оба имени)
     for svc in ("WinDivert", "WinDivert14"):
         try:
-            subprocess.run(["sc", "stop", svc],
+            subprocess.run([winproc.system_exe("sc.exe"), "stop", svc],
                            capture_output=True, creationflags=flags, timeout=5)
         except Exception:
             pass
         try:
-            subprocess.run(["sc", "delete", svc],
+            subprocess.run([winproc.system_exe("sc.exe"), "delete", svc],
                            capture_output=True, creationflags=flags, timeout=5)
         except Exception:
             pass
@@ -129,9 +138,21 @@ def download_and_install_core(
     repo: str = CORE_REPO,
     on_progress: Optional[Callable[[str], None]] = None,
     on_done: Optional[Callable[[bool, str], None]] = None,
+    before_install: Optional[Callable[[], None]] = None,
 ) -> None:
+    """before_install — в фоновом потоке, когда архив уже скачан (например,
+    остановить обход: он работает, пока идёт загрузка)."""
     def body(log: Callable[[str], None]) -> str:
+        if not _install_lock.acquire(blocking=False):
+            raise ValueError("zapret уже устанавливается")
+        try:
+            return _install(log)
+        finally:
+            _install_lock.release()
+
+    def _install(log: Callable[[str], None]) -> str:
         import zipfile, io, tempfile
+        from core.service import client as service_client
 
         tag, asset = latest_asset(repo, find_zip_asset, "Архив zapret", log)
         data = download_asset(
@@ -140,10 +161,15 @@ def download_and_install_core(
             "зеркало SourceForge",
         )
 
-        logger.info("Останавливаем WinDivert...")
-        _unload_windivert()
+        if before_install:
+            before_install()
+        # Со службой winws работает из её папки, а не из zapret\bin: драйвер
+        # здесь не загружен, а без прав администратора его и не выгрузить
+        if not service_client.service_installed():
+            logger.info("Останавливаем WinDivert...")
+            _unload_windivert()
         log("Распаковываем...")
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
                 zf.extractall(tmp)
             entries = list(Path(tmp).iterdir())
@@ -157,7 +183,6 @@ def download_and_install_core(
         ensure_user_lists(zapret_dir / "lists")
         log(f"✓ zapret обновлён до {tag}.")
 
-        from core.service import client as service_client
         if service_client.service_installed():
             # winws работает из папки службы — она сама скачивает ту же версию
             # и сверяет sha256 (без UAC). Не вышло — повторит перед запуском.

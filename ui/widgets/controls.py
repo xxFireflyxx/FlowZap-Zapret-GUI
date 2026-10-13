@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QAbstractButton, QButtonGroup, QFrame, QHBoxLayout, QPushButton, QSizePolicy, QWidget,
 )
 
-from ui.theme import theme, _mix
+from ui.theme import deepen, theme, _mix
 from ui.widgets.base import Glyph, button, glyph_font
 
 
@@ -119,10 +119,6 @@ class IconButton(QAbstractButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(size, size)
 
-    def set_glyph(self, glyph: str) -> None:
-        self._glyph = glyph
-        self.update()
-
     def enterEvent(self, event) -> None:
         self.update()
         super().enterEvent(event)
@@ -170,9 +166,12 @@ class CircleBadge(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(_mix(pal.bg_card, pal.accent, 0.22) if self._active else pal.bg_input))
+        circle = _mix(pal.bg_card, pal.accent, 0.22) if self._active else pal.bg_input
+        painter.setBrush(QColor(circle))
         painter.drawEllipse(QRectF(self.rect()))
-        painter.setPen(QColor(pal.accent if self._active else pal.text_secondary))
+        # Значок — тот же оттенок, но заметнее: светлый акцент (персиковый) на
+        # своём же светлом круге почти пропадал
+        painter.setPen(QColor(deepen(pal.accent, circle) if self._active else pal.text_secondary))
         painter.setFont(glyph_font(self.height() // 2 - 3))
         painter.drawText(self.rect(), Qt.AlignCenter, self._glyph)
 
@@ -186,7 +185,6 @@ class FieldButton(QAbstractButton):
         super().__init__(parent)
         self.setText(text)
         self._secondary = ""
-        self._dot: str | None = None
         self._trailing = trailing
         self._centered = False
         self.setCursor(Qt.PointingHandCursor)
@@ -195,10 +193,6 @@ class FieldButton(QAbstractButton):
 
     def set_secondary(self, text: str) -> None:
         self._secondary = text
-        self.update()
-
-    def set_dot(self, palette_attr: str | None) -> None:
-        self._dot = palette_attr
         self.update()
 
     def set_centered(self, centered: bool) -> None:
@@ -232,18 +226,11 @@ class FieldButton(QAbstractButton):
         text_w = fm.horizontalAdvance(self.text())
         sec_w = sfm.horizontalAdvance(self._secondary) + 8 if self._secondary else 0
         trailing_w = 22 if self._trailing else 0
-        dot_w = 20 if self._dot else 0
 
         right = self.width() - 14
-        content_w = dot_w + text_w + sec_w + (trailing_w + 6 if self._centered and self._trailing else 0)
+        content_w = text_w + sec_w + (trailing_w + 6 if self._centered and self._trailing else 0)
         x = (self.width() - content_w) / 2 if self._centered else 14
         h = self.height()
-
-        if self._dot:
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(getattr(pal, self._dot, pal.text_muted)))
-            painter.drawEllipse(QRectF(x, h / 2 - 5, 10, 10))
-            x += dot_w
 
         avail = right - x - (0 if self._centered else trailing_w + 6)
         painter.setFont(font)
@@ -275,7 +262,6 @@ class SegmentedControl(QFrame):
     (в «Персиковой» выбранный пункт выглядел как дырка)."""
 
     changed = Signal(str)
-    STYLE = "accent"        # "accent" — мягкий акцент; "card" — цвет карточки (как было)
 
     def __init__(self, options: list[tuple[str, str]], parent=None) -> None:
         super().__init__(parent)
@@ -305,6 +291,8 @@ class SegmentedControl(QFrame):
         self._anim.valueChanged.connect(self._on_step)
 
     def _on_clicked(self, key: str) -> None:
+        if key == self._current:
+            return      # уже выбран — без changed: «Параметры» стирали бы набранное в поле
         self._move_to(key, animate=True)
         self.changed.emit(key)
 
@@ -352,12 +340,8 @@ class SegmentedControl(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self._pill_rect().adjusted(0.5, 0.5, -0.5, -0.5)
-        if self.STYLE == "card":
-            painter.setPen(QPen(QColor(p.border_strong), 1))
-            painter.setBrush(QColor(p.bg_card))
-        else:
-            painter.setPen(QPen(QColor(_mix(p.bg_input, p.accent, 0.45)), 1))
-            painter.setBrush(QColor(p.segment_on))
+        painter.setPen(QPen(QColor(_mix(p.bg_input, p.accent, 0.45)), 1))
+        painter.setBrush(QColor(p.segment_on))
         painter.drawRoundedRect(rect, 6, 6)
 
 

@@ -24,7 +24,7 @@ if %errorlevel% == 0 (
 
     rem Устанавливаем зависимости
     echo Проверка зависимостей...
-    pip install -r requirements.txt --quiet
+    python -m pip install -r requirements.txt --quiet
 
     rem Запускаем
     echo Запуск FlowZap...

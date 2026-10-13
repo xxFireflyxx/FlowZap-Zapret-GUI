@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QFrame, QHBoxLayout, QVBoxLayout, QWidget,
 )
 
-from ui.theme import theme
+from ui.theme import deepen, theme
 from ui.widgets.base import label
 from ui.widgets.controls import StatusDot
 
@@ -67,14 +67,15 @@ def show_popup_below(popup: QWidget, anchor: QWidget, gap: int = 6) -> None:
     below = bounds.bottom() - (a_bottom + gap)
     above = (a_top - gap) - bounds.top()
     h = popup.height()
+    # Не ниже 80 — и это до расчёта y, иначе окно над кнопкой наезжало на неё
     if h > below and above > below:
-        h = min(h, above)
+        h = max(80, min(h, above))
         y = a_top - gap - h
     else:
-        h = min(h, below)
+        h = max(80, min(h, below))
         y = a_bottom + gap
     if h != popup.height():
-        popup.setFixedHeight(max(80, h))
+        popup.setFixedHeight(h)
 
     x = anchor.mapToGlobal(QPoint(0, 0)).x()
     x = min(x, bounds.right() - popup.width())
@@ -107,7 +108,7 @@ class HelpIcon(QAbstractButton):
         pal = theme.palette
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        color = QColor(pal.accent if self.underMouse() else pal.text_muted)
+        color = QColor(deepen(pal.accent, pal.bg_card) if self.underMouse() else pal.text_muted)
         painter.setPen(QPen(color, 1.3))
         painter.setBrush(Qt.NoBrush)
         painter.drawEllipse(QRectF(1.5, 1.5, self.width() - 3, self.height() - 3))

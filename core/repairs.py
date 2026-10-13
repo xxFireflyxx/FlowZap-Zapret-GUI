@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from core.announcements import _version, fetch_signed
+from core.system.winproc import system_exe
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ def _write_script(item: dict, root: Path) -> Path:
 
 
 def _command(script: Path) -> list[str]:
-    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    return [system_exe("powershell.exe"), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", str(script)]
 
 
