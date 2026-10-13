@@ -318,7 +318,11 @@ def apply_dns_async(
     оборачивает on_done в Signal.emit."""
 
     def _worker() -> None:
-        error = apply_dns(enable, pair, allow_install, engine_dir)
+        try:
+            error = apply_dns(enable, pair, allow_install, engine_dir)
+        except Exception as e:      # иначе on_done не придёт и плитка DNS зависнет
+            logger.exception("DNS: непредвиденная ошибка")
+            error = str(e) or "Непредвиденная ошибка — подробности в логе"
         on_done(not error, error)
 
     threading.Thread(target=_worker, daemon=True, name="dns-apply").start()

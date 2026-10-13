@@ -17,8 +17,9 @@
 //     пути, указанные клиентом, и пишет их только в свою папку run\;
 //   * аргументы winws проверяются по устройству, а не по списку имён (новые
 //     параметры из новых версий zapret проходят без обновления службы):
-//     «--имя[=значение]», в значении нет путей (\, X:, /…, ..), кавычек и
-//     управляющих символов;
+//     «--имя[=значение]», значение — только из букв, цифр и . _ , : = + ! -
+//     (без путей, кавычек, @ и знаков, которые winws или cygwin могли бы
+//     развернуть в путь);
 //   * свой winws служба обновляет только сама: скачивает релиз Flowseal с
 //     GitHub (или зеркала SourceForge) и сверяет sha256 из GitHub API; от
 //     клиента — лишь номер версии, файлов от него служба не берёт;
@@ -53,13 +54,14 @@ using System.ServiceProcess;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 
 [assembly: AssemblyTitle("FlowZap Service")]
 [assembly: AssemblyDescription("Фоновая служба FlowZap: запуск обхода и системные настройки")]
 [assembly: AssemblyProduct("FlowZap")]
-[assembly: AssemblyVersion("1.4.0.0")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.4.1.0")]
+[assembly: AssemblyFileVersion("1.4.1.0")]
 
 namespace FlowZap.Service
 {
@@ -67,9 +69,12 @@ namespace FlowZap.Service
     {
         public const string ServiceName = "FlowZapService";
         public const string DisplayName = "FlowZap Service";
-        public const string Version = "1.4.0";
+        public const string Version = "1.4.1";
         public const int Protocol = 1;
-        public const int MaxRequestBytes = 64 * 1024 * 1024;
+        // Файлы пресета (списки, .bin) — сейчас около 2 МБ; сообщение — они в base64
+        public const int MaxRequestBytes = 16 * 1024 * 1024;
+        public const int MaxMessageBytes = 24 * 1024 * 1024;
+        public const int MaxClients = 16;
         public const int MaxLines = 300;
         public const string ReadyMark = "capture is started";
         public static readonly string[] EngineFiles = { "winws.exe", "cygwin1.dll", "WinDivert.dll", "WinDivert64.sys" };
@@ -183,6 +188,11 @@ namespace FlowZap.Service
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         public static extern bool MoveFileEx(string existing, string replacement, int flags);
 
+        [DllImport("kernel32.dll")]
+        public static extern uint SetErrorMode(uint mode);
+
+        public const uint SEM_FAILCRITICALERRORS = 0x0001, SEM_NOGPFAULTERRORBOX = 0x0002, SEM_NOOPENFILEERRORBOX = 0x8000;
+
         // ── запуск программы от имени пользователя (обновление FlowZap) ──
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -261,6 +271,7 @@ namespace FlowZap.Service
         // Путь с диском (C:x, @D:\x, ,E:y) — в любом месте значения
         static readonly Regex DrivePath = new Regex(@"(\A|[@,=+:])[A-Za-z]:(?!:)");
         static readonly Regex SafeName = new Regex(@"[^A-Za-z0-9._-]");
+        static readonly Regex ValueChars = new Regex(@"\A[A-Za-z0-9._,:=+!-]*\z");
 
         public static StartPlan Parse(Dictionary<string, object> request)
         {
@@ -319,15 +330,13 @@ namespace FlowZap.Service
             return arg;
         }
 
-        // Значение без путей: файлы приходят только содержимым (см. FileArg)
+        // Значение без путей: файлы приходят только содержимым (см. FileArg).
+        // Разрешённые символы, а не запрещённые: cygwin в winws сам разбирает
+        // командную строку (кавычки, шаблоны), поэтому любой «необычный» знак
+        // может стать путём уже после проверки.
         static bool SafeValue(string value)
         {
-            foreach (char c in value)
-                if (c < 0x20 || c == 0x7f || c == '"' || c == '\\') return false;
-            if (value.Contains("..") || value.Contains("//") || value.Contains("/cygdrive")) return false;
-            if (value.StartsWith("/") || value.StartsWith("@/") || value.StartsWith("~")) return false;
-            if (DrivePath.IsMatch(value)) return false;
-            return true;
+            return ValueChars.IsMatch(value) && !value.Contains("..") && !DrivePath.IsMatch(value);
         }
 
         static string Cut(string s)
@@ -348,6 +357,7 @@ namespace FlowZap.Service
         object exitCode;            // int или null (остановлен по запросу / не запускался)
         int ownerClient;            // кто запустил: его отключение гасит обход
         bool timestampsDone;
+        string engineVersion;       // version.txt движка; null — прочитать заново
         long seq;
         readonly LinkedList<KeyValuePair<long, string>> lines = new LinkedList<KeyValuePair<long, string>>();
 
@@ -360,6 +370,7 @@ namespace FlowZap.Service
         {
             lock (gate)
             {
+                engineVersion = null;
                 StopLocked();
                 KillStrays();
                 Installer.TrySc("stop", "WinDivert");
@@ -443,12 +454,19 @@ namespace FlowZap.Service
                 // через очередь пула потоков.
                 p.Exited += delegate(object s, EventArgs e) { ThreadPool.QueueUserWorkItem(delegate { OnExit(p); }); };
 
+                try { p.Start(); }
+                catch (Exception e)
+                {
+                    // Например, антивирус не дал запустить winws.exe
+                    p.Dispose();
+                    Log.Write("winws не запустился: " + e.Message);
+                    throw new InvalidOperationException("Не удалось запустить winws: " + e.Message);
+                }
                 process = p;
                 exited = false;
                 ready = false;
                 exitCode = null;
                 ownerClient = client;
-                p.Start();
                 job = CreateKillOnCloseJob(p);
                 p.BeginOutputReadLine();
                 p.BeginErrorReadLine();
@@ -508,10 +526,26 @@ namespace FlowZap.Service
             }
             catch (Exception e) { Log.Write("Остановка winws: " + e.Message); }
             if (job != IntPtr.Zero) { Native.CloseHandle(job); job = IntPtr.Zero; }
+            Process old = process;
             exited = true;
             exitCode = null;
             ready = false;
             process = null;
+            // Не здесь: WaitForExit() ждёт обработчики вывода, а они берут gate
+            ThreadPool.QueueUserWorkItem(delegate { Release(old); });
+        }
+
+        // Закрыть процесс, когда он вышел и его вывод дочитан, — иначе
+        // дескрипторы каждого запуска (проверка — десятки) копились бы в службе
+        static void Release(Process p)
+        {
+            try
+            {
+                if (!p.WaitForExit(10000)) return;
+                p.WaitForExit();
+                p.Dispose();
+            }
+            catch (Exception) { }
         }
 
         // Только один WinDivert-перехват на компьютер — другие winws мешали бы
@@ -612,7 +646,8 @@ namespace FlowZap.Service
             s["pid"] = running ? (object)process.Id : null;
             s["exit_code"] = exitCode;
             s["owner"] = running && client == ownerClient;
-            s["engine_version"] = ReadEngineVersion();
+            if (engineVersion == null) engineVersion = ReadEngineVersion();
+            s["engine_version"] = engineVersion;
             s["features"] = new[] { "app-update" };
             s["seq"] = seq;
             if (since >= 0)
@@ -1140,8 +1175,10 @@ try {
             if (addresses.Count == 0 || addresses.Count > 8) throw new ArgumentException("Нужны IP-адреса DNS");
             lock (gate)
             {
-                Dictionary<string, object> result = Run(true, addresses);
+                // До Run: если адреса встали лишь частично и Run бросил ошибку,
+                // отключение этого FlowZap всё равно сбросит DNS
                 owner = client;
+                Dictionary<string, object> result = Run(true, addresses);
                 Log.Write("DNS установлен: " + string.Join(", ", addresses) + " (клиент " + client + ", " + result["method"] + ")");
                 return result;
             }
@@ -1219,9 +1256,14 @@ try {
             string fatal = null;
             using (Process p = Process.Start(psi))
             {
-                string stdout = p.StandardOutput.ReadToEnd();
-                p.StandardError.ReadToEnd();
+                // Читаем оба потока сразу и параллельно: ReadToEnd до WaitForExit
+                // ждал бы выхода сколько угодно (тайм-аут не срабатывал), а
+                // переполненный stderr остановил бы PowerShell
+                Task<string> output = p.StandardOutput.ReadToEndAsync();
+                Task<string> errors = p.StandardError.ReadToEndAsync();
                 if (!p.WaitForExit(30000)) { try { p.Kill(); } catch (Exception) { } throw new InvalidOperationException("Windows не ответила вовремя — попробуйте ещё раз"); }
+                string stdout = output.Wait(5000) ? output.Result : "";
+                errors.Wait(1000);
                 foreach (string raw in stdout.Split('\n'))
                 {
                     string line = raw.Trim();
@@ -1464,6 +1506,7 @@ try {
         readonly ManualResetEvent stopping = new ManualResetEvent(false);
         Thread acceptThread;
         int nextClient;
+        int activeClients;
 
         public Server(Engine engine) { this.engine = engine; }
 
@@ -1517,6 +1560,17 @@ try {
                         return;
                     }
                     pipe.EndWaitForConnection(ar);
+                    // FlowZap держит одно соединение (и ещё одно на время
+                    // обновления) — больше этого предела нужно только сбойной программе
+                    if (Interlocked.Increment(ref activeClients) > Const.MaxClients)
+                    {
+                        Interlocked.Decrement(ref activeClients);
+                        pipe.Dispose();
+                        pipe = null;
+                        Log.Write("Канал: слишком много подключений — новое закрыто");
+                        stopping.WaitOne(200);
+                        continue;
+                    }
                     int id = Interlocked.Increment(ref nextClient);
                     NamedPipeServerStream connected = pipe;
                     pipe = null;
@@ -1548,7 +1602,7 @@ try {
                     byte[] head = ReadExact(pipe, 4);
                     if (head == null) break;
                     int size = BitConverter.ToInt32(head, 0);
-                    if (size <= 0 || size > Const.MaxRequestBytes * 2) break;
+                    if (size <= 0 || size > Const.MaxMessageBytes) break;
                     byte[] body = ReadExact(pipe, size);
                     if (body == null) break;
 
@@ -1578,6 +1632,7 @@ try {
             finally
             {
                 try { pipe.Dispose(); } catch (Exception) { }
+                Interlocked.Decrement(ref activeClients);
                 engine.ClientGone(client);
                 dns.ClientGone(client);
                 Log.Write("FlowZap отключился (клиент " + client + ")");
@@ -1912,6 +1967,10 @@ try {
     {
         static int Main(string[] args)
         {
+            // Без системных окон ошибок («не найден DLL», «приложение не
+            // подходит», падение): у службы они в невидимом сеансе 0, закрыть
+            // их некому — запуск winws висел бы. Режим наследует и сам winws.
+            Native.SetErrorMode(Native.SEM_FAILCRITICALERRORS | Native.SEM_NOGPFAULTERRORBOX | Native.SEM_NOOPENFILEERRORBOX);
             string mode = args.Length > 0 ? args[0] : "";
             if (mode == "--service")
             {

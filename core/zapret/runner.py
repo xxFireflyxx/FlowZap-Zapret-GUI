@@ -173,7 +173,7 @@ class _ServiceHandle(WinwsHandle):
         while True:
             try:
                 status = service_client.session.status(self._seq)
-            except ServiceError as e:
+            except Exception as e:      # не только ServiceError: поток не должен умереть молча
                 logger.error(f"Служба: {e}")
                 self.returncode = -1
                 break

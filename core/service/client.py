@@ -46,6 +46,7 @@ _shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
 ERROR_FILE_NOT_FOUND = 2
 ERROR_SERVICE_ALREADY_RUNNING = 1056
+ERROR_SERVICE_DISABLED = 1058
 ERROR_SERVICE_DOES_NOT_EXIST = 1060
 ERROR_PIPE_BUSY = 231
 ERROR_IO_PENDING = 997
@@ -169,14 +170,20 @@ def service_installed() -> bool:
 def _wait_running(timeout: float) -> int:
     """Запустить службу (если остановлена) и дождаться её. PID процесса."""
     deadline = time.monotonic() + timeout
-    state, pid = query_service(start=True)
-    while state != "running":
-        if state == "missing":
-            raise ServiceError("Фоновая служба FlowZap не установлена")
-        if time.monotonic() > deadline:
-            raise ServiceError("Фоновая служба FlowZap не запускается — переустановите её в настройках")
-        time.sleep(0.2)
-        state, pid = query_service()
+    try:
+        state, pid = query_service(start=True)
+        while state != "running":
+            if state == "missing":
+                raise ServiceError("Фоновая служба FlowZap не установлена")
+            if time.monotonic() > deadline:
+                raise ServiceError("Фоновая служба FlowZap не запускается — переустановите её в настройках")
+            time.sleep(0.2)
+            state, pid = query_service()
+    except OSError as e:
+        if e.winerror == ERROR_SERVICE_DISABLED:
+            raise ServiceError("Фоновая служба FlowZap отключена в службах Windows — "
+                               "переустановите её в настройках") from e
+        raise ServiceError(f"Фоновая служба FlowZap недоступна: {e.strerror or e}") from e
     return pid
 
 
@@ -232,7 +239,7 @@ class _Pipe:
             elif err == ERROR_FILE_NOT_FOUND and time.monotonic() < deadline:
                 time.sleep(0.15)        # служба только что запустилась и ещё создаёт канал
             else:
-                raise ctypes.WinError(err)
+                raise ServiceError(f"Нет связи с фоновой службой FlowZap: {ctypes.WinError(err).strerror}")
             if time.monotonic() > deadline:
                 raise ServiceError("Фоновая служба FlowZap не отвечает")
         self._handle = handle
