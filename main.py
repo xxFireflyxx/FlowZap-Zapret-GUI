@@ -307,6 +307,37 @@ def _migrate_win_autostart_async() -> None:
     threading.Thread(target=_worker, daemon=True, name="autostart-migrate").start()
 
 
+GC_INTERVAL_MS = 1000
+GC_FULL_EVERY = 60  # полная сборка — раз в минуту
+
+
+def _collect_garbage_on_gui_thread(app: QApplication) -> None:
+    """Сборщик мусора Python срабатывает в том потоке, где набралось
+    объектов, — часто в фоновом (опрос TG Proxy, загрузки). Если в мусоре
+    оказывается объект Qt, он удаляется не из главного потока, пока тот
+    рисует окно, — FlowZap падает (access violation, crash.log: «Garbage-
+    collecting» в фоновом потоке). Поэтому автоматическая сборка выключена,
+    а собирает таймер в главном потоке."""
+    import gc
+    from PySide6.QtCore import QTimer
+
+    gc.disable()
+    young = gc.get_threshold()[0]
+    ticks = 0
+
+    def _collect() -> None:
+        nonlocal ticks
+        ticks += 1
+        if ticks % GC_FULL_EVERY == 0:
+            gc.collect()
+        elif gc.get_count()[0] > young:
+            gc.collect(0)
+
+    timer = QTimer(app)
+    timer.timeout.connect(_collect)
+    timer.start(GC_INTERVAL_MS)
+
+
 def main() -> None:
     setup_logging(ROOT / "logs")
     setup_crash_handling(ROOT / "logs")
@@ -315,6 +346,7 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # закрытие окна сворачивает в трей, не завершает процесс
+    _collect_garbage_on_gui_thread(app)
 
     # Single-instance — до создания manager/MainWindow: если это второй
     # запуск и первый экземпляр отозвался, второму дальше делать нечего.
