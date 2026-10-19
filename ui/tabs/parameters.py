@@ -111,6 +111,9 @@ def _dns_query_ping(server: str, timeout: float = 3.0) -> str:
 # (файл, понятное название, пояснение). Только свои списки пользователя
 # (*-user.txt): списки Flowseal (вкладка «Core» до 1.1.2 — ipset-exclude.txt)
 # здесь не правятся — обновление zapret всё равно вернуло бы их как были.
+STATUS_HIDE_MS = 5000                       # сколько видна строка «✓ Добавлено» и т.п.
+RESULT_TONES = ("success", "warning", "error")  # итог действия; без tone — подсказка поиска
+
 LIST_FILES = [
     ("list-general-user.txt",  "Обходить",
      "Сайты, к которым применяется обход — вдобавок к встроенным спискам."),
@@ -440,6 +443,19 @@ class ParametersTab(QWidget):
 
         self._pingUpdated.connect(self._on_ping_updated)
 
+        # «✓ Добавлено», «✓ Удалено» и т.п. — на несколько секунд; подсказки
+        # поиска (без tone) живут, пока в поле есть текст
+        self._status_tone: str | None = None
+        self._list_status_tone: str | None = None
+        self._status_hide = QTimer(self)
+        self._status_hide.setSingleShot(True)
+        self._status_hide.setInterval(STATUS_HIDE_MS)
+        self._status_hide.timeout.connect(lambda: self._set_status(""))
+        self._list_status_hide = QTimer(self)
+        self._list_status_hide.setSingleShot(True)
+        self._list_status_hide.setInterval(STATUS_HIDE_MS)
+        self._list_status_hide.timeout.connect(lambda: self._set_list_status(""))
+
         self._build()
         self._load_dns_from_config()
         self._on_file_select(self._list_file)
@@ -509,6 +525,8 @@ class ParametersTab(QWidget):
         if key not in self._sections:
             return
         changed = key != self._section
+        if changed and self._section:
+            self._clear_results()
         self._section = key
         for k, card in self._sections.items():
             card.setVisible(k == key)
@@ -569,6 +587,23 @@ class ParametersTab(QWidget):
     def _set_status(self, text: str, tone: str | None = None) -> None:
         self._status_lbl.setText(text)
         set_tone(self._status_lbl, tone)
+        self._status_tone = tone if text else None
+        if text and tone in RESULT_TONES:
+            self._status_hide.start()
+        else:
+            self._status_hide.stop()
+
+    def _clear_results(self) -> None:
+        """Ушли с вкладки или из раздела — итог прошлого действия больше не к месту."""
+        if self._status_tone in RESULT_TONES:
+            self._set_status("")
+        if self._list_status_tone in RESULT_TONES:
+            self._set_list_status("")
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        if not event.spontaneous():     # сворачивание окна — не уход с вкладки
+            self._clear_results()
 
     # ── DNS: действия ───────────────────────────────
 
@@ -912,6 +947,11 @@ class ParametersTab(QWidget):
     def _set_list_status(self, text: str, tone: str | None = None) -> None:
         self._lists_status.setText(text)
         set_tone(self._lists_status, tone)
+        self._list_status_tone = tone if text else None
+        if text and tone in RESULT_TONES:
+            self._list_status_hide.start()
+        else:
+            self._list_status_hide.stop()
 
     def _add_entries(self) -> None:
         entries = self._parse_list_input()
