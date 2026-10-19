@@ -1,3 +1,4 @@
+from functools import partial
 from pathlib import Path
 import logging
 import sys
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import (
 
 from ui.theme import DEFAULT_THEME, theme
 from ui.widgets.animation import IntroSplash, cascade_hide, cascade_in, cascade_settle_ms, page_steps
-from ui.widgets.base import Glyph, label, set_tone
+from ui.widgets.base import Glyph, dot_icon, label, set_tone
 from ui.widgets.navigation import TabBar
 from ui.widgets.aurora import AuroraBackground
 from core.updates.app import find_exe_asset
@@ -47,6 +48,7 @@ UPDATE_CHECK_STARTUP_DELAY_MS = 3000
 # DNS, отложенный до конца проверки обновлений, включается не позже этого
 # (GitHub не отвечает — не держать пользователя без своего DNS)
 DNS_RESTORE_MAX_WAIT_MS = 10000
+TRAY_REFRESH_MS = 2000          # подсказка на значке в трее — состояние плиток
 
 
 def _asset_path(root: Path, name: str) -> Path:
@@ -564,13 +566,52 @@ class MainWindow(QMainWindow):
         if icon_path.exists():
             self.tray.setIcon(QIcon(str(icon_path)))
 
-        menu = QMenu()
-        menu.addAction("Открыть").triggered.connect(self._restore_from_tray)
-        menu.addAction("Выход").triggered.connect(self._quit)
-        self.tray.setContextMenu(menu)
+        # «Открыть» сверху, «Выход» отдельно внизу; между ними — три плитки
+        # главной: точка — состояние, справа пресет / сервер, щелчок нажимает
+        # тумблер плитки
+        self._tray_menu = QMenu()
+        self._tray_menu.addAction("Открыть FlowZap").triggered.connect(self._restore_from_tray)
+        self._tray_menu.addSeparator()
+        self._tray_actions = {}
+        for key in ("zapret", "dns", "tg"):
+            action = self._tray_menu.addAction("")
+            action.triggered.connect(partial(self._on_tray_toggle, key))
+            self._tray_actions[key] = action
+        self._tray_menu.addSeparator()
+        self._tray_menu.addAction("Выход").triggered.connect(self._quit)
+        self._tray_menu.aboutToShow.connect(self._refresh_tray)
+        self.tray.setContextMenu(self._tray_menu)
 
         self.tray.activated.connect(self._on_tray_activated)
+        self._refresh_tray()
         self.tray.show()
+        # Подсказка на значке — состояние плиток; строки дешёвые, раз в 2 с хватает
+        self._tray_timer = QTimer(self)
+        self._tray_timer.setInterval(TRAY_REFRESH_MS)
+        self._tray_timer.timeout.connect(self._refresh_tray_tooltip)
+        self._tray_timer.start()
+
+    def _refresh_tray(self) -> None:
+        p = theme.palette
+        colors = {"on": p.success, "off": p.text_muted, "busy": p.accent, "error": p.error}
+        for key, title, detail, state in self.dashboard.tray_items():
+            action = self._tray_actions[key]
+            action.setText(f"{title}\t{detail}")    # после \t — колонкой справа
+            action.setIcon(dot_icon(colors[state], 12))
+            action.setEnabled(state != "busy")
+        self._refresh_tray_tooltip()
+
+    def _refresh_tray_tooltip(self) -> None:
+        tip = self.dashboard.tray_tooltip()
+        if tip != self.tray.toolTip():
+            self.tray.setToolTip(tip)
+
+    def _on_tray_toggle(self, key: str, _checked: bool = False) -> None:
+        if not self.dashboard.tray_toggle(key):
+            # Включать нечего — пресетов или DNS-серверов нет: показать главную
+            self.show_tab(0)
+            self._restore_from_tray()
+        self._refresh_tray()
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:

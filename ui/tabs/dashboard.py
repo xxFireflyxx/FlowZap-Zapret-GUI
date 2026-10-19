@@ -2024,6 +2024,58 @@ class DashboardTab(QWidget):
         if error:
             self._tile_tg.set_error(True)
 
+    # ── Меню в трее ──
+
+    TRAY_TITLES = {"zapret": "Обход", "dns": "DNS", "tg": "TG Proxy"}
+
+    def _tray_tiles(self) -> dict:
+        return {"zapret": self._tile_zapret, "dns": self._tile_dns, "tg": self._tile_tg}
+
+    def tray_items(self) -> list[tuple[str, str, str, str]]:
+        """(ключ, название, справа, состояние) для меню в трее — то же, что
+        показывают плитки. Состояние: on / off / busy (идёт операция, справа —
+        «Применяю…») / error (плитка красная)."""
+        preset = self._presets_panel.selected_preset()
+        pair = dns_manager.get_active_pair(self._config)
+        details = {
+            "zapret": preset["name"] if preset else "работает",
+            "dns": (pair.get("name") or pair.get("ipv4_main") or "включён") if pair else "включён",
+            "tg": "работает",
+        }
+        items = []
+        for key, tile in self._tray_tiles().items():
+            if not tile.switch.isEnabled():
+                state, detail = "busy", tile.state.text()
+            elif tile.property("error"):
+                state, detail = "error", "ошибка"
+            elif tile.switch.isChecked():
+                state, detail = "on", details[key]
+            else:
+                state, detail = "off", "выключен"
+            items.append((key, self.TRAY_TITLES[key], detail, state))
+        return items
+
+    def tray_tooltip(self) -> str:
+        """Подсказка на значке в трее: состояние трёх плиток."""
+        lines = ["FlowZap"]
+        for key, tile in self._tray_tiles().items():
+            lines.append(f"{self.TRAY_TITLES[key]}: {tile.state.text().lower()}")
+        return "\n".join(lines)
+
+    def tray_toggle(self, key: str) -> bool:
+        """Как щелчок по тумблеру плитки — те же обработчики. False — без окна
+        не обойтись: включать нечего (пресетов или DNS-серверов ещё нет)."""
+        tile = self._tray_tiles().get(key)
+        if tile is None or not tile.switch.isEnabled():
+            return True
+        if not tile.switch.isChecked():
+            if key == "zapret" and self._presets_panel.selected_preset() is None:
+                return False
+            if key == "dns" and dns_manager.get_active_pair(self._config) is None:
+                return False
+        tile.switch.click()
+        return True
+
     # ── TG Proxy: действия для «Параметров» ──
 
     @property
