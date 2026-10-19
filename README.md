@@ -133,7 +133,7 @@ FlowZap — приложение для Windows, которое возвраща
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/parameters-dark.png">
-  <img src="docs/screenshots/parameters-light.png" alt="Параметры: DNS-серверы, списки сайтов, Telegram Proxy" width="100%">
+  <img src="docs/screenshots/parameters-light.png" alt="Параметры: разделы DNS, Сайты и Telegram Proxy — открыт список сайтов для обхода" width="100%">
 </picture>
 
 </td>
