@@ -593,7 +593,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_tray(self) -> None:
         p = theme.palette
-        colors = {"on": p.success, "off": p.text_muted, "busy": p.accent, "error": p.error}
+        colors = {"on": p.success, "off": p.text_muted, "busy": p.accent, "pending": p.accent, "error": p.error}
         for key, title, detail, state in self.dashboard.tray_items():
             action = self._tray_actions[key]
             action.setText(f"{title}\t{detail}")    # после \t — колонкой справа

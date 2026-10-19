@@ -2034,7 +2034,8 @@ class DashboardTab(QWidget):
     def tray_items(self) -> list[tuple[str, str, str, str]]:
         """(ключ, название, справа, состояние) для меню в трее — то же, что
         показывают плитки. Состояние: on / off / busy (идёт операция, справа —
-        «Применяю…») / error (плитка красная)."""
+        «Применяю…», нажать нельзя) / pending (DNS включится после проверки
+        обновлений, нажать можно) / error (плитка красная)."""
         preset = self._presets_panel.selected_preset()
         pair = dns_manager.get_active_pair(self._config)
         details = {
@@ -2042,10 +2043,17 @@ class DashboardTab(QWidget):
             "dns": (pair.get("name") or pair.get("ipv4_main") or "включён") if pair else "включён",
             "tg": "работает",
         }
+        # Запуск/остановка обхода плитка показывает не сразу (_show_zapret_busy),
+        # а в меню — сразу, иначе мелькнуло бы «выключен»
+        zapret_state = self.manager.state if self.manager is not None else ServiceState.STOPPED
+        busy_text = {ServiceState.STARTING: "Запускаю…", ServiceState.STOPPING: "Останавливаю…"}
         items = []
         for key, tile in self._tray_tiles().items():
             if not tile.switch.isEnabled():
-                state, detail = "busy", tile.state.text()
+                detail = busy_text.get(zapret_state) if key == "zapret" else None
+                state, detail = "busy", detail or tile.state.text()
+            elif key == "dns" and getattr(self, "_dns_restore_pending", False):
+                state, detail = "pending", "включится после проверки"
             elif tile.property("error"):
                 state, detail = "error", "ошибка"
             elif tile.switch.isChecked():
@@ -2056,10 +2064,12 @@ class DashboardTab(QWidget):
         return items
 
     def tray_tooltip(self) -> str:
-        """Подсказка на значке в трее: состояние трёх плиток."""
+        """Подсказка на значке в трее — то же, что строки меню."""
         lines = ["FlowZap"]
-        for key, tile in self._tray_tiles().items():
-            lines.append(f"{self.TRAY_TITLES[key]}: {tile.state.text().lower()}")
+        for _key, title, detail, state in self.tray_items():
+            if state == "busy":
+                detail = detail[:1].lower() + detail[1:]     # «Применяю…» → «DNS: применяю…»
+            lines.append(f"{title}: {detail}")
         return "\n".join(lines)
 
     def tray_toggle(self, key: str) -> bool:
