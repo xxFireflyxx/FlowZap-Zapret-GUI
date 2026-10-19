@@ -33,10 +33,10 @@ _REPO_FILE = "core/dns/builtin-dns.toml"
 # (и version в builtin-dns.toml рядом — не меньше этого номера).
 # Порядок важен только для нового пользователя: первая пара станет активной.
 # У остальных порядок их списка сохраняется — выбранный сервер не сменится.
-BUILTIN_DNS_VERSION = 3
+BUILTIN_DNS_VERSION = 4
 BUILTIN_DNS = [
     {"id": "by", "name": "Беларусский",
-     "ipv4_main": "143.20.64.55", "ipv4_backup": "91.108.243.78",
+     "ipv4_main": "143.20.64.55", "ipv4_backup": "31.58.216.201",
      "ipv6_main": "", "ipv6_backup": ""},
     {"id": "reserve", "name": "Резерв",
      "ipv4_main": "159.94.200.33", "ipv4_backup": "193.233.112.67",
