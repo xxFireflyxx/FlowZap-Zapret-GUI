@@ -1,18 +1,18 @@
 # Встроенные DNS-серверы FlowZap
 
-version = 4
+version = 5
 
 [[dns]]
 id = "by"
 name = "Беларусский"
-ipv4_main = "143.20.64.55"
-ipv4_backup = "31.58.216.201"
+ipv4_main = "31.58.216.201"
+ipv4_backup = "143.20.64.55"
 
 [[dns]]
 id = "reserve"
 name = "Резерв"
-ipv4_main = "159.94.200.33"
-ipv4_backup = "193.233.112.67"
+ipv4_main = "193.233.112.67"
+ipv4_backup = "193.233.112.68"
 
 [[dns]]
 id = "xbox"
