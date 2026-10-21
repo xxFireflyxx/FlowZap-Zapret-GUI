@@ -799,6 +799,10 @@ class DashboardTab(QWidget):
         # тот сбрасывается в фоновом потоке и может опередить/отстать от сигнала «готово»
         self._checking = False
         self._pending_start_after_test = False   # запрос "остановить ручной тест и сразу стартовать"
+        # «Проверить» при работающем обходе: сначала останавливаем его, проверка — после остановки;
+        # по окончании проверки обход включается снова (как было до нажатия)
+        self._check_after_stop = False
+        self._resume_after_check = False
         # shutdown() начался: processEvents() в нём может доставить «проверка
         # закончена» / «прогрев готов» — обход после этого не запускаем
         self._shutting_down = False
@@ -1366,9 +1370,15 @@ class DashboardTab(QWidget):
         if self.manager is not None and self.manager.state == ServiceState.STOPPING:
             return      # проверка запускает свои winws — дождаться остановки
         if self._bypass_on():
-            self._set_message(
-                "Сначала остановите zapret — проверка запускает пресеты по очереди.", "warning"
-            )
+            # Проверка запускает пресеты по очереди — свой winws ей мешает: останавливаем,
+            # а саму проверку запустит _on_manager_state_change, когда обход остановится
+            if self._check_after_stop:
+                return
+            self._check_after_stop = True
+            self._resume_after_check = True
+            self._btn_refresh.setEnabled(False)
+            self._set_message("Останавливаю обход для проверки пресетов…", "accent")
+            self.manager.stop_async()
             return
         self._checking = True
         self._refresh_zapret_tile()
@@ -1403,6 +1413,11 @@ class DashboardTab(QWidget):
         if not ok:
             log.error(f"Тестирование пресетов завершилось с ошибкой: {msg}")
 
+        # Обход останавливали ради проверки — включить снова (если его уже не
+        # включил сам пользователь, прервав проверку: тогда это _pending_start_after_test)
+        resume, self._resume_after_check = self._resume_after_check, False
+        if resume and not self._pending_start_after_test:
+            self._pending_start_after_test = True
         if self._pending_start_after_test:
             self._pending_start_after_test = False
             bat = self._get_current_bat()
@@ -1427,6 +1442,15 @@ class DashboardTab(QWidget):
             self._zapret_busy_timer.start()
             return
         self._zapret_busy_timer.stop()
+        if self._check_after_stop:
+            # «Проверить» остановил обход — теперь можно проверять. Если обход
+            # не остановился (ошибка) или его снова включили — проверку отменяем
+            self._check_after_stop = False
+            if state == ServiceState.STOPPED and not self._shutting_down:
+                QTimer.singleShot(0, lambda: self._on_refresh_ping(user=True))
+            else:
+                self._resume_after_check = False
+                self._btn_refresh.setEnabled(True)
         text, tone, _dot = _SERVICE_STATE_LABELS.get(state, ("Неизвестно", None, "text_muted"))
         if state == ServiceState.ERROR and not self._zapret_error:
             self._zapret_error = True
