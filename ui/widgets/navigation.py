@@ -29,6 +29,7 @@ class TabButton(QAbstractButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(36)
         self._pulse_t0 = time.monotonic()
+        self._idle = False      # окно давно не активно — точка без пульса (как сияние)
         self._pulse = QTimer(self)
         self._pulse.setInterval(40)
         self._pulse.timeout.connect(self._pulse_tick)
@@ -40,13 +41,18 @@ class TabButton(QAbstractButton):
         self.updateGeometry()
         self.update()
 
+    def set_idle(self, idle: bool) -> None:
+        if idle != self._idle:
+            self._idle = idle
+            self.update()       # без пульса — остановится сам; с ним — перезапустит paintEvent
+
     def _dot_center(self) -> QPointF:
         text_w = QFontMetricsF(self._font()).horizontalAdvance(self.text())
         return QPointF(18 + text_w + 9, self.height() / 2)
 
     def _pulse_tick(self) -> None:
         win = self.window()
-        if not (self._badge and theme.animations and self.isVisible()) or win.isMinimized():
+        if not (self._badge and theme.animations and self.isVisible()) or win.isMinimized() or self._idle:
             self._pulse.stop()      # перезапустится из paintEvent, когда снова понадобится
             self.update()
             return
@@ -88,7 +94,7 @@ class TabButton(QAbstractButton):
             center = QPointF(x + text_w + 9, rect.height() / 2)
             color = QColor(pal.warning)
             painter.setPen(Qt.NoPen)
-            if theme.animations:
+            if theme.animations and not self._idle:
                 if not self._pulse.isActive():
                     self._pulse.start()
                 phase = ((time.monotonic() - self._pulse_t0) % self.PULSE_SEC) / self.PULSE_SEC
@@ -181,3 +187,7 @@ class TabBar(QFrame):
 
     def set_badge(self, index: int, visible: bool) -> None:
         self._buttons[index].set_badge(visible)
+
+    def set_idle(self, idle: bool) -> None:
+        for btn in self._buttons:
+            btn.set_idle(idle)

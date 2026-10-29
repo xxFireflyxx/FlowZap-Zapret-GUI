@@ -239,12 +239,12 @@ class UpdatesTab(QWidget):
 
         self._gui = _UpdateCard("FlowZap", "Это приложение", Glyph.MONITOR)
         self._core = _UpdateCard("zapret Core", "Движок обхода и пресеты от Flowseal", Glyph.SHIELD)
-        self._tg = _UpdateCard("TG WS Proxy", "Прокси для Telegram", Glyph.SEND)
+        self._tg = _UpdateCard("Telegram Proxy", "Прокси для Telegram", Glyph.SEND)
         self._cards = {"gui": self._gui, "core": self._core, "tg": self._tg}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        page = Page("Обновления", "Версии FlowZap, zapret и TG Proxy")
+        page = Page("Обновления", "Версии FlowZap, zapret и Telegram Proxy")
         root.addWidget(page)
         self._sw_auto = Switch("Проверять автоматически")
         self._sw_auto.setToolTip("При запуске и раз в 3 часа; новое отмечается точкой на вкладке")
@@ -399,6 +399,9 @@ class UpdatesTab(QWidget):
         if ok:
             c.set_status(f"✓ {message}", "ok")
             c.set_update_enabled(False)
+            # Новая версия запустится сама — и включит обход, если он работал
+            if self._dashboard is not None:
+                self._dashboard.remember_bypass_for_restart()
             # Выход через QApplication.quit() → aboutToQuit → shutdown() остановит DNS/zapret/TG Proxy.
             # Сначала — дождаться установки zapret / TG Proxy, если она идёт: выход
             # оборвал бы её посреди копирования файлов
@@ -449,6 +452,11 @@ class UpdatesTab(QWidget):
                 "Сейчас идёт проверка пресетов — дождитесь её окончания и повторите.", "warn"
             )
             return
+        if core_installing():
+            # Ставится с главной (первое включение обхода) — вторая установка
+            # в ту же папку отказала бы с ошибкой
+            self._core.set_status("zapret уже устанавливается — дождитесь окончания.", "warn")
+            return
         # winws.exe держит файлы Core и драйвер WinDivert — запущенный zapret
         # останавливаем, когда архив уже скачан (в фоновом потоке установки:
         # синхронная остановка здесь подвешивала окно), и после обновления
@@ -460,6 +468,8 @@ class UpdatesTab(QWidget):
             stop = self._manager.stop
         self._core.set_updating(True)
         self._core.set_status("Начинаем загрузку…", "muted")
+        if self._dashboard is not None:
+            self._dashboard.set_component_updating("core", True)
         download_and_install_core(
             zapret_dir=self._dashboard.zapret_dir, repo=CORE_REPO, before_install=stop, **self._callbacks("core")
         )
@@ -467,6 +477,8 @@ class UpdatesTab(QWidget):
     def _on_core_done(self, ok: bool, message: str) -> None:
         c = self._core
         c.set_updating(False)
+        if self._dashboard is not None:
+            self._dashboard.set_component_updating("core", False)
         if ok:
             c.set_version(self._core_installed_version() or "не установлен")
             c.set_action_text("Обновить")
@@ -519,6 +531,9 @@ class UpdatesTab(QWidget):
         c.set_notes(release.get("body", ""), release.get("html_url", ""))
 
     def _update_tg(self) -> None:
+        if tg_installing():
+            self._tg.set_status("Telegram Proxy уже устанавливается — дождитесь окончания.", "warn")
+            return
         self._tg.set_updating(True)
         self._tg_resume = self._dashboard.tg_proxy_running
         if not self._tg_resume:
@@ -528,7 +543,7 @@ class UpdatesTab(QWidget):
         # работающего сервера лучше не подменять: останавливаем через Dashboard
         # (тумблер «TG Proxy» там остаётся синхронным), качаем после остановки
         # и включаем обратно.
-        self._tg.set_status("Останавливаю TG Proxy…", "muted")
+        self._tg.set_status("Останавливаю Telegram Proxy…", "muted")
         self._dashboard.set_tg_proxy(False, on_done=self._on_tg_stopped)
 
     def _on_tg_stopped(self, running: bool, error: str) -> None:
@@ -536,17 +551,20 @@ class UpdatesTab(QWidget):
             self._tg_resume = False
             self._tg.set_updating(False)
             self._tg.set_update_enabled(True)
-            self._tg.set_status(error or "Не удалось остановить TG Proxy.", "error")
+            self._tg.set_status(error or "Не удалось остановить Telegram Proxy.", "error")
             return
         self._download_tg()
 
     def _download_tg(self) -> None:
         self._tg.set_status("Начинаем загрузку…", "muted")
+        # Тумблер на главной ждёт конца: иначе прокси включили бы посреди замены файлов
+        self._dashboard.set_component_updating("tg", True)
         download_and_install_tg_proxy(self._tg_dir, **self._callbacks("tg"))
 
     def _on_tg_done(self, ok: bool, message: str) -> None:
         c = self._tg
         c.set_updating(False)
+        self._dashboard.set_component_updating("tg", False)
         if ok:
             c.set_version(self._tg_installed_version() or "установлен")
             c.set_status(f"✓ {message}", "ok")

@@ -168,7 +168,16 @@ class ServiceManager:
     def restart_async(self, bat_path: "Path | None" = None) -> None:
         self._submit(self.restart, bat_path)
 
+    def cancel_pending(self) -> None:
+        """Выход из FlowZap: команды из очереди не выполнять. Потоки пула не
+        фоновые — Python при выходе дождался бы и их (запуск обхода через
+        службу, которая качает winws, — до 5 минут, а окно уже закрыто)."""
+        self._closed = True
+        self._ops.shutdown(wait=False, cancel_futures=True)
+
     def _submit(self, fn, *args) -> None:
+        if getattr(self, "_closed", False):
+            return
         def _run() -> None:
             try:
                 fn(*args)
@@ -311,6 +320,9 @@ class ZapretManager:
     @property
     def bat_path(self) -> Optional[Path]:
         return self.zapret.bat_path
+
+    def cancel_pending(self) -> None:
+        self.zapret.cancel_pending()
 
     def shutdown_all(self) -> None:
         """Остановить все сервисы — вызывать при закрытии приложения (синхронно)."""

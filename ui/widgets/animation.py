@@ -566,7 +566,9 @@ class CheckProgress(QWidget):
 
     def finish(self) -> None:
         self._done = self._total
-        if not theme.animations:
+        # Без анимаций кадров нет; включили их посреди проверки — таймер так и
+        # не запустился, и прятать полосу было бы некому
+        if not theme.animations or not self._timer.isActive():
             self.stop()
 
     def stop(self) -> None:

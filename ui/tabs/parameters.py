@@ -85,10 +85,11 @@ def _dns_query_ping(server: str, timeout: float = 3.0) -> str:
 
     total_ms = 0
     success = 0
+    family = socket.AF_INET6 if ":" in server else socket.AF_INET     # пара только с IPv6 — тоже замеряется
     for domain in _CHECK_DOMAINS:
         query = _build_dns_query(domain)
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock = socket.socket(family, socket.SOCK_DGRAM)
             sock.settimeout(timeout)
             t0 = time.perf_counter()
             sock.sendto(query, (server, 53))
@@ -169,6 +170,11 @@ def _display(value: str) -> str:
     return ".".join(labels)
 
 
+def _ping_addr(pair: dict) -> str:
+    """Какой адрес пары замерять: основной IPv4, а у пары только с IPv6 — его."""
+    return pair.get("ipv4_main") or pair.get("ipv6_main") or ""
+
+
 def _shown(values) -> str:
     return ", ".join(_display(v) for v in values)
 
@@ -184,9 +190,11 @@ def _list_meta(filename: str) -> tuple:
 class _AddDnsDialog(QDialog):
     """Модальный диалог добавления DNS-сервера; с pair — изменение существующего."""
 
-    def __init__(self, parent=None, pair: dict | None = None, reserved: set[str] = frozenset()):
+    def __init__(self, parent=None, pair: dict | None = None, reserved: set[str] = frozenset(),
+                 taken: set[str] = frozenset()):
         super().__init__(parent)
         self._reserved = reserved      # имена встроенных серверов (нижний регистр)
+        self._taken = taken            # основные IPv4 других серверов — повтор видно сразу, в окне
         self.setWindowTitle("Изменить DNS" if pair else "Добавить DNS")
         self.setMinimumWidth(420)
         self.result_pair: dict | None = None
@@ -257,6 +265,9 @@ class _AddDnsDialog(QDialog):
                 self._fail(error)
                 return
 
+        if ipv4_m and ipv4_m in self._taken:
+            self._fail(f"Сервер с адресом {ipv4_m} уже есть в списке.")
+            return
         name = self._name.text().strip() or ipv4_m or ipv6_m
         if name.lower() in self._reserved:
             self._fail(f"Имя «{name}» занято встроенным сервером — выберите другое.")
@@ -421,12 +432,13 @@ class ParametersTab(QWidget):
     ROW_HEIGHT = 44                  # _EntryRow
 
     def __init__(self, parent=None, manager=None, config: dict = None,
-                 save_config_fn=None, on_dns_changed=None, tg_controller=None):
+                 save_config_fn=None, on_dns_changed=None, on_lists_changed=None, tg_controller=None):
         super().__init__(parent)
         self.manager = manager
         self._config = config or {}
         self._save_config_fn = save_config_fn
         self._on_dns_changed = on_dns_changed
+        self._on_lists_changed = on_lists_changed     # главная перезапустит работающий обход
         self._tg_controller = tg_controller   # DashboardTab — владелец TG Proxy
         self._ping_pending = 0
         self._pairs: list[dict] = []
@@ -577,7 +589,7 @@ class ParametersTab(QWidget):
             return
 
         for i, pair in enumerate(self._pairs):
-            ping = self._ping_cache.get(pair.get("ipv4_main", ""), "")
+            ping = self._ping_cache.get(_ping_addr(pair), "")
             row = _DnsPairRow(pair, active=(i == 0), ping=ping)
             row.editRequested.connect(lambda idx=i: self._on_edit_pair(idx))
             row.removeRequested.connect(lambda idx=i: self._on_remove(idx))
@@ -631,7 +643,8 @@ class ParametersTab(QWidget):
             self._on_dns_changed()
 
     def _ask_pair(self, pair: Optional[dict] = None) -> Optional[dict]:
-        dlg = _AddDnsDialog(self, pair=pair, reserved=builtin_names(self._config))
+        taken = {p.get("ipv4_main") for p in self._pairs if p is not pair and p.get("ipv4_main")}
+        dlg = _AddDnsDialog(self, pair=pair, reserved=builtin_names(self._config), taken=taken)
         try:
             return dlg.result_pair if dlg.exec() == QDialog.Accepted else None
         finally:
@@ -675,14 +688,14 @@ class ParametersTab(QWidget):
             self._on_dns_changed()   # изменили активный — переприменить, если DNS включён
 
     def _on_ping_all(self) -> None:
-        addrs = [p["ipv4_main"] for p in self._pairs if p.get("ipv4_main")]
+        addrs = list(dict.fromkeys(a for a in map(_ping_addr, self._pairs) if a))
         if not addrs:
             return
         self._set_status("Замеряю…", "accent")
         self._btn_ping.setEnabled(False)
         self._ping_pending = len(addrs)
         for row, pair in zip(self._rows, self._pairs):
-            if pair.get("ipv4_main"):
+            if _ping_addr(pair):
                 row.set_ping("…")
         for addr in addrs:
             threading.Thread(target=self._ping_worker, args=(addr,), daemon=True, name="dns-ping").start()
@@ -696,7 +709,7 @@ class ParametersTab(QWidget):
     def _on_ping_updated(self, addr: str, text: str) -> None:
         self._ping_cache[addr] = text
         for row, pair in zip(self._rows, self._pairs):
-            if pair.get("ipv4_main") == addr:
+            if _ping_addr(pair) == addr:
                 row.set_ping(text)
         self._ping_pending = max(0, self._ping_pending - 1)
         if self._ping_pending == 0:
@@ -709,7 +722,7 @@ class ParametersTab(QWidget):
 
     def _build_lists_block(self) -> QFrame:
         card, actions, body = _section_card(
-            "Списки сайтов", "Изменения применятся при следующем запуске обхода")
+            "Списки сайтов", "Работающий обход перезапустится сам и подхватит изменения")
         open_folder_btn = button("Открыть папку", variant="ghost")
         open_folder_btn.clicked.connect(self._open_lists_folder)
         actions.addWidget(open_folder_btn, alignment=Qt.AlignTop)
@@ -934,15 +947,25 @@ class ParametersTab(QWidget):
         """Записи списка — без комментариев (# …): это не сайты."""
         return [l for l in self._read_lines(filename) if not _is_comment(l)]
 
-    def _write_list(self, filename: str, lines: list[str]) -> None:
+    def _write_list(self, filename: str, lines: list[str]) -> bool:
+        """Записать список. False — не вышло (файл занят, нет прав): причина —
+        в строке статуса, а не окном «непредвиденная ошибка»."""
         path = self._lists_dir / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        comments = [l for l in self._read_lines(filename) if _is_comment(l)]
-        if path.exists():
-            shutil.copy2(path, path.with_suffix(".bak"))
-        # Комментарии — сверху, как были; записи — по алфавиту
-        sorted_lines = sorted(set(lines), key=str.lower)
-        path.write_text("\n".join(comments + sorted_lines) + "\n", encoding="utf-8")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            comments = [l for l in self._read_lines(filename) if _is_comment(l)]
+            if path.exists():
+                shutil.copy2(path, path.with_suffix(".bak"))
+            # Комментарии — сверху, как были; записи — по алфавиту
+            sorted_lines = sorted(set(lines), key=str.lower)
+            path.write_text("\n".join(comments + sorted_lines) + "\n", encoding="utf-8")
+        except OSError as exc:
+            log.error(f"Не удалось записать {filename}: {exc}")
+            self._set_list_status(f"Не удалось сохранить список: {exc.strerror or exc}", "error")
+            return False
+        if self._on_lists_changed:
+            self._on_lists_changed()
+        return True
 
     def _set_list_status(self, text: str, tone: str | None = None) -> None:
         self._lists_status.setText(text)
@@ -987,8 +1010,8 @@ class ParametersTab(QWidget):
 
         to_add = [v for v in entries if v not in current_set]
         duplicates = [v for v in entries if v in current_set]
-        if to_add:
-            self._write_list(filename, current + to_add)
+        if to_add and not self._write_list(filename, current + to_add):
+            return      # ошибка уже в строке статуса, введённое остаётся в поле
         # Не blockSignals: поле само прячет свой крестик «очистить» по
         # textChanged — с заглушёнными сигналами он оставался на пустом поле
         self._clearing_entry = True
@@ -1008,6 +1031,7 @@ class ParametersTab(QWidget):
         current = self._read_list(filename)
         if value not in current:
             return
-        self._write_list(filename, [l for l in current if l != value])
+        if not self._write_list(filename, [l for l in current if l != value]):
+            return
         self._set_list_status(f"✓ Удалено: {_display(value)}", "success")
         self._render_entries()

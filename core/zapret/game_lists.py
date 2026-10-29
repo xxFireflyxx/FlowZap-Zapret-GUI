@@ -98,7 +98,9 @@ def update_gaming_lists(
         if not force and stamp_file.exists():
             try:
                 last = float(stamp_file.read_text(encoding="utf-8").strip())
-                if time.time() - last < GAMING_UPDATE_INTERVAL:
+                # С запасом: таймер FlowZap тикает с тем же интервалом, и без него
+                # каждый второй тик видел «ещё свежие» — обновление раз в 12 ч
+                if time.time() - last < GAMING_UPDATE_INTERVAL - 600:
                     logger.debug("Игровые списки актуальны, пропускаем загрузку")
                     if on_done:
                         on_done(True, "актуальны")

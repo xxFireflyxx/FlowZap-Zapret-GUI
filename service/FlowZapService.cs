@@ -56,12 +56,13 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using Microsoft.Win32.SafeHandles;
 
 [assembly: AssemblyTitle("FlowZap Service")]
 [assembly: AssemblyDescription("Фоновая служба FlowZap: запуск обхода и системные настройки")]
 [assembly: AssemblyProduct("FlowZap")]
-[assembly: AssemblyVersion("1.4.1.0")]
-[assembly: AssemblyFileVersion("1.4.1.0")]
+[assembly: AssemblyVersion("1.4.2.0")]
+[assembly: AssemblyFileVersion("1.4.2.0")]
 
 namespace FlowZap.Service
 {
@@ -69,7 +70,7 @@ namespace FlowZap.Service
     {
         public const string ServiceName = "FlowZapService";
         public const string DisplayName = "FlowZap Service";
-        public const string Version = "1.4.1";
+        public const string Version = "1.4.2";
         public const int Protocol = 1;
         // Файлы пресета (списки, .bin) — сейчас около 2 МБ; сообщение — они в base64
         public const int MaxRequestBytes = 16 * 1024 * 1024;
@@ -191,6 +192,9 @@ namespace FlowZap.Service
         [DllImport("kernel32.dll")]
         public static extern uint SetErrorMode(uint mode);
 
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint size, uint flags);
+
         public const uint SEM_FAILCRITICALERRORS = 0x0001, SEM_NOGPFAULTERRORBOX = 0x0002, SEM_NOOPENFILEERRORBOX = 0x8000;
 
         // ── запуск программы от имени пользователя (обновление FlowZap) ──
@@ -272,6 +276,9 @@ namespace FlowZap.Service
         static readonly Regex DrivePath = new Regex(@"(\A|[@,=+:])[A-Za-z]:(?!:)");
         static readonly Regex SafeName = new Regex(@"[^A-Za-z0-9._-]");
         static readonly Regex ValueChars = new Regex(@"\A[A-Za-z0-9._,:=+!-]*\z");
+        // Отладка winws пишет в вывод адреса и сайты всего трафика компьютера,
+        // а вывод служба отдаёт любому клиенту канала. FlowZap её не использует
+        static readonly HashSet<string> Forbidden = new HashSet<string> { "--debug" };
 
         public static StartPlan Parse(Dictionary<string, object> request)
         {
@@ -309,7 +316,7 @@ namespace FlowZap.Service
                 string option = (string)fa["opt"];
                 string prefix = fa.ContainsKey("prefix") && fa["prefix"] is string ? (string)fa["prefix"] : "";
                 int index = Convert.ToInt32(fa["file"]);
-                if (!OptionName.IsMatch(option)) throw new ArgumentException("Недопустимый параметр: " + Cut(option));
+                if (!OptionName.IsMatch(option) || Forbidden.Contains(option)) throw new ArgumentException("Недопустимый параметр: " + Cut(option));
                 if (!FilePrefix.IsMatch(prefix)) throw new ArgumentException("Недопустимый параметр: " + Cut(option));
                 if (index < 0 || index >= plan.Files.Count) throw new ArgumentException("Нет файла для " + option);
                 FileArg arg = new FileArg();
@@ -325,7 +332,7 @@ namespace FlowZap.Service
             int eq = arg.IndexOf('=');
             string name = eq < 0 ? arg : arg.Substring(0, eq);
             string value = eq < 0 ? "" : arg.Substring(eq + 1);
-            if (!OptionName.IsMatch(name) || !SafeValue(value))
+            if (!OptionName.IsMatch(name) || Forbidden.Contains(name) || !SafeValue(value))
                 throw new ArgumentException("Недопустимый параметр: " + Cut(arg));
             return arg;
         }
@@ -578,7 +585,13 @@ namespace FlowZap.Service
         static void PrepareRunDir()
         {
             Installer.CheckNoReparse(Paths.Run);
-            Directory.CreateDirectory(Paths.Run);
+            if (!Directory.Exists(Paths.Run))
+            {
+                // Закрытой, как при установке; --console без прав администратора
+                // назначить владельца не может — там папка разработчика
+                try { Installer.SecureDirectory(Paths.Run, false); }
+                catch (Exception) { Directory.CreateDirectory(Paths.Run); }
+            }
             foreach (string f in Directory.GetFiles(Paths.Run))
             {
                 try { File.Delete(f); } catch (Exception) { }
@@ -922,11 +935,38 @@ namespace FlowZap.Service
             if (!string.Equals(Path.GetFileName(exe), "FlowZap.exe", StringComparison.OrdinalIgnoreCase))
                 return "Обновлять можно только FlowZap.exe";
             if (!File.Exists(exe)) return "Не найден " + exe;
+            if (!OnLocalDisk(exe)) return "Обновлять службой можно только FlowZap на диске этого компьютера";
             if (!string.Equals(Path.GetDirectoryName(payload), dir, StringComparison.OrdinalIgnoreCase) ||
                 !Path.GetFileName(payload).StartsWith("_flowzap_update_", StringComparison.OrdinalIgnoreCase))
                 return "Папка обновления должна лежать рядом с FlowZap.exe";
             if (!File.Exists(newExe)) return "В папке обновления нет FlowZap.exe";
             return null;
+        }
+
+        // Файл на диске этого компьютера — не в сетевой папке и не ссылка на
+        // неё (путь — после всех ссылок). Запуск FlowZap (CreateProcessAsUser)
+        // открывает exe правами службы: сетевой путь заставил бы компьютер
+        // подключиться к чужому серверу от своего имени. Вызывать от имени
+        // пользователя (AsUser): его сетевые диски и права.
+        static bool OnLocalDisk(string path)
+        {
+            try
+            {
+                string final;
+                using (FileStream f = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    StringBuilder sb = new StringBuilder(1024);
+                    uint n = Native.GetFinalPathNameByHandle(f.SafeFileHandle, sb, (uint)sb.Capacity, 0);
+                    if (n == 0 || n >= sb.Capacity) return false;
+                    final = sb.ToString();
+                }
+                if (final.StartsWith(@"\\?\")) final = final.Substring(4);
+                // \\?\UNC\сервер\... и прочее без буквы диска — не локальное
+                if (final.Length < 3 || final[1] != ':' || final[2] != '\\') return false;
+                DriveType type = new DriveInfo(final.Substring(0, 3)).DriveType;
+                return type == DriveType.Fixed || type == DriveType.Removable;
+            }
+            catch (Exception) { return false; }
         }
 
         void Run()
@@ -951,7 +991,8 @@ namespace FlowZap.Service
                 {
                     ok = Swap();
                     DeleteDir(payload);
-                    haveExe = File.Exists(exe);
+                    // Ещё раз: за время ожидания exe могли заменить ссылкой
+                    haveExe = File.Exists(exe) && OnLocalDisk(exe);
                 });
                 Log.Write(ok ? "Обновление FlowZap установлено"
                              : "Обновление FlowZap не встало, вернул прежнюю версию (подробности в logs\\update.log FlowZap)");
@@ -1756,7 +1797,12 @@ try {
                     {
                         foreach (string f in Const.EngineFiles)
                             CopyWithRetry(Path.Combine(source, f), Path.Combine(Paths.Engine, f));
-                        File.WriteAllText(Path.Combine(Paths.Engine, "version.txt"), coreVersion ?? "");
+                        // Копия из папки пользователя, sha256 не сверялся: версия с
+                        // пометкой не совпадёт с zapret FlowZap, и перед первым
+                        // запуском служба скачает проверенный winws той же версии
+                        // (не вышло — работает с копией, как раньше)
+                        File.WriteAllText(Path.Combine(Paths.Engine, "version.txt"),
+                            string.IsNullOrEmpty(coreVersion) ? "" : coreVersion + " (копия)");
                     }
                     catch (Exception e)
                     {
@@ -1874,15 +1920,17 @@ try {
         }
 
         // Program Files\FlowZap и вложенные: система и администраторы — всё,
-        // пользователи — только чтение. Без ссылок/junction на пути.
+        // пользователи — только чтение. run\ (файлы пресета и всё, что пишет
+        // winws) — без пользователей. Без ссылок/junction на пути.
         static void SecureTree()
         {
             string parent = Path.GetDirectoryName(Paths.Root);
-            foreach (string dir in new[] { parent, Paths.Root, Paths.Engine, Paths.Run, Paths.Logs })
-                SecureDirectory(dir);
+            foreach (string dir in new[] { parent, Paths.Root, Paths.Engine, Paths.Logs })
+                SecureDirectory(dir, true);
+            SecureDirectory(Paths.Run, false);
         }
 
-        static void SecureDirectory(string path)
+        public static void SecureDirectory(string path, bool usersRead)
         {
             CheckNoReparse(path);
             DirectorySecurity acl = new DirectorySecurity();
@@ -1892,8 +1940,9 @@ try {
             foreach (WellKnownSidType sid in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
                 acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(sid, null), FileSystemRights.FullControl,
                     inherit, PropagationFlags.None, AccessControlType.Allow));
-            acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
-                FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
+            if (usersRead)
+                acl.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+                    FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
             if (Directory.Exists(path)) Directory.SetAccessControl(path, acl);
             else Directory.CreateDirectory(path, acl);
         }

@@ -45,6 +45,7 @@ log = logging.getLogger(__name__)
 
 # Пауза перед перезапуском прокси: несколько переключений подряд — один перезапуск
 _APPLY_DELAY_MS = 600
+_STATUS_HIDE_MS = 5000      # как STATUS_HIDE_MS в parameters.py
 
 
 def _line_edit(width: int, placeholder: str = "", validator=None) -> QLineEdit:
@@ -95,6 +96,11 @@ class TgProxyCard(QFrame):
         self._apply_timer.setSingleShot(True)
         self._apply_timer.setInterval(_APPLY_DELAY_MS)
         self._apply_timer.timeout.connect(self._ctl.on_tg_settings_changed)
+        # Итог действия («✓ Сохранено») гаснет сам — как в разделах DNS и «Сайты»
+        self._status_hide = QTimer(self)
+        self._status_hide.setSingleShot(True)
+        self._status_hide.setInterval(_STATUS_HIDE_MS)
+        self._status_hide.timeout.connect(lambda: self._set_status(""))
         self._build()
         self._load()
         self._ctl.tgStatusChanged.connect(self._refresh_status)
@@ -367,6 +373,10 @@ class TgProxyCard(QFrame):
     def _set_status(self, text: str, tone: str | None = None) -> None:
         self._status.setText(text)
         set_tone(self._status, tone)
+        if text:
+            self._status_hide.start()
+        else:
+            self._status_hide.stop()
 
     def _field_error(self, edit: QLineEdit, text: str) -> None:
         """Ошибка — у самого поля: красная рамка и подсказка под ним. Строка
@@ -403,7 +413,7 @@ class TgProxyCard(QFrame):
 
     def _new_secret(self) -> None:
         reply = QMessageBox.question(
-            self, "FlowZap — TG Proxy",
+            self, "FlowZap — Telegram Proxy",
             "Сгенерировать новый секрет?\n\nПрокси, добавленный в Telegram, перестанет "
             "работать — после смены подключите Telegram заново.")
         if reply != QMessageBox.Yes:
@@ -495,7 +505,8 @@ class TgProxyCard(QFrame):
 
     def _copy_link(self) -> None:
         QApplication.clipboard().setText(self._ctl.tg_manager.share_link())
-        if self._tg["lan"]:
+        # Без сети ссылка — на 127.0.0.1: телефону она не подойдёт
+        if self._tg["lan"] and self._ctl.tg_manager.phone_link():
             self._set_status("✓ Ссылка скопирована — откройте её на телефоне в той же сети", "success")
         else:
             self._set_status("✓ Ссылка скопирована — она для Telegram на этом компьютере", "success")
