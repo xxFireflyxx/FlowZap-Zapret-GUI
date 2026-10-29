@@ -60,6 +60,7 @@ from ui.widgets.layout import Page
 from ui.widgets.popup import make_popup, show_popup_below
 from core.zapret.game_lists import GAMING_UPDATE_INTERVAL, update_gaming_lists
 from core.zapret.presets import GAME_FILTER_MODES, list_presets, read_game_filter, write_game_filter
+from core.zapret.winws import GAME_LIST_DOMAINS
 from core.zapret.preset_checker import MAIN_SERVICES, PresetPingManager, PingStatus
 from core.zapret.manager import ServiceState
 from core.updates.zapret import download_and_install_core
@@ -83,7 +84,7 @@ _STATUS_COLORS = {
 
 _STATUS_LEGEND = [
     ("success",    "Работает"),
-    ("warning",    "Нестабильно"),
+    ("warning",    "Частично"),
     ("error",      "Не работает"),
     ("accent",     "Идёт проверка"),
     ("text_muted", "Не проверялся"),
@@ -114,6 +115,12 @@ ZAPRET_BUSY_DELAY_MS = 500
 # Telegram, прежде чем сказать, что он ходит мимо прокси
 TG_POLL_MS = 3000
 TG_POLL_FAST_MS = 1000      # сразу после включения — чаще, чтобы зелёный появлялся без задержки
+# Окно в трее или свёрнуто: кто подключён, никто не видит — каждый тик только
+# «жив ли сервер» (мгновенно), полный опрос (процессы + таблица TCP) — реже
+TG_POLL_HIDDEN_SEC = 30
+# Списки сайтов поменяли — работающий обход перезапускается через столько
+# (несколько правок подряд — один перезапуск)
+LISTS_RESTART_MS = 1500
 TG_CONNECT_GRACE_SEC = 20
 # Адреса Telegram на этом компьютере: ссылка «Подключить» всегда на 127.0.0.1
 _LOCAL_HOSTS = {"127.0.0.1", "::1"}
@@ -174,7 +181,7 @@ def _status_word(status: PingStatus, counts: tuple[int, int] | None,
     if status == PingStatus.OK:
         return ("Discord и YouTube открываются" if total and ok == total else f"{ok} из {total} проверок"), None
     if status == PingStatus.WARN:
-        return (f"частично · {ok} из {total} проверок" if total else "работает нестабильно"), "warning"
+        return (f"частично · {ok} из {total} проверок" if total else "работает частично"), "warning"
     if status == PingStatus.FAIL:
         return "не работает", "error"
     if status == PingStatus.CHECKING:
@@ -323,7 +330,11 @@ class ServiceTile(QFrame):
             title_row.addWidget(HelpIcon(help_text))
         title_row.addStretch(1)
         names.addLayout(title_row)
-        self.state = label("Выключен", role="status")
+        # Обрезается, а не растягивает плитку: «Проверяю состояние…» крупным
+        # шрифтом в узком окне раздвигало ряд, и правая плитка уходила за край
+        self.state = _ElideLabel()
+        self.state.setProperty("role", "status")
+        self.state.set_full_text("Выключен")
         names.addWidget(self.state)
         top.addLayout(names, stretch=1)
         self.switch = Switch(large=True)
@@ -354,7 +365,7 @@ class ServiceTile(QFrame):
         self._user_toggled = not self.property("active")
 
     def set_state(self, active: bool, text: str, tone: str | None = None) -> None:
-        self.state.setText(text)
+        self.state.set_full_text(text)
         set_tone(self.state, tone or ("accent" if active else None))
         self.badge.set_active(active)
         if self.property("active") != active:
@@ -436,12 +447,23 @@ class _ElideLabel(QLabel):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._full = ""
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+
+    # Места хватает — ширина всего текста, не хватает — сжимается до нуля (с «…»)
+    def sizeHint(self) -> QSize:
+        return QSize(self.fontMetrics().horizontalAdvance(self._full) + 2, super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, super().minimumSizeHint().height())
 
     def set_full_text(self, text: str) -> None:
-        self._full = text
+        if text != self._full:
+            self._full = text
+            self.updateGeometry()       # sizeHint — по полному тексту
         self._elide()
+
+    def full_text(self) -> str:
+        return self._full
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -766,6 +788,7 @@ class DashboardTab(QWidget):
     _tgInstallProgress   = Signal(str)
     _tgInstallDone       = Signal(bool, str)
     _warmupDone          = Signal()              # прогрев WinDivert завершён (ZapretManager.warmup_windivert)
+    _gameListsReady      = Signal()              # игровые списки скачаны после включения Game Filter
     _repairDone          = Signal(str, bool, str)  # (id плашки, успех, текст) — из repairs.run_async
 
     # Состояние TG Proxy изменилось — «Параметры» перерисовывают свою строку статуса
@@ -808,6 +831,12 @@ class DashboardTab(QWidget):
         self._shutting_down = False
 
         self._zapret_error = False   # плитка обхода красная, пока пользователь не включит снова
+        self._core_error = ""        # zapret не установился (с главной) — причина на плитке
+        self._lists_restart_timer = QTimer(self)
+        self._lists_restart_timer.setSingleShot(True)
+        self._lists_restart_timer.setInterval(LISTS_RESTART_MS)
+        self._lists_restart_timer.timeout.connect(self._restart_for_lists)
+        self._tg_full_poll_at = 0.0      # когда был полный опрос TG (см. TG_POLL_HIDDEN_SEC)
         self._dnsToggleDone.connect(self._on_dns_toggle_done)
         self._dnsRestoreFailed.connect(self._on_dns_restore_failed)
         dns_manager.on_restore_failed = lambda error: self._dnsRestoreFailed.emit(error)
@@ -822,6 +851,7 @@ class DashboardTab(QWidget):
         self._game_lists_timer.setInterval(GAMING_UPDATE_INTERVAL * 1000)
         self._game_lists_timer.timeout.connect(self._refresh_game_lists)
         self._game_lists_timer.start()
+        self._gameListsReady.connect(self._restart_for_game_filter)
         self._dns_enabled = False
         # Отмечает, идёт ли сейчас apply_dns_async в фоновом потоке — shutdown()
         # дожидается его завершения перед своим решением, иначе быстрое закрытие
@@ -882,6 +912,7 @@ class DashboardTab(QWidget):
         self._build()
         self._load_presets()
         self._refresh_game_filter_ui()
+        self._refresh_game_lists()      # при запуске (только с Game Filter; у загрузки свой кэш на 6 ч)
 
         # Тумблер заблокирован, пока не убран exe автора из старой схемы (до 1.1):
         # если он запущен из нашей папки, он держит тот же порт.
@@ -932,7 +963,11 @@ class DashboardTab(QWidget):
         установлен (пресетов нет) — ничего не делаем и ничего не ждём:
         при следующем запуске FlowZap, когда Core уже будет установлен
         вручную, автозапуск сработает сам."""
-        if not self._config.get("zapret", {}).get("autostart", False) or self._shutting_down:
+        # Одноразово: обход работал перед самообновлением FlowZap (remember_bypass_for_restart)
+        resume = self._config.get("state", {}).pop("resume_bypass", False) is True
+        if resume and self._save_config_fn:
+            self._save_config_fn()
+        if not (self._config.get("zapret", {}).get("autostart", False) or resume) or self._shutting_down:
             return
         if self.manager is None or self.manager.is_running:
             return
@@ -991,6 +1026,16 @@ class DashboardTab(QWidget):
         if self._save_config_fn:
             self._save_config_fn()
         self._on_refresh_ping(auto=False, user=False)   # фоновая: без окна UAC
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.poll_now()
+
+    def poll_now(self) -> None:
+        """Окно снова на экране — опросить TG Proxy сразу: в трее и свёрнутым
+        полный опрос шёл раз в TG_POLL_HIDDEN_SEC."""
+        if getattr(self, "_tg", None) is not None:
+            self._poll_tg()
 
     # ── Построение UI ──────────────────────────────
 
@@ -1210,7 +1255,10 @@ class DashboardTab(QWidget):
         self._sw_zapret.clicked.connect(self._on_toggle)
         self._zapret_dot = StatusDot(10)
         self._tile_zapret.slot.addWidget(self._zapret_dot, alignment=Qt.AlignVCenter)
-        self._zapret_preset_lbl = label("—", role="value")
+        # Длинное имя («general (FAKE TLS AUTO ALT3)» + чип Game Filter) обрезается,
+        # а не раздвигает плитку
+        self._zapret_preset_lbl = _ElideLabel()
+        self._zapret_preset_lbl.setProperty("role", "value")
         self._tile_zapret.slot.addWidget(self._zapret_preset_lbl, alignment=Qt.AlignVCenter)
         self._zapret_gf_chip = label("", role="pill")
         self._tile_zapret.slot.addWidget(self._zapret_gf_chip, alignment=Qt.AlignVCenter)
@@ -1274,19 +1322,18 @@ class DashboardTab(QWidget):
         """Слот плитки обхода: текущий пресет, его итог проверки и подсказка о лучшем."""
         preset = self._presets_panel.selected_preset()
         if preset is None:
-            self._zapret_preset_lbl.setText("не установлен")
+            self._zapret_preset_lbl.set_full_text("не установлен")
             self._zapret_dot.set_color("text_muted")
         else:
-            self._zapret_preset_lbl.setText(preset["name"])
+            self._zapret_preset_lbl.set_full_text(preset["name"])
             self._zapret_dot.set_color(_STATUS_COLORS.get(self._presets_panel.status_of(preset["name"]), "text_muted"))
-        self._zapret_preset_lbl.setToolTip(self._zapret_preset_lbl.text())
 
         mode = {"tcp": "TCP", "udp": "UDP", "all": "TCP и UDP"}[self._game_filter_mode]
         self._zapret_gf_chip.setText(f"+ Game Filter {mode}")
         self._zapret_gf_chip.setVisible(self._game_filter_enabled)
 
         if self._zapret_error:
-            reason = self.manager.last_error if self.manager is not None else None
+            reason = self._core_error or (self.manager.last_error if self.manager is not None else None)
             self._tile_zapret.set_hint(
                 reason or "winws.exe завершился с ошибкой — выберите другой пресет ниже и включите снова", "error")
             return
@@ -1298,7 +1345,9 @@ class DashboardTab(QWidget):
             # вывод о лучшем — только по полной проверке, а не по её части.
             return
         best = self._presets_panel.best()
-        if best is None:
+        if best is None and self._ping_mgr.checked_at:
+            self._tile_zapret.set_hint("Ни один пресет не прошёл проверку — выберите вручную ниже", "warning")
+        elif best is None:
             self._tile_zapret.set_hint("Пресеты не проверены — проверка в блоке ниже")
         elif best["name"] == preset["name"]:
             self._tile_zapret.set_hint("Лучший по последней проверке")
@@ -1365,10 +1414,13 @@ class DashboardTab(QWidget):
     def _on_refresh_ping(self, auto: bool = False, user: bool = True) -> None:
         """user — проверку запустил пользователь (или она идёт сразу после его
         «Запустить»): тогда без фоновой службы можно показать окно её установки."""
-        if self._ping_mgr.is_testing:
+        if self._ping_mgr.is_testing or self._installing_core:
+            return      # zapret ставится или обновляется — его файлы как раз заменяются
+        if self.manager is not None and self.manager.state in (ServiceState.STOPPING, ServiceState.STARTING):
+            # Проверка запускает свои winws — дождаться остановки. Во время
+            # запуска остановка встала бы в очередь за ним, а пришедшее раньше
+            # «работает» отменило бы проверку — и обход бы просто погас
             return
-        if self.manager is not None and self.manager.state == ServiceState.STOPPING:
-            return      # проверка запускает свои winws — дождаться остановки
         if self._bypass_on():
             # Проверка запускает пресеты по очереди — свой winws ей мешает: останавливаем,
             # а саму проверку запустит _on_manager_state_change, когда обход остановится
@@ -1383,6 +1435,9 @@ class DashboardTab(QWidget):
         self._checking = True
         self._refresh_zapret_tile()
         self._btn_refresh.setEnabled(False)
+        # Game Filter перечитывается для каждого пресета — сменить его посреди
+        # проверки значит проверить часть пресетов с другим режимом
+        self._presets_panel.btn_game.setEnabled(False)
         # Ручной тест можно прервать кнопкой «Запустить» (см. _on_toggle);
         # автоматический (сразу после установки Core) — нет, ждём до конца.
         self._btn_toggle.setEnabled(not auto)
@@ -1405,8 +1460,9 @@ class DashboardTab(QWidget):
             self._presets_panel.progress.finish()
         else:
             self._presets_panel.progress.stop()
-        self._btn_refresh.setEnabled(True)
-        self._btn_toggle.setEnabled(True)
+        self._btn_refresh.setEnabled(not self._installing_core)
+        self._btn_toggle.setEnabled(not self._installing_core)
+        self._presets_panel.btn_game.setEnabled(True)
         self._set_message(msg, None if ok else "error")
         self._preset_menu.render()
         self._refresh_zapret_tile()
@@ -1507,6 +1563,16 @@ class DashboardTab(QWidget):
 
         self._refresh_game_filter_ui()
 
+        # Списки качаются только при включённом фильтре: включили впервые —
+        # сначала скачать, перезапуск — когда они на месте (иначе обход
+        # перезапустился бы без них)
+        lists = self._zapret_dir / "lists"
+        if self._game_filter_enabled and not (lists / GAME_LIST_DOMAINS).exists():
+            self._refresh_game_lists(on_done=lambda _ok, _msg: self._gameListsReady.emit())
+            return
+        self._restart_for_game_filter()
+
+    def _restart_for_game_filter(self) -> None:
         if self._bypass_on():
             bat = self._get_current_bat()
             if bat is not None:
@@ -1515,6 +1581,7 @@ class DashboardTab(QWidget):
     # ── Запуск / DNS / TG Proxy ──────────────────────
 
     def _clear_zapret_error(self) -> None:
+        self._core_error = ""
         if self._zapret_error:
             self._zapret_error = False
             self._tile_zapret.set_error(False)
@@ -1576,6 +1643,13 @@ class DashboardTab(QWidget):
 
         if not ok:
             log.error(f"Установка Core не удалась: {msg}")
+            # Как у TG Proxy: красная плитка с причиной, пока не попробуют снова
+            # (в шапке «Пресетов» сообщение гаснет через 8 с)
+            self._core_error = f"Не удалось установить zapret: {msg}"
+            self._zapret_error = True
+            self._tile_zapret.set_state(False, "Ошибка", "error")
+            self._tile_zapret.set_error(True)
+            self._refresh_zapret_tile()
             return
 
         self._refresh_game_lists()      # при запуске FlowZap их не скачали: Core не было
@@ -1583,9 +1657,13 @@ class DashboardTab(QWidget):
         if self._preset_menu.presets:
             self._on_refresh_ping(auto=True)
 
-    def _refresh_game_lists(self) -> None:
-        if (self._zapret_dir / "bin" / "winws.exe").exists():
-            update_gaming_lists(self._zapret_dir / "lists")
+    def _refresh_game_lists(self, on_done=None) -> None:
+        """Игровые списки нужны только Game Filter: выключен — не качаем
+        (~750 КБ и разбор 18 тыс. строк раз в 6 ч впустую)."""
+        if self._game_filter_enabled and (self._zapret_dir / "bin" / "winws.exe").exists():
+            update_gaming_lists(self._zapret_dir / "lists", on_done=on_done)
+        elif on_done:
+            on_done(False, "")
 
     def _on_dns_toggle(self) -> None:
         self._dns_restore_pending = False   # пользователь решил сам — отложенное не включаем
@@ -1849,7 +1927,9 @@ class DashboardTab(QWidget):
 
     def _on_tg_proxy_done(self, running: bool, error: str) -> None:
         self._tg_running = running
-        if not self._tg_restoring_off:
+        # Не включился (порт занят и т.п.) — «был включён» не стираем: иначе
+        # одна неудача при запуске FlowZap отменяла восстановление навсегда
+        if not self._tg_restoring_off and (running or not error):
             self._remember_state("tgproxy", running)
         self._sw_tg.setEnabled(True)
         self._set_tg_error("" if running else error)
@@ -1883,13 +1963,24 @@ class DashboardTab(QWidget):
 
     # ── TG Proxy: подключён ли Telegram ──
 
+    def _window_shown(self) -> bool:
+        win = self.window()
+        return win is not None and win.isVisible() and not win.isMinimized()
+
     def _poll_tg(self) -> None:
         if self._tg_polling:
             return
         # Прокси выключен — опрос нужен только для точки «Telegram мимо
         # прокси»; пока главную не видно (трей, другая вкладка), её некому смотреть
-        if not self._tg_running and not self.isVisible():
+        if not self._tg_running and not (self.isVisible() and self._window_shown()):
             return
+        # Окно в трее или свёрнуто: подключённых никто не видит — только «жив
+        # ли сервер» (мгновенно); полный опрос — раз в TG_POLL_HIDDEN_SEC и сразу,
+        # если сервер умер
+        if (self._tg_running and not self._window_shown() and self._tg.is_running
+                and time.monotonic() - self._tg_full_poll_at < TG_POLL_HIDDEN_SEC):
+            return
+        self._tg_full_poll_at = time.monotonic()
         self._tg_polling = True
         gen = self._tg_gen
         self._tg.poll_async(lambda alive, clients, app, path, rejected:
@@ -1919,7 +2010,7 @@ class DashboardTab(QWidget):
             self._tg.stop()
             self._tg_running = False
             self._tg_clients, self._tg_rejected = [], False
-            self._set_tg_error("TG WS Proxy неожиданно остановился — подробности в logs/tgproxy.log")
+            self._set_tg_error("Telegram Proxy неожиданно остановился — подробности в logs/tgproxy.log")
             self._refresh_tg_tile()
             return
         self._tg_clients = list(clients)
@@ -1979,7 +2070,7 @@ class DashboardTab(QWidget):
         tg = self._tg.settings
         linked = tg_settings.is_linked(tg)
         if self._tg_installing:
-            return "installing", "Скачивается…", "Скачиваю TG WS Proxy — это нужно один раз", "accent"
+            return "installing", "Скачивается…", "Скачиваю Telegram Proxy — это нужно один раз", "accent"
         if not self._tg_running:
             if not linked:
                 kind, text = "connect", "Не подключён"
@@ -2037,7 +2128,7 @@ class DashboardTab(QWidget):
         elif kind == "rejected":
             self._tile_tg.set_hint("Telegram со старым секретом — нажмите и подтвердите", "warning")
         elif kind == "installing":
-            self._tile_tg.set_hint("Скачиваю TG WS Proxy…", "accent")
+            self._tile_tg.set_hint("Скачиваю Telegram Proxy…", "accent")
         else:
             self._tile_tg.set_hint("")
         self.tgStatusChanged.emit()
@@ -2050,7 +2141,7 @@ class DashboardTab(QWidget):
 
     # ── Меню в трее ──
 
-    TRAY_TITLES = {"zapret": "Обход", "dns": "DNS", "tg": "TG Proxy"}
+    TRAY_TITLES = {"zapret": "Обход", "dns": "DNS", "tg": "Telegram Proxy"}
 
     def _tray_tiles(self) -> dict:
         return {"zapret": self._tile_zapret, "dns": self._tile_dns, "tg": self._tile_tg}
@@ -2075,7 +2166,7 @@ class DashboardTab(QWidget):
         for key, tile in self._tray_tiles().items():
             if not tile.switch.isEnabled():
                 detail = busy_text.get(zapret_state) if key == "zapret" else None
-                state, detail = "busy", detail or tile.state.text()
+                state, detail = "busy", detail or tile.state.full_text()
             elif key == "dns" and getattr(self, "_dns_restore_pending", False):
                 state, detail = "pending", "включится после проверки"
             elif tile.property("error"):
@@ -2187,20 +2278,22 @@ class DashboardTab(QWidget):
             return
         if not self._sw_tg.isEnabled():
             if on_done:
-                on_done(self._tg_running, "TG Proxy сейчас занят другой операцией — повторите позже.")
+                on_done(self._tg_running, "Telegram Proxy сейчас занят другой операцией — повторите позже.")
             return
         self._tg_done_cb = on_done
         self._tg_restoring_off = not enable
         self._on_tg_proxy_toggle()
         self._tg_launch_app = False     # вызов из кода (обновление), не пользователь — Telegram не открываем
 
-    def after_service_change(self, action: str, resume_bat) -> None:
+    def after_service_change(self, action: str, resume_bat, ok: bool = True) -> None:
         """«Настройки» переустановили, обновили или удалили фоновую службу.
         Остановившись (или потеряв связь с FlowZap), она сбросила DNS, который
         включал FlowZap, а обход перед этим остановили — без этого плитка DNS
         показывала «включён», а DNS уже был провайдера. Возвращаем как было;
         без службы и без прав администратора DNS не включить — показываем
-        выключенным. resume_bat — пресет, работавший до обновления службы."""
+        выключенным. resume_bat — пресет, работавший до обновления или
+        удаления службы; ok=False — не вышло (или «Нет» в окне Windows), служба
+        осталась как была."""
         if self._dns_enabled and self._sw_dns.isEnabled():
             pair = dns_manager.get_active_pair(self._config)
             if pair is not None and (service_client.service_installed() or service_client.is_admin()):
@@ -2214,15 +2307,53 @@ class DashboardTab(QWidget):
                 self._dns_enabled = False
                 self._remember_state("dns", False)
                 self._refresh_dns_button_style()
-        if action == "update" and resume_bat and self.manager is not None and not self.manager.is_running \
-                and Path(resume_bat).exists():
-            log.info(f"Фоновая служба обновлена — запускаю обход снова: {Path(resume_bat).stem}")
+        # Обновили — или удаление не состоялось: служба на месте, обход возвращаем
+        if (action == "update" or not ok) and resume_bat and self.manager is not None \
+                and not self.manager.is_running and Path(resume_bat).exists() \
+                and (service_client.service_installed() or service_client.is_admin()):
+            log.info(f"Фоновая служба на месте — запускаю обход снова: {Path(resume_bat).stem}")
             self.manager.start_async(bat_path=resume_bat)
 
     def on_core_updated(self) -> None:
         """Вызывается UpdatesTab после успешного обновления Core — перечитать пресеты."""
         self._load_presets()
         self._refresh_game_lists()
+
+    def set_component_updating(self, component: str, busy: bool) -> None:
+        """«Обновления» ставят zapret («core») или Telegram Proxy («tg»): тумблер
+        и проверка здесь (и в трее) ждут конца — иначе winws или прокси
+        запустился бы из файлов, которые как раз заменяются."""
+        if component == "core":
+            self._installing_core = busy
+            starting = self.manager is not None and self.manager.state in (ServiceState.STARTING,
+                                                                          ServiceState.STOPPING)
+            self._sw_zapret.setEnabled(not busy and not starting)
+            self._btn_refresh.setEnabled(not busy and not self._checking)
+        elif component == "tg":
+            self._tg_installing = busy
+            self._sw_tg.setEnabled(not busy)
+            self._refresh_tg_tile()
+
+    def on_lists_changed(self) -> None:
+        """«Параметры» изменили списки сайтов. winws читает их при запуске —
+        работающий обход перезапускается (правки подряд — один перезапуск)."""
+        self._lists_restart_timer.start()
+
+    def _restart_for_lists(self) -> None:
+        if not self._bypass_on() or self._checking:
+            return
+        bat = self._get_current_bat()
+        if bat is not None:
+            log.info("Списки сайтов изменились — перезапускаю обход")
+            self.manager.restart_async(bat_path=bat)
+
+    def remember_bypass_for_restart(self) -> None:
+        """FlowZap перезапускается после своего обновления — обход вернётся сам
+        (как DNS и Telegram Proxy), даже если «Включать обход при запуске» выключено."""
+        if self._bypass_on():
+            self._config.setdefault("state", {})["resume_bypass"] = True
+            if self._save_config_fn:
+                self._save_config_fn()
 
     def shutdown(self) -> None:
         """Синхронно остановить всё, что включил пользователь: сбросить DNS на
@@ -2248,13 +2379,16 @@ class DashboardTab(QWidget):
 
         if not self._dns_toggle_event.wait(timeout=5):
             log.warning("DNS-операция не завершилась за 5 с при выходе — сбрасываем DNS принудительно")
+        if self.manager is not None:
+            self.manager.cancel_pending()       # запуск/перезапуск из очереди — уже не нужен
         if service_client.service_installed():
             # Через службу ждать не нужно: при отключении FlowZap она сама
             # сбрасывает включённый им DNS и останавливает его winws.
             if self._ping_mgr.is_testing:
                 self._ping_mgr.stop_tests()
             log.info("Выход: DNS и обход сбросит фоновая служба")
-            service_client.session.close()
+            # final: идущий запуск или опрос не подключится заново после выхода
+            service_client.session.close(final=True)
         else:
             if self._dns_enabled:
                 error = dns_manager.apply_dns(False, None)

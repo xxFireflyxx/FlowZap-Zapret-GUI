@@ -39,9 +39,8 @@ TABS = ["Главная", "Параметры", "Обновления", "Нас�
 _UPDATES_TAB = 2
 _SETTINGS_TAB = 3
 
-# Автопроверка обновлений — раз в 3 часа: совпадает с TTL кэша в
-# core.updates.releases.get_latest_release (_CACHE_TTL), чаще всё равно ходило бы
-# в тот же кэш и не находило ничего нового.
+# Автопроверка обновлений — раз в 3 часа (кэш релизов для неё — чуть моложе,
+# см. _do_check_updates).
 UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000
 INACTIVE_IDLE_MS = 30_000      # окно не активно столько — сияние на паузе
 UPDATE_CHECK_STARTUP_DELAY_MS = 3000
@@ -62,7 +61,7 @@ class MainWindow(QMainWindow):
     _updatesFound = Signal(bool)   # (есть ли обновление GUI/Core/TG Proxy) — из _do_check_updates
     _releasesFetched = Signal(object)  # {"gui"/"core"/"tg": release} — из _do_check_updates
     _builtinDnsFetched = Signal(object)  # ((version, entries) | None) — из fetch_builtin_dns_async
-    _announcementsFetched = Signal(object)  # (объявления, исправления): list | None — из start_announcements_fetch
+    _announcementsFetched = Signal(object)  # (объявления, исправления): (номер файла, list) | None — из start_announcements_fetch
 
     def __init__(self, root: Path, config: dict = None, config_path: Path = None, manager=None):
         super().__init__()
@@ -72,7 +71,9 @@ class MainWindow(QMainWindow):
         self.manager = manager
 
         self.setWindowTitle("FlowZap")
-        self.setMinimumSize(900, 640)
+        # Уже 1000 блок «Пресеты» (строка «ЛУЧШИЙ» с чипами сервисов) не
+        # сжимается, а прокрутки вбок нет — правый край главной обрезался
+        self.setMinimumSize(1000, 640)
         self.resize(1120, 760)
 
         self.minimize_to_tray = self.config.get("ui", {}).get("tray_enabled", True)
@@ -151,14 +152,30 @@ class MainWindow(QMainWindow):
         import threading
         from core import announcements, repairs
 
+        # Номера уже полученных файлов: старее не принимаются (core/announcements.py)
+        seen_items, seen_fixes = self._seen_serial("announcements"), self._seen_serial("repairs")
+
         def _worker() -> None:
-            self._announcementsFetched.emit((announcements.fetch(), repairs.fetch()))
+            self._announcementsFetched.emit((announcements.fetch(seen_items), repairs.fetch(seen_fixes)))
         threading.Thread(target=_worker, daemon=True, name="announcements").start()
+
+    def _seen_serial(self, section: str) -> int:
+        value = self.config.get(section, {}).get("serial", 0)
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
     def _on_announcements_fetched(self, result) -> None:
         from core import announcements, repairs
         from core.version import GUI_VERSION
-        items, fixes = result
+        got_items, got_fixes = result
+        changed = False
+        for section, got in (("announcements", got_items), ("repairs", got_fixes)):
+            if got and got[0] > self._seen_serial(section):
+                self.config.setdefault(section, {})["serial"] = got[0]
+                changed = True
+        if changed:
+            self.save_config()
+        items = got_items[1] if got_items else None
+        fixes = got_fixes[1] if got_fixes else None
         dismissed = set(self.config.get("announcements", {}).get("dismissed", []))
         shown = announcements.relevant(items, GUI_VERSION, dismissed) if items else []
         done = set(self.config.get("repairs", {}).get("done", []))
@@ -228,18 +245,26 @@ class MainWindow(QMainWindow):
         # Свёрнутое окно — сияние на паузе (в трее окно скрыто — это hideEvent самого фона).
         if event.type() == event.Type.WindowStateChange:
             self.aurora.pause(self.isMinimized())
+            if not self.isMinimized() and getattr(self, "dashboard", None) is not None:
+                self.dashboard.poll_now()   # свёрнутым TG Proxy опрашивался редко
         elif event.type() == event.Type.ActivationChange:
             # Не активно дольше INACTIVE_IDLE_MS — тоже пауза: окно может часами
             # стоять открытым под игрой, а сияние перерисовывает его целиком
             if self.isActiveWindow():
                 self._inactive_timer.stop()
-                self.aurora.set_idle(False)
+                self._set_idle(False)
             else:
                 self._inactive_timer.start()
         super().changeEvent(event)
 
+    def _set_idle(self, idle: bool) -> None:
+        """Окно давно не активно (под игрой) — сияние и пульс точки на вкладке на паузе."""
+        self.aurora.set_idle(idle)
+        self._tabs.set_idle(idle)
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        self._refresh_mode()        # в трее надпись не обновлялась (_refresh_mode)
         if not getattr(self, "_shown_once", False):
             self._shown_once = True
             if theme.animations:
@@ -316,7 +341,7 @@ class MainWindow(QMainWindow):
         self._inactive_timer = QTimer(self)
         self._inactive_timer.setSingleShot(True)
         self._inactive_timer.setInterval(INACTIVE_IDLE_MS)
-        self._inactive_timer.timeout.connect(lambda: self.aurora.set_idle(True))
+        self._inactive_timer.timeout.connect(lambda: self._set_idle(True))
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -334,6 +359,7 @@ class MainWindow(QMainWindow):
             config=self.config,
             save_config_fn=self.save_config,
             on_dns_changed=self.dashboard.on_dns_changed,
+            on_lists_changed=self.dashboard.on_lists_changed,
             tg_controller=self.dashboard,
         )
         self.stack.addWidget(self.parameters)
@@ -363,6 +389,7 @@ class MainWindow(QMainWindow):
             # Новая версия службы — та же мигающая точка, что у «Обновлений»
             on_service_outdated=lambda v: self._tabs.set_badge(_SETTINGS_TAB, v),
             on_service_changed=self._after_service_change,
+            is_testing=lambda: self.dashboard.is_testing_presets,
         )
         self.stack.addWidget(self.settings)
         layout.addWidget(self.stack, stretch=1)
@@ -427,8 +454,11 @@ class MainWindow(QMainWindow):
     def _refresh_mode(self) -> None:
         """Надпись в правом углу шапки: как FlowZap получает права для обхода и DNS."""
         from core.service import client as service_client
-        admin = service_client.is_admin()
-        via_service = not admin and service_client.service_installed()
+        if not self.isVisible() and self._mode_timer.isActive():
+            return      # в трее надпись не видна — обновится при показе окна (showEvent)
+        # Служба установлена — обход и DNS идут через неё и у администратора
+        via_service = service_client.service_installed()
+        admin = not via_service and service_client.is_admin()
         ok = admin or via_service
         self._mode_icon.setText(Glyph.SHIELD if ok else Glyph.WARNING)
         set_tone(self._mode_icon, "muted" if ok else "warning")
@@ -446,11 +476,11 @@ class MainWindow(QMainWindow):
         elif not self._mode_timer.isActive():
             self._mode_timer.start()
 
-    def _after_service_change(self, action: str, resume_bat) -> None:
+    def _after_service_change(self, action: str, resume_bat, ok: bool) -> None:
         # Таймер надписи останавливается, когда служба есть, — после удаления
         # службы шапка показывала бы «Фоновая служба» до перезапуска
         self._refresh_mode()
-        self.dashboard.after_service_change(action, resume_bat)
+        self.dashboard.after_service_change(action, resume_bat, ok)
 
     def _open_dns_parameters(self) -> None:
         """С главной (нет DNS-серверов) — «Параметры», раздел DNS."""
@@ -517,16 +547,22 @@ class MainWindow(QMainWindow):
         свой отдельный поток на каждый репозиторий не нужен. Ошибка по
         любому из трёх не должна прятать обновление по остальным."""
         has_update = False
+        unknown = False     # что-то не проверилось (нет сети) — найденную раньше точку не гасить
         releases = {}
+        # Кэш релизов чуть моложе интервала: с тем же сроком (3 ч) каждый второй
+        # тик попадал в ещё свежий кэш, и в сеть ходили раз в 6 ч
+        max_age = UPDATE_CHECK_INTERVAL_MS / 1000 - 300
 
         try:
-            release = get_latest_release(FLOWZAP_REPO)
+            release = get_latest_release(FLOWZAP_REPO, max_age=max_age)
             releases["gui"] = release
+            unknown |= release is None
             if release:
                 tag = release.get("tag_name", "")
                 if gui_update_available(GUI_VERSION, tag) and find_exe_asset(release) is not None:
                     has_update = True
         except Exception:
+            unknown = True
             log.exception("Автопроверка обновлений: ошибка при проверке FlowZap")
 
         try:
@@ -535,11 +571,13 @@ class MainWindow(QMainWindow):
             # первом запуске обхода или кнопкой «Установить»).
             installed = (get_installed_core_version(self.dashboard.zapret_dir) or "").lstrip("vV")
             if installed:
-                release = get_latest_release(CORE_REPO)
+                release = get_latest_release(CORE_REPO, max_age=max_age)
                 releases["core"] = release
+                unknown |= release is None
                 if release and installed != release.get("tag_name", "").lstrip("vV"):
                     has_update = True
         except Exception:
+            unknown = True
             log.exception("Автопроверка обновлений: ошибка при проверке Core")
 
         try:
@@ -547,14 +585,19 @@ class MainWindow(QMainWindow):
             tg_dir = self.root / "tgproxy"
             installed = (get_installed_tg_proxy_version(tg_dir) or "").lstrip("vV")
             if installed:
-                release = get_latest_release(TG_PROXY_REPO)
+                release = get_latest_release(TG_PROXY_REPO, max_age=max_age)
                 releases["tg"] = release
+                unknown |= release is None
                 if release and installed != release.get("tag_name", "").lstrip("vV"):
                     has_update = True
         except Exception:
+            unknown = True
             log.exception("Автопроверка обновлений: ошибка при проверке TG Proxy")
 
-        self._updatesFound.emit(has_update)
+        # Не проверилось и нового не нашлось — точку оставляем как есть: карточки
+        # «Обновлений» тоже пропускают пустой ответ и показывают прошлый результат
+        if has_update or not unknown:
+            self._updatesFound.emit(has_update)
         self._releasesFetched.emit(releases)
 
     def _set_updates_dot(self, visible: bool) -> None:

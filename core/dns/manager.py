@@ -212,8 +212,27 @@ def check_service_link() -> None:
             continue
 
 
+_link_check_running = threading.Lock()
+
+
 def check_service_link_async() -> None:
-    threading.Thread(target=check_service_link, daemon=True, name="service-link").start()
+    """check_service_link() в фоне. DNS выключен — поток даже не создаём (таймер
+    главной тикает всегда); прошлая проверка ещё ждёт службу (запрос стоит в
+    очереди за долгим — загрузкой winws) — новую не начинаем, иначе ждущие
+    потоки копились бы."""
+    with _state_lock:
+        if _active_pair is None:
+            return
+    if not _link_check_running.acquire(blocking=False):
+        return
+
+    def _worker() -> None:
+        try:
+            check_service_link()
+        finally:
+            _link_check_running.release()
+
+    threading.Thread(target=_worker, daemon=True, name="service-link").start()
 
 
 def _set_dns(enable: bool, pair: dict | None, allow_install: bool = False,

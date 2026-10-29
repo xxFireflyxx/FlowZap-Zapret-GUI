@@ -176,13 +176,13 @@ def _wait_running(timeout: float) -> int:
             if state == "missing":
                 raise ServiceError("Фоновая служба FlowZap не установлена")
             if time.monotonic() > deadline:
-                raise ServiceError("Фоновая служба FlowZap не запускается — переустановите её в настройках")
+                raise ServiceError("Фоновая служба FlowZap не запускается — удалите и установите её заново в «Настройках»")
             time.sleep(0.2)
             state, pid = query_service()
     except OSError as e:
         if e.winerror == ERROR_SERVICE_DISABLED:
             raise ServiceError("Фоновая служба FlowZap отключена в службах Windows — "
-                               "переустановите её в настройках") from e
+                               "удалите и установите её заново в «Настройках»") from e
         raise ServiceError(f"Фоновая служба FlowZap недоступна: {e.strerror or e}") from e
     return pid
 
@@ -320,18 +320,24 @@ class ServiceSession:
         self._pipe: Optional[_Pipe] = None
         self._lock = threading.RLock()
         self._lost = False
+        self._final = False             # FlowZap выходит — больше не подключаться
         self.info: dict = {}
         self.on_reconnect: list = []    # функции без аргументов; зовутся в отдельном потоке
 
     def connect(self) -> dict:
         with self._lock:
+            if self._final:
+                # Иначе запрос, ждавший своей очереди (запуск обхода, опрос),
+                # подключился бы заново уже после выхода — и служба включила бы
+                # обход умирающего FlowZap или погасила обход следующего
+                raise ServiceError("FlowZap закрывается")
             if self._pipe is None:
                 server_pid = _wait_running(15) if self._authenticate else None
                 self._pipe = _Pipe(self._pipe_name, server_pid)
                 hello = self._send({"op": "hello"})
                 if hello.get("protocol") != PROTOCOL:
                     self.close()
-                    raise ServiceError("Версия фоновой службы не подходит к FlowZap — переустановите её в настройках")
+                    raise ServiceError("Версия фоновой службы не подходит к FlowZap — удалите и установите её заново в «Настройках»")
                 self.info = hello
                 logger.info(f"Связь со службой: версия {hello.get('version')}, zapret {hello.get('engine_version') or '—'}")
                 if self._lost:
@@ -343,7 +349,10 @@ class ServiceSession:
                         threading.Thread(target=callback, daemon=True, name="service-reconnect").start()
             return self.info
 
-    def close(self, wait: float = 2.0) -> None:
+    def close(self, wait: float = 2.0, final: bool = False) -> None:
+        """final — выход из FlowZap: после него connect() больше не подключается."""
+        if final:
+            self._final = True
         if self._lock.acquire(timeout=wait):
             try:
                 self._lost = False
@@ -476,9 +485,9 @@ _INSTALL_ERRORS = {
 }
 
 
-def _run_elevated(args: list[str], timeout: float = 180) -> int:
+def _run_elevated(args: list[str], cancelled: str, timeout: float = 180) -> int:
     """Запустить FlowZapService.exe с правами администратора (окно UAC) и
-    дождаться. Код выхода; отказ в UAC — ServiceError."""
+    дождаться. Код выхода; отказ в UAC — ServiceError с текстом cancelled."""
     exe = bundled_service_exe()
     if not exe.exists():
         raise ServiceError(f"Не найден {exe.name} — переустановите FlowZap")
@@ -493,7 +502,7 @@ def _run_elevated(args: list[str], timeout: float = 180) -> int:
     if not _shell32.ShellExecuteExW(ctypes.byref(info)):
         err = ctypes.get_last_error()
         if err == ERROR_CANCELLED:
-            raise ServiceError("Установка фоновой службы отменена — без неё обход не запустится")
+            raise ServiceError(cancelled)
         raise ServiceError(f"Не удалось запустить установку службы ({err})")
     try:
         if _kernel32.WaitForSingleObject(info.hProcess, int(timeout * 1000)) != 0:
@@ -505,17 +514,20 @@ def _run_elevated(args: list[str], timeout: float = 180) -> int:
         _kernel32.CloseHandle(info.hProcess)
 
 
-def install(engine_dir: Path, core_version: str = "") -> None:
+def install(engine_dir: Path, core_version: str = "", update: bool = False) -> None:
     """Установить (или переустановить) службу: winws из engine_dir (папка
     zapret/bin) копируется в защищённую папку службы; если zapret ещё не
-    скачан — служба ставится без winws (DNS работает). Одно окно UAC."""
+    скачан — служба ставится без winws (DNS работает). Одно окно UAC.
+    update — это обновление уже установленной (только для текста отмены)."""
     from core.system import autostart
     session.close()
     logger.info("Установка фоновой службы FlowZap…")
     # Установщик удаляет задачу автозапуска от FlowZap до 1.0 (она требует
     # администратора) — если она была, переносим автозапуск в реестр
     had_legacy_task = autostart.legacy_task_exists()
-    code = _run_elevated(["--install", str(Path(engine_dir).resolve()), core_version or ""])
+    code = _run_elevated(["--install", str(Path(engine_dir).resolve()), core_version or ""],
+                         "Обновление службы отменено — работает прежняя версия" if update else
+                         "Установка фоновой службы отменена — без неё обход и DNS не включатся")
     if code != 0:
         raise ServiceError(_INSTALL_ERRORS.get(code, f"Не удалось установить службу (код {code})"))
     _wait_running(20)
@@ -531,7 +543,7 @@ def install(engine_dir: Path, core_version: str = "") -> None:
 def uninstall() -> None:
     session.close()
     logger.info("Удаление фоновой службы FlowZap…")
-    code = _run_elevated(["--uninstall"])
+    code = _run_elevated(["--uninstall"], "Удаление отменено — служба осталась как была")
     if code != 0:
         raise ServiceError(_INSTALL_ERRORS.get(code, f"Не удалось удалить службу (код {code})"))
     logger.info("Фоновая служба удалена")

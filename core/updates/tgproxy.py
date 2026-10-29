@@ -83,7 +83,7 @@ def _swap(new: Path, target: Path) -> None:
         try:
             target.rename(old)
         except OSError as e:
-            raise ValueError(f"Не удалось заменить файлы прокси ({e}) — выключите TG Proxy и повторите") from None
+            raise ValueError(f"Не удалось заменить файлы прокси ({e}) — выключите Telegram Proxy и повторите") from None
     try:
         new.rename(target)
     except OSError as e:
@@ -101,7 +101,7 @@ def download_and_install_tg_proxy(
 ) -> None:
     def body(log: Callable[[str], None]) -> str:
         if not _install_lock.acquire(blocking=False):
-            raise ValueError("TG WS Proxy уже устанавливается")
+            raise ValueError("Telegram Proxy уже устанавливается")
         try:
             return _install(tgproxy_dir, repo, log)
         finally:
@@ -151,5 +151,5 @@ def _install(tgproxy_dir: Path, repo: str, log: Callable[[str], None]) -> str:
     (tgproxy_dir / "version.txt").write_text(tag, encoding="utf-8")
     # exe автора, который ставил FlowZap до 1.1, больше не нужен
     migrate_legacy(tgproxy_dir)
-    log(f"✓ TG WS Proxy установлен ({tag})")
-    return f"TG WS Proxy установлен ({tag})"
+    log(f"✓ Telegram Proxy установлен ({tag})")
+    return f"Telegram Proxy установлен ({tag})"

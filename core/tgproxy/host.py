@@ -163,7 +163,37 @@ def _serve(log_file: Path, parent_pid: int, args: list[str]) -> int:
                     record.msg, record.args = text.replace(secret, secret[:4] + "…"), ()
             return True
 
+    import re
+    import time
+    client_line = re.compile(r"\[(?P<host>[0-9a-fA-F.:]+):\d+\]\s+(?P<msg>.*)")
+
+    class _QuietRejects(logging.Filter):
+        """Telegram со старым секретом стучится раз в секунду — лог за полтора
+        часа целиком из «bad handshake», строки запуска и ошибок вытеснялись.
+        Повтор отказа тому же адресу — не чаще раза в 10 с (меньше, чем окно
+        REJECT_WINDOW_SEC в manager._RejectWatch: отказ остаётся «свежим»);
+        любая другая строка этого адреса — следующий отказ снова пишется."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._last: dict[str, float] = {}
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            m = client_line.search(record.getMessage())
+            if not m:
+                return True
+            host = m["host"]
+            if "bad handshake" not in m["msg"]:
+                self._last.pop(host, None)
+                return True
+            now = time.monotonic()
+            if now - self._last.get(host, -1e9) < 10:
+                return False
+            self._last[host] = now
+            return True
+
     handler.addFilter(_HideSecret())
+    handler.addFilter(_QuietRejects())
     root = logging.getLogger()
     root.addHandler(handler)
     root.setLevel(logging.INFO)

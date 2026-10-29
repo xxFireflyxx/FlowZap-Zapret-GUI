@@ -11,6 +11,13 @@ core/announcements.py
 целиком — иначе чужой доступ к репозиторию позволял бы показывать любые
 «объявления» со ссылками от имени FlowZap.
 
+Номер файла (serial, подписан вместе с ним) растёт с каждой публикацией;
+файл с номером меньше уже полученного не принимается — старую подписанную
+версию (с давно снятым объявлением или исправлением) не подать снова.
+Файлы без номера (до 1.1.3) считаются номером 0.
+
+    serial = 3                       # ставит release/announce.py, вручную не трогать
+
     [[announcement]]
     id = "2026-10-manual-update"     # постоянный; закрытое пользователем не вернётся
     title = "Обновите FlowZap вручную"
@@ -118,11 +125,22 @@ def _get(url: str) -> bytes:
         return r.read(256 * 1024)
 
 
-def fetch_signed(name: str, parse: Callable[[bytes], T], what: str) -> Optional[T]:
+def serial(data: bytes) -> int:
+    """Номер файла (serial = N в начале); нет или не число — 0."""
+    try:
+        value = tomllib.loads(data.decode("utf-8")).get("serial", 0)
+    except (UnicodeError, tomllib.TOMLDecodeError):
+        return 0
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def fetch_signed(name: str, parse: Callable[[bytes], T], what: str,
+                 min_serial: int = 0) -> Optional[tuple[int, T]]:
     """Файл name из корня репозитория: GitHub, при неудаче GitLab. Берётся
-    только с верной подписью автора (name + .sig) и только если parse его
-    разобрал; иначе пробуем следующий адрес. None — не получилось нигде.
-    what — как назвать файл в логе («Объявления», «Исправления»)."""
+    только с верной подписью автора (name + .sig), с номером не меньше
+    min_serial (уже полученного раньше) и только если parse его разобрал;
+    иначе пробуем следующий адрес. (номер, разобранное); None — не
+    получилось нигде. what — как назвать файл в логе («Объявления», «Исправления»)."""
     for data_url, sig_url in zip(_urls(name), _urls(name + signing.SIGNATURE_SUFFIX)):
         try:
             data, sig = _get(data_url), _get(sig_url)
@@ -135,17 +153,23 @@ def fetch_signed(name: str, parse: Callable[[bytes], T], what: str) -> Optional[
             # Подменённый файл — повод насторожиться, а не просто сбой сети
             logger.warning(f"{what}: подпись не прошла проверку ({exc}) — {data_url}")
             continue
+        number = serial(data)
+        if number < min_serial:
+            # Подпись верна, но файл старее уже полученного — его подали снова
+            logger.warning(f"{what}: файл №{number} старее полученного раньше №{min_serial} — {data_url}")
+            continue
         try:
             result = parse(data)
         except Exception as exc:
             logger.warning(f"{what}: файл не разобран — {exc}")
             continue
-        logger.info(f"{what}: {len(result)} шт. ({data_url.split('/')[2]})")
-        return result
+        logger.info(f"{what}: {len(result)} шт., файл №{number} ({data_url.split('/')[2]})")
+        return number, result
     return None
 
 
-def fetch() -> Optional[list[dict]]:
-    """Скачать и проверить объявления. None — не удалось (нет файла, сеть,
-    подпись не сошлась); [] — файл есть, объявлений нет."""
-    return fetch_signed(FILE_NAME, parse, "Объявления")
+def fetch(min_serial: int = 0) -> Optional[tuple[int, list[dict]]]:
+    """Скачать и проверить объявления: (номер файла, объявления). None — не
+    удалось (нет файла, сеть, подпись не сошлась, файл старее min_serial);
+    пустой список — файл есть, объявлений нет."""
+    return fetch_signed(FILE_NAME, parse, "Объявления", min_serial)

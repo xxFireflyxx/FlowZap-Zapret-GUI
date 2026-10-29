@@ -31,16 +31,20 @@ log = logging.getLogger("flowzap.autostart")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "FlowZap"
 LEGACY_TASK = "FlowZap"
+# Метка «запущен вместе с Windows»: тогда main.py по настройке ui.start_in_tray
+# сразу прячет FlowZap в трей, без окна (переключатель в «Настройках» действует
+# без перезаписи реестра)
+AUTOSTART_ARG = "--autostart"
 
 
 def _command() -> str:
     """Команда запуска FlowZap для записи в реестре."""
     if getattr(sys, "frozen", False):
-        return f'"{Path(sys.executable)}"'
+        return f'"{Path(sys.executable)}" {AUTOSTART_ARG}'
     # Из исходников — через pythonw, чтобы не было консоли
     pythonw = Path(sys.executable).parent / "pythonw.exe"
     exe = pythonw if pythonw.exists() else Path(sys.executable)
-    return f'"{exe}" "{Path(__file__).resolve().parents[2] / "main.py"}"'
+    return f'"{exe}" "{Path(__file__).resolve().parents[2] / "main.py"}" {AUTOSTART_ARG}'
 
 
 def _run_value_exists() -> bool:
@@ -100,14 +104,18 @@ def set_autostart(enable: bool) -> None:
     log.info("Автозапуск выключен")
 
 
-def _registered_exe() -> Path | None:
-    """exe из записи автозапуска (первый аргумент, в кавычках или без)."""
+def _registered_value() -> str:
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             value, _ = winreg.QueryValueEx(key, RUN_VALUE)
     except OSError:
-        return None
-    value = str(value).strip()
+        return ""
+    return str(value).strip()
+
+
+def _registered_exe() -> Path | None:
+    """exe из записи автозапуска (первый аргумент, в кавычках или без)."""
+    value = _registered_value()
     if value.startswith('"'):
         end = value.find('"', 1)
         return Path(value[1:end]) if end > 0 else None
@@ -119,12 +127,20 @@ def repair_autostart_path() -> bool:
     указывает на exe, которого нет, и Windows молча ничего не запускает, а
     галочка в настройках стоит. Переписываем на этот FlowZap. Только для
     собранного FlowZap и только когда прежнего exe нет: работающая копия в
-    другой папке (тестовая) автозапуск не перехватывает. True — исправлено."""
+    другой папке (тестовая) автозапуск не перехватывает. Запись этого же
+    FlowZap без AUTOSTART_ARG (до 1.1.3) — дописываем. True — исправлено."""
     if not getattr(sys, "frozen", False):
         return False
     old = _registered_exe()
-    if old is None or old.exists():
+    if old is None:
         return False
+    if old.exists():
+        same = str(old).lower() == str(Path(sys.executable)).lower()
+        if not same or AUTOSTART_ARG in _registered_value().split():
+            return False
+        set_autostart(True)
+        log.info("Автозапуск: теперь FlowZap стартует в трей, без окна")
+        return True
     set_autostart(True)
     log.info(f"Автозапуск указывал на несуществующий {old} — теперь на {Path(sys.executable)}")
     return True

@@ -105,8 +105,17 @@ def setup_crash_handling(log_dir: Path) -> None:
     _error_dialog = _ErrorDialog()
     log_dir.mkdir(parents=True, exist_ok=True)
     crash_log_path = log_dir / "crash.log"
+    # Без предела crash.log рос бы вечно: прежний — в logs/archive/ (как у flowzap.log)
+    try:
+        if crash_log_path.stat().st_size > 1024 * 1024:
+            from core.system.logfiles import ARCHIVE_DIR
+            (log_dir / ARCHIVE_DIR).mkdir(exist_ok=True)
+            crash_log_path.replace(log_dir / ARCHIVE_DIR / "crash.1.log")
+    except OSError:
+        pass
     _crash_log_file = open(crash_log_path, "a", encoding="utf-8")
     faulthandler.enable(file=_crash_log_file)
+    last_trace = [""]
 
     def _report(exc_type, exc_value, exc_tb) -> None:
         global _error_dialog_shown
@@ -114,8 +123,12 @@ def setup_crash_handling(log_dir: Path) -> None:
             "Необработанное исключение", exc_info=(exc_type, exc_value, exc_tb)
         )
         import traceback
-        traceback.print_exception(exc_type, exc_value, exc_tb, file=_crash_log_file)
-        _crash_log_file.flush()
+        trace = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        # Одно и то же исключение в таймере (раз в секунду) — в crash.log один раз
+        if trace != last_trace[0]:
+            last_trace[0] = trace
+            _crash_log_file.write(trace)
+            _crash_log_file.flush()
 
         if not _error_dialog_shown and QApplication.instance() is not None:
             _error_dialog_shown = True
@@ -307,8 +320,26 @@ def _migrate_win_autostart_async() -> None:
     threading.Thread(target=_worker, daemon=True, name="autostart-migrate").start()
 
 
+def _install_qt_translation(app: QApplication) -> None:
+    """Стандартные окна и меню Qt — по-русски: без перевода QMessageBox.question
+    показывал «Yes / No», а меню поля ввода — «Copy / Paste». В сборке —
+    только qtbase_ru.qm (FlowZap.spec, _QT_KEEP)."""
+    from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+    folders = [QLibraryInfo.path(QLibraryInfo.TranslationsPath)]
+    if getattr(sys, "frozen", False):
+        folders.append(str(Path(getattr(sys, "_MEIPASS", ROOT)) / "PySide6" / "translations"))
+    translator = QTranslator(app)
+    for folder in folders:
+        if translator.load(QLocale(QLocale.Russian, QLocale.Russia), "qtbase", "_", folder):
+            app.installTranslator(translator)
+            return
+    logging.getLogger("flowzap").warning("Перевод Qt (qtbase_ru.qm) не найден — стандартные кнопки по-английски")
+
+
 GC_INTERVAL_MS = 1000
-GC_FULL_EVERY = 60  # полная сборка — раз в минуту
+# Полная сборка — раз в 10 минут: каждая обходит все объекты (20+ мс в
+# главном потоке), а раз в минуту — 1440 раз в сутки и в трее
+GC_FULL_EVERY = 600
 
 
 def _collect_garbage_on_gui_thread(app: QApplication) -> None:
@@ -347,6 +378,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)  # закрытие окна сворачивает в трей, не завершает процесс
     _collect_garbage_on_gui_thread(app)
+    _install_qt_translation(app)
 
     # Single-instance — до создания manager/MainWindow: если это второй
     # запуск и первый экземпляр отозвался, второму дальше делать нечего.
@@ -367,7 +399,6 @@ def main() -> None:
     theme.set_theme(config.get("ui", {}).get("theme", DEFAULT_THEME))
 
     from core.updates.releases import set_github_token
-    from core.zapret.game_lists import update_gaming_lists
     gh_token = config.get("github", {}).get("token", "")
     if gh_token:
         set_github_token(gh_token)
@@ -415,14 +446,15 @@ def main() -> None:
 
     instance_server.newConnection.connect(_on_wake_request)
 
-    window.show()
+    # Вместе с Windows (core/system/autostart.AUTOSTART_ARG) — сразу в трей, без
+    # окна, если так выбрано в «Настройках» (ui.start_in_tray)
+    from core.system.autostart import AUTOSTART_ARG
+    if AUTOSTART_ARG in sys.argv and config.get("ui", {}).get("start_in_tray", True):
+        log.info("Запуск вместе с Windows — FlowZap в трее")
+    else:
+        window.show()
 
-    # Игровые списки (Game Filter) — только если Core уже установлен;
-    # внутри своя проверка кэша на 6 часов, не качает при каждом старте.
-    zapret_dir = Path(config["_app_dir"]) / config.get("zapret", {}).get("presets_dir", "zapret")
-    if (zapret_dir / "bin" / "winws.exe").exists():
-        update_gaming_lists(zapret_dir / "lists")
-
+    # Игровые списки (Game Filter) качает главная при создании — только если фильтр включён
     log.info("UI готов, запуск event loop")
     sys.exit(app.exec())
 

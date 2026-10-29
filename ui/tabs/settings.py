@@ -158,11 +158,14 @@ class SettingsTab(QWidget):
     def __init__(self, parent=None, config: dict = None, save_config_fn=None,
                  on_tray_changed=None, on_theme_changed=None, on_effects_changed=None,
                  manager=None, on_relaunch_admin=None, on_service_outdated=None,
-                 on_service_changed=None) -> None:
+                 on_service_changed=None, is_testing=None) -> None:
         super().__init__(parent)
-        # (action, resume_bat) — службу переустановили/удалили: остановившись,
-        # она сбросила DNS FlowZap и погасила обход — главная вернёт как было
+        # (action, resume_bat, ok) — службу переустановили/удалили (или передумали
+        # в окне Windows): остановившись, она сбросила DNS FlowZap и погасила
+        # обход — главная вернёт как было
         self._on_service_changed = on_service_changed
+        # Идёт проверка пресетов (главная) — службу в это время не трогаем
+        self._is_testing = is_testing or (lambda: False)
         self._service_resume_bat = None
         # (bool) — есть новая версия службы: MainWindow зажигает точку на вкладке
         self._on_service_outdated = on_service_outdated
@@ -237,10 +240,16 @@ class SettingsTab(QWidget):
         self._sw_tray.setChecked(ui_cfg.get("tray_enabled", True))
         self._sw_tray.clicked.connect(self._on_tray_clicked)
 
+        self._sw_start_tray = Switch()
+        self._sw_start_tray.setChecked(ui_cfg.get("start_in_tray", True))
+        self._sw_start_tray.clicked.connect(self._on_start_tray_clicked)
+
         rows = [
             self._row_win,
+            SettingRow("Сразу в трей при запуске с Windows", "Без окна — что включено, видно на значке в трее",
+                       self._sw_start_tray),
             SettingRow("Включать обход при запуске", "С последним выбранным пресетом", self._sw_zapret),
-            SettingRow("Восстанавливать DNS и TG Proxy", "Если они были включены при выходе", self._sw_restore),
+            SettingRow("Восстанавливать DNS и Telegram Proxy", "Если они были включены при выходе", self._sw_restore),
             SettingRow("Сворачивать в трей при закрытии",
                        "Крестик прячет окно, обход продолжает работать", self._sw_tray),
         ]
@@ -293,7 +302,7 @@ class SettingsTab(QWidget):
         self._row_service = SettingRow("FlowZap Service", "Проверяю…", self._btn_service)
         body.addWidget(self._row_service)
         body.addWidget(label(
-            "Запускает обход без прав администратора у самого FlowZap. Ставится один раз — "
+            "Включает обход и DNS без прав администратора у самого FlowZap. Ставится один раз — "
             "Windows спросит разрешение", role="hint", wrap=True))
         self._btn_admin = button("Запустить FlowZap от администратора", variant="link")
         self._btn_admin.setToolTip("Запасной вариант, если служба не устанавливается: обход запускается напрямую")
@@ -370,6 +379,10 @@ class SettingsTab(QWidget):
 
     def _on_restore_state_clicked(self) -> None:
         self._section("ui")["restore_state"] = self._sw_restore.isChecked()
+        self._save()
+
+    def _on_start_tray_clicked(self) -> None:
+        self._section("ui")["start_in_tray"] = self._sw_start_tray.isChecked()
         self._save()
 
     def _on_tray_clicked(self) -> None:
@@ -474,10 +487,10 @@ class SettingsTab(QWidget):
         outdated = installed and service_client.update_available()
         texts = {
             "running": ("Работает", "success"),
-            "stopped": ("Установлена, остановлена — запустится сама при включении обхода", None),
-            "missing": (("Не установлена — сейчас обход работает, потому что FlowZap запущен "
+            "stopped": ("Установлена, остановлена — запустится сама при включении обхода или DNS", None),
+            "missing": (("Не установлена — сейчас обход и DNS работают, потому что FlowZap запущен "
                          "от администратора") if admin else
-                        "Не установлена — без неё обход не запустится", None if admin else "warning"),
+                        "Не установлена — без неё обход и DNS не включатся", None if admin else "warning"),
         }
         text, tone = texts.get(state, ("Состояние неизвестно", "warning"))
         if outdated:
@@ -500,8 +513,15 @@ class SettingsTab(QWidget):
 
     def _on_service_clicked(self) -> None:
         action = getattr(self, "_service_action", "install")
+        if self._is_testing():
+            # Проверка запускает пресеты через службу — остановка службы оборвала
+            # бы её, и пресеты получили бы ложное «не работает»
+            desc = self._row_service.description
+            desc.setText("Сейчас идёт проверка пресетов — дождитесь её окончания и повторите")
+            set_tone(desc, "warning")
+            return
         if action == "remove" and QMessageBox.question(
-                self, "FlowZap", "Удалить фоновую службу?\n\nОбход перестанет запускаться, пока служба "
+                self, "FlowZap", "Удалить фоновую службу?\n\nОбход и DNS перестанут включаться, пока служба "
                 "не будет установлена снова (или FlowZap не запущен от администратора).") != QMessageBox.Yes:
             return
         self._service_busy = True
@@ -515,19 +535,19 @@ class SettingsTab(QWidget):
 
         def _worker() -> None:
             try:
+                # Удаление и обновление останавливают службу, а с ней обход —
+                # пресет запоминаем: после обновления (и если в окне Windows
+                # нажали «Нет») обход вернётся (after_service_change)
+                if action != "install" and self._manager is not None and self._manager.is_running:
+                    self._service_resume_bat = self._manager.bat_path
+                    self._manager.stop()
                 if action == "remove":
-                    if self._manager is not None and self._manager.is_running:
-                        self._manager.stop()
                     service_client.uninstall()
                 else:
-                    # Обновление = переустановка: служба на это время остановится
-                    if action == "update" and self._manager is not None and self._manager.is_running:
-                        self._service_resume_bat = self._manager.bat_path
-                        self._manager.stop()
                     engine = self._engine_dir()
                     version_file = engine.parent / "version.txt"
                     version = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else ""
-                    service_client.install(engine, version)
+                    service_client.install(engine, version, update=action == "update")
             except service_client.ServiceError as e:
                 self._serviceDone.emit(False, str(e))
                 return
@@ -548,7 +568,7 @@ class SettingsTab(QWidget):
         # И при отмене UAC: соединение со службой уже закрыто — DNS она сбросила
         if self._on_service_changed:
             resume, self._service_resume_bat = self._service_resume_bat, None
-            self._on_service_changed(self._service_action_running, resume)
+            self._on_service_changed(self._service_action_running, resume, ok)
         if not ok:
             desc = self._row_service.description
             desc.setText(error or "Не получилось")

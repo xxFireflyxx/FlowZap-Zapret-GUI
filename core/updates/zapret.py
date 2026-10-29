@@ -155,6 +155,7 @@ def download_and_install_core(
         from core.service import client as service_client
 
         tag, asset = latest_asset(repo, find_zip_asset, "Архив zapret", log)
+        done_word = "обновлён до" if get_installed_core_version(zapret_dir) else "установлен:"
         data = download_asset(
             asset,
             lambda: (sourceforge_url(SOURCEFORGE_ZAPRET_PROJECT, tag, asset["name"]), True),
@@ -181,20 +182,28 @@ def download_and_install_core(
             (zapret_dir / "version.txt").write_text(tag, encoding="utf-8")
 
         ensure_user_lists(zapret_dir / "lists")
-        log(f"✓ zapret обновлён до {tag}.")
+        log(f"✓ zapret {done_word} {tag}.")
 
         if service_client.service_installed():
             # winws работает из папки службы — она сама скачивает ту же версию
             # и сверяет sha256 (без UAC). Не вышло — повторит перед запуском.
-            log("Обновляю winws в фоновой службе…")
             try:
-                retry_without_dns(lambda: service_client.session.update_engine(tag),
-                                  lambda e: isinstance(e, service_client.ServiceError))
-            except service_client.ServiceError as e:
-                logger.warning(f"Служба не обновила winws: {e}")
+                current = service_client.session.status().get("engine_version") or ""
+            except service_client.ServiceError:
+                current = ""
+            if current == tag:
+                # Уже та же (подтянула другая копия FlowZap) — второй раз не качаем
+                logger.info(f"winws в фоновой службе уже {tag}")
+            else:
+                log("Обновляю winws в фоновой службе…")
+                try:
+                    retry_without_dns(lambda: service_client.session.update_engine(tag),
+                                      lambda e: isinstance(e, service_client.ServiceError))
+                except service_client.ServiceError as e:
+                    logger.warning(f"Служба не обновила winws: {e}")
         else:
             # Первый запуск после установки грузит драйвер в ядро — иначе первый тест пресетов упадёт
             warmup_windivert(zapret_dir / "bin" / WINWS_EXE)
-        return f"zapret обновлён до {tag}"
+        return f"zapret {done_word} {tag}"
 
     run_install("core-updater", "Ошибка обновления Core", body, on_progress, on_done)

@@ -20,6 +20,7 @@ import collections
 import logging
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -32,7 +33,11 @@ logger = logging.getLogger(__name__)
 
 READY_MARK = "capture is started"
 _STATUS_POLL_SEC = 0.1      # пока ждём готовности winws (проверка пресетов ждёт её)
-_STATUS_IDLE_SEC = 1.0      # потом: обход может работать часами
+_STATUS_IDLE_SEC = 1.0      # потом, первую минуту (пресет при проверке живёт секунды)
+# Обход может работать неделями: опрос нужен только чтобы заметить падение
+# winws — раз в секунду это 86 тыс. запросов к службе в сутки
+_STATUS_LONG_SEC = 5.0
+_STATUS_LONG_AFTER_SEC = 60
 
 
 class NeedServiceError(ServiceError):
@@ -167,6 +172,7 @@ class _ServiceHandle(WinwsHandle):
         self._seq = status.get("seq", 0) - 1     # строку «winws запущен» тоже показать
         self._stopping = False
         self._wake = threading.Event()
+        self._started = time.monotonic()
         threading.Thread(target=self._monitor, daemon=True, name="winws-service-monitor").start()
 
     def _monitor(self) -> None:
@@ -187,7 +193,13 @@ class _ServiceHandle(WinwsHandle):
                 code = status.get("exit_code")
                 self.returncode = 0 if self._stopping or code is None else int(code)
                 break
-            if self._wake.wait(_STATUS_POLL_SEC if not self.ready.is_set() else _STATUS_IDLE_SEC):
+            if not self.ready.is_set():
+                pause = _STATUS_POLL_SEC
+            elif time.monotonic() - self._started < _STATUS_LONG_AFTER_SEC:
+                pause = _STATUS_IDLE_SEC
+            else:
+                pause = _STATUS_LONG_SEC
+            if self._wake.wait(pause):
                 break                   # terminate() уже всё выяснил
         self._done.set()
 

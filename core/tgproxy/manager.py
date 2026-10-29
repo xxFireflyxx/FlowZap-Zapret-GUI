@@ -272,18 +272,18 @@ class TgProxyManager:
             if self.is_running:
                 return ""
             if not self.is_available:
-                return "TG WS Proxy не установлен"
+                return "Telegram Proxy не установлен"
             tg = self.settings
             port = tg["port"]
 
             options = self._options()
             if options is None:
-                return ("Установленная версия TG WS Proxy не запускается — переустановите "
-                        "её во вкладке «Обновления»")
+                return ("Установленная версия Telegram Proxy не запускается — проверьте обновления "
+                        "FlowZap и Telegram Proxy во вкладке «Обновления»")
             args, skipped = tg_settings.build_args(tg, options)
             missing = [o for o in tg_settings.REQUIRED_OPTIONS if o in skipped]
             if missing:
-                return (f"Эта версия TG WS Proxy не понимает {', '.join(missing)} — "
+                return (f"Эта версия Telegram Proxy не понимает {', '.join(missing)} — "
                         "нужна новая версия FlowZap")
             if skipped:
                 logger.warning(f"TG WS Proxy этой версии не знает {', '.join(skipped)} — "
@@ -311,7 +311,7 @@ class TgProxyManager:
             except OSError as e:
                 logger.error(f"Ошибка запуска TG WS Proxy: {e}")
                 self._proc = None
-                return "Не удалось запустить TG WS Proxy — подробности в логе"
+                return "Не удалось запустить Telegram Proxy — подробности в логе"
 
             deadline = time.monotonic() + _START_TIMEOUT_SEC
             while time.monotonic() < deadline:
@@ -319,7 +319,7 @@ class TgProxyManager:
                     reason = _last_log_line(self._log_file)
                     logger.error(f"TG WS Proxy завершился при запуске (код {self._proc.returncode}): {reason}")
                     self._proc = None
-                    return "TG WS Proxy не запустился — подробности в logs/tgproxy.log"
+                    return "Telegram Proxy не запустился — подробности в logs/tgproxy.log"
                 try:
                     pid = tcp.listener_pid(port)
                 except OSError:
@@ -335,7 +335,7 @@ class TgProxyManager:
 
             logger.error(f"TG WS Proxy не открыл порт {port} за {_START_TIMEOUT_SEC} с")
             self._stop_locked()
-            return f"TG WS Proxy не открыл порт {port} — подробности в logs/tgproxy.log"
+            return f"Telegram Proxy не открыл порт {port} — подробности в logs/tgproxy.log"
 
     def _stop_locked(self) -> None:
         proc, server_pid = self._proc, self._server_pid
@@ -357,33 +357,55 @@ class TgProxyManager:
                 logger.info("TG WS Proxy остановлен")
 
     def stop_all(self) -> str:
-        """Синхронно остановить сервер (выход из приложения). "" — остановлен."""
-        self.stop()
+        """Синхронно остановить сервер (выход из приложения). "" — остановлен.
+        Идёт запуск (start держит замок до 15 с) — не ждём: сервер и так
+        завершится вслед за FlowZap (--parent), а выход не должен висеть."""
+        if not self._lock.acquire(timeout=1):
+            logger.info("TG WS Proxy при выходе: идёт запуск — сервер завершится вслед за FlowZap")
+            return ""
+        try:
+            was_running = self.is_running
+            self._stop_locked()
+            if was_running:
+                logger.info("TG WS Proxy остановлен")
+        finally:
+            self._lock.release()
         return ""
+
+    def _run_async(self, name: str, work: Callable[[], str], on_done: Callable[[bool, str], None]) -> None:
+        """work() в фоне → on_done(running, error). Непредвиденное исключение —
+        тоже ответ: иначе тумблер навсегда оставался бы в «Запускаю…»."""
+
+        def _worker() -> None:
+            try:
+                error = work()
+            except Exception:
+                logger.exception(f"TG WS Proxy: сбой ({name})")
+                error = "Непредвиденная ошибка — подробности в logs/flowzap.log"
+            on_done(self.is_running, error)
+
+        threading.Thread(target=_worker, daemon=True, name=name).start()
 
     def set_running_async(self, enable: bool, on_done: Callable[[bool, str], None]) -> None:
         """Включить/выключить. on_done(running, error) из фонового потока:
         running — ФАКТИЧЕСКОЕ состояние после операции."""
 
-        def _worker() -> None:
+        def _work() -> str:
             if enable:
-                error = self.start()
-                on_done(not error, error)
-            else:
-                self.stop()
-                on_done(False, "")
+                return self.start()
+            self.stop()
+            return ""
 
-        threading.Thread(target=_worker, daemon=True, name="tgproxy-toggle").start()
+        self._run_async("tgproxy-toggle", _work, on_done)
 
     def restart_async(self, on_done: Callable[[bool, str], None]) -> None:
         """Перезапустить с новыми настройками. on_done(running, error)."""
 
-        def _worker() -> None:
+        def _work() -> str:
             self.stop()
-            error = self.start()
-            on_done(not error, error)
+            return self.start()
 
-        threading.Thread(target=_worker, daemon=True, name="tgproxy-restart").start()
+        self._run_async("tgproxy-restart", _work, on_done)
 
     def migrate_legacy_async(self, on_done: Callable[[], None]) -> None:
         def _worker() -> None:

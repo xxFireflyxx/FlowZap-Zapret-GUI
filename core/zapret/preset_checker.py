@@ -574,5 +574,18 @@ class PresetPingManager:
 
             result_file.write_text("\n".join(lines), encoding="utf-8")
             logger.info(f"Результаты сохранены: {result_file.name}")
+            self._drop_old_results()
         except Exception as e:
             logger.error(f"Ошибка сохранения результатов: {e}")
+
+    KEEP_RESULTS = 10
+
+    def _drop_old_results(self) -> None:
+        """Файл на каждую проверку (и фоновую раз в 3 дня) копился бы вечно —
+        нужен только последний (find_latest_results), оставляем несколько."""
+        files = sorted(self._results_dir.glob("test_results_*.txt"), key=lambda f: f.stat().st_mtime, reverse=True)
+        for old in files[self.KEEP_RESULTS:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
