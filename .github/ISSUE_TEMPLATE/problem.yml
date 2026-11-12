@@ -1,0 +1,68 @@
+name: Сообщить о проблеме
+description: Сбой приложения, ошибка интерфейса или проблема с доступом к сервисам.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что не работает?
+      description: Расскажите, что не работает. Если появляется сообщение об ошибке, укажите его текст. Если не открывается сайт, добавьте ссылку.
+      placeholder: Например, FlowZap не запускается, зависает, закрывается сам, не реагирует на кнопку, не устанавливает обновление или не открывает сайт.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия FlowZap
+      description: Укажите номер версии, а не «последняя».
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Версия Windows
+      options:
+        - Windows 11
+        - Windows 10
+        - Другая
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Браузер или приложение
+      description: Если проблема с доступом к сервису, укажите, где проверяли.
+      placeholder: Например, Chrome, Яндекс Браузер или Discord
+  - type: input
+    id: preset
+    attributes:
+      label: Пресет zapret
+      description: Для проблем с обходом — название выбранного пресета.
+  - type: input
+    id: dns
+    attributes:
+      label: DNS-сервер
+      description: Для проблем с DNS и нейросетями — название выбранного сервера или свои DNS-адреса.
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Как повторить проблему?
+      description: Какие действия приводят к ошибке? Происходит каждый раз или иногда? Если приложение не запускается, опишите, что происходит после открытия FlowZap.
+      placeholder: |
+        1. Открываю FlowZap.
+        2. ...
+        3. ...
+  - type: textarea
+    id: tried
+    attributes:
+      label: Когда началось и что уже пробовали?
+      description: Например, после обновления FlowZap или Windows. Если уже пытались решить проблему, напишите, что проверяли и с каким результатом.
+  - type: input
+    id: vpn
+    attributes:
+      label: Другие VPN, прокси и программы обхода
+      description: Укажите используемые программы и расширения браузера, если есть.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи и скриншоты
+      description: 'Приложите flowzap.log, а при вылете — также crash.log, если он есть. Открыть папку можно через «Настройки → Логи → Открыть папку» или вручную: logs рядом с FlowZap.exe. Скриншоты и файлы можно перетащить в это поле. Перед отправкой проверьте, нет ли в них личных данных.'
