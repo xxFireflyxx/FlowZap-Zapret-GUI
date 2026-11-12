@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QSystemTrayIcon,
     QMenu,
     QApplication,
+    QMessageBox,
 )
 
 from ui.theme import DEFAULT_THEME, theme
@@ -363,6 +364,7 @@ class MainWindow(QMainWindow):
             tg_controller=self.dashboard,
         )
         self.stack.addWidget(self.parameters)
+        self.dashboard.coreUpdatingChanged.connect(self.parameters.set_core_updating)
         # Выбор активной пары на главной — Параметры перечитывают список.
         self.dashboard.on_pairs_changed = self.parameters.reload_dns
         self.dashboard.on_open_parameters = self._open_dns_parameters
@@ -691,6 +693,15 @@ class MainWindow(QMainWindow):
             log.warning(f"Перезапуск от администратора не удался ({ret})")
 
     def _quit(self):
+        from core.updates.zapret import is_installing
+        from core.updates.tgproxy import is_installing as tg_installing
+        if is_installing() or self.dashboard._installing_core or tg_installing() or getattr(self.dashboard, "_tg_installing", False):
+            answer = QMessageBox.question(
+                self, "Обновление",
+                "Идёт обновление. Прервать его и выйти?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
         self.tray.hide()
         QApplication.quit()
 
@@ -699,6 +710,5 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
         else:
-            self.tray.hide()
-            event.accept()
-            QApplication.quit()
+            event.ignore()
+            self._quit()

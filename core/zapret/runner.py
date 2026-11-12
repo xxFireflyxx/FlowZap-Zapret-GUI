@@ -145,10 +145,12 @@ def sync_engine(engine_dir: Path) -> None:
                                             lambda e: isinstance(e, ServiceError))
         logger.info(f"Служба: winws обновлён до zapret {_synced_version}")
     except ServiceError as e:
+        # Неудачная попытка не подтверждает соответствие версий. Следующий
+        # запуск снова спросит службу и попробует синхронизацию.
+        _synced_version = None
         if not current:
             raise ServiceError(f"В фоновой службе нет winws, а скачать его не вышло: {e}") from e
         logger.warning(f"Служба: не удалось обновить winws ({e}) — работаю с zapret {current}")
-        _synced_version = local
 
 
 def forget_engine_sync() -> None:

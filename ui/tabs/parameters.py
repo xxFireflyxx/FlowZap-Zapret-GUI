@@ -440,6 +440,7 @@ class ParametersTab(QWidget):
         self._on_dns_changed = on_dns_changed
         self._on_lists_changed = on_lists_changed     # главная перезапустит работающий обход
         self._tg_controller = tg_controller   # DashboardTab — владелец TG Proxy
+        self._core_updating = False
         self._ping_pending = 0
         self._pairs: list[dict] = []
         self._ping_cache: dict[str, str] = {}
@@ -947,9 +948,16 @@ class ParametersTab(QWidget):
         """Записи списка — без комментариев (# …): это не сайты."""
         return [l for l in self._read_lines(filename) if not _is_comment(l)]
 
+    def set_core_updating(self, busy: bool) -> None:
+        """Не менять списки в момент подготовки и замены установки zapret."""
+        self._core_updating = busy
+        self._sections["lists"].setEnabled(not busy)
+
     def _write_list(self, filename: str, lines: list[str]) -> bool:
         """Записать список. False — не вышло (файл занят, нет прав): причина —
         в строке статуса, а не окном «непредвиденная ошибка»."""
+        if self._core_updating:
+            return False  # в том числе из диалога, открытого до начала обновления
         path = self._lists_dir / filename
         try:
             path.parent.mkdir(parents=True, exist_ok=True)

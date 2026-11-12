@@ -336,6 +336,8 @@ class UpdatesTab(QWidget):
         self._cards[block].set_status(message, "muted")
 
     def _on_finished(self, block: str, ok: bool, message: str) -> None:
+        if self._dashboard is not None and self._dashboard._shutting_down:
+            return
         {"gui": self._on_gui_done,
          "core": self._on_core_done,
          "tg": self._on_tg_done}[block](ok, message)
@@ -475,6 +477,8 @@ class UpdatesTab(QWidget):
         )
 
     def _on_core_done(self, ok: bool, message: str) -> None:
+        if self._dashboard is not None and self._dashboard._shutting_down:
+            return
         c = self._core
         c.set_updating(False)
         if self._dashboard is not None:
@@ -547,6 +551,8 @@ class UpdatesTab(QWidget):
         self._dashboard.set_tg_proxy(False, on_done=self._on_tg_stopped)
 
     def _on_tg_stopped(self, running: bool, error: str) -> None:
+        if self._dashboard._shutting_down:
+            return
         if running:      # не остановился — файл занят, обновлять нельзя; работает как работал
             self._tg_resume = False
             self._tg.set_updating(False)
@@ -556,12 +562,16 @@ class UpdatesTab(QWidget):
         self._download_tg()
 
     def _download_tg(self) -> None:
+        if self._dashboard._shutting_down:
+            return
         self._tg.set_status("Начинаем загрузку…", "muted")
         # Тумблер на главной ждёт конца: иначе прокси включили бы посреди замены файлов
         self._dashboard.set_component_updating("tg", True)
         download_and_install_tg_proxy(self._tg_dir, **self._callbacks("tg"))
 
     def _on_tg_done(self, ok: bool, message: str) -> None:
+        if self._dashboard._shutting_down:
+            return
         c = self._tg
         c.set_updating(False)
         self._dashboard.set_component_updating("tg", False)

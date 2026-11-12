@@ -19,12 +19,13 @@ import logging
 import shutil
 import threading
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Optional
 
 from core.tgproxy.host import probe
 from core.tgproxy.manager import is_installed, migrate_legacy, src_dir
 from core.updates.releases import download_asset, latest_release_for_user, run_install, sourceforge_url
+from core.updates import component_transaction as transaction
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +40,52 @@ _KEEP_FILES = ("LICENSE",)
 
 # Установку могут начать и главная (первое включение), и «Обновления»
 _install_lock = threading.Lock()
+_commit_lock = threading.Lock()
+_exit_requested = threading.Event()
+_COMPONENT = "Telegram Proxy"
 
 
 def is_installing() -> bool:
     return _install_lock.locked()
+
+
+def request_exit() -> None:
+    """Отменить подготовку, не ожидая критической секции."""
+    _exit_requested.set()
+
+
+def finish_before_exit() -> None:
+    """Не начинать новую замену и дождаться уже начатой замены/отката."""
+    request_exit()
+    with _commit_lock:
+        pass
+
+
+def _check_cancelled() -> None:
+    if _exit_requested.is_set():
+        raise ValueError("Обновление Telegram Proxy прервано при выходе")
+
+
+def _check_source_path(path: Path) -> None:
+    if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+        logger.error("Папка Telegram Proxy является ссылкой: %s", path)
+        raise ValueError("Не удалось безопасно обновить Telegram Proxy — подробности в логе")
+
+
+def recover_interrupted_update(tgproxy_dir: Path) -> None:
+    """До запуска прокси: вернуть целую установку, включая её номер версии."""
+    with _commit_lock:
+        transaction.recover(tgproxy_dir, _COMPONENT)
+        # Совместимость с прежним обновлением, которое заменяло только src.
+        old = tgproxy_dir / "src.old"
+        source = src_dir(tgproxy_dir)
+        if old.exists() and not source.exists():
+            _check_source_path(tgproxy_dir)
+            _check_source_path(old)
+            if not (old / "proxy" / "tg_ws_proxy.py").is_file():
+                raise ValueError("Не удалось восстановить Telegram Proxy — резервная копия сохранена")
+            old.rename(source)
+            logger.warning("Восстановлен Telegram Proxy после прерывания прежнего установщика")
 
 
 def get_installed_tg_proxy_version(tgproxy_dir: Path) -> Optional[str]:
@@ -61,7 +104,10 @@ def _extract(data: bytes, dest: Path) -> None:
     папки архива (у GitHub и SourceForge она называется по-разному)."""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         for info in archive.infolist():
-            parts = PurePosixPath(info.filename).parts[1:]
+            windows_path = PureWindowsPath(info.filename)
+            if windows_path.drive or windows_path.root or any(p == ".." or ":" in p for p in windows_path.parts):
+                raise ValueError("Архив Telegram Proxy содержит некорректные пути")
+            parts = PurePosixPath(info.filename.replace("\\", "/")).parts[1:]
             if not parts or info.is_dir():
                 continue
             if any(p in ("", ".", "..") or ":" in p for p in parts) or "__pycache__" in parts:
@@ -75,22 +121,67 @@ def _extract(data: bytes, dest: Path) -> None:
         raise ValueError("В архиве релиза нет кода сервера — возможно, автор изменил структуру проекта")
 
 
-def _swap(new: Path, target: Path) -> None:
-    """new → target; прежняя версия возвращается на место, если замена не удалась."""
-    old = target.with_name(target.name + ".old")
-    shutil.rmtree(old, ignore_errors=True)
-    if target.exists():
-        try:
-            target.rename(old)
-        except OSError as e:
-            raise ValueError(f"Не удалось заменить файлы прокси ({e}) — выключите Telegram Proxy и повторите") from None
+def _install_archive(data: bytes, tgproxy_dir: Path, tag: str, log: Callable[[str], None]) -> None:
     try:
-        new.rename(target)
-    except OSError as e:
-        if old.exists():
-            old.rename(target)
-        raise ValueError(f"Не удалось заменить файлы прокси ({e})") from None
-    shutil.rmtree(old, ignore_errors=True)
+        _prepare_and_install(data, tgproxy_dir, tag, log)
+    except Exception:
+        try:
+            with _commit_lock:
+                transaction.discard_preparation(tgproxy_dir, _COMPONENT)
+            transaction.cleanup_retired(tgproxy_dir, _COMPONENT)
+        except Exception:
+            logger.warning("Временные файлы Telegram Proxy сохранены для следующего запуска", exc_info=True)
+        raise
+
+
+def _prepare_and_install(data: bytes, tgproxy_dir: Path, tag: str, log: Callable[[str], None]) -> None:
+    _check_cancelled()
+    recover_interrupted_update(tgproxy_dir)
+    _check_source_path(tgproxy_dir)
+    transaction.cleanup_retired(tgproxy_dir, _COMPONENT)
+    tgproxy_dir.mkdir(parents=True, exist_ok=True)
+    work = transaction.transaction_dir(tgproxy_dir)
+    work.mkdir()
+    # Пробный запуск разрешён host.py только из собственных src/src.new.
+    # Сохраняем этот белый список, не разрешаем выполнение из произвольных папок.
+    source = tgproxy_dir / "src.new"
+    _check_source_path(source)
+    if source.exists():
+        shutil.rmtree(source)
+    try:
+        _extract(data, source)
+        _check_cancelled()
+        log("Проверяю, что новая версия запускается...")
+        info = probe(source)
+        if info.get("error"):
+            logger.error("TG WS Proxy %s: пробный запуск не прошёл: %s", tag, info["error"])
+            keep = " Установленная версия продолжит работать." if is_installed(tgproxy_dir) else ""
+            raise ValueError(f"Версия {tag} не запускается в этой сборке FlowZap — нужна новая версия FlowZap.{keep}")
+        if info.get("version") and info["version"] != tag.lstrip("vV"):
+            logger.info("Тег релиза %s, версия в коде: %s", tag, info["version"])
+        (source / "options.json").write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
+        _check_cancelled()
+        with _commit_lock:
+            _check_cancelled()
+            candidate = work / "new"
+            # Настройки прокси — в config.toml приложения. Остальные локальные
+            # файлы в tgproxy сохраняем, код src заменяем целиком после probe.
+            def keep_local_files(directory, names):
+                return [n for n in names if n in ("src", "src.new", "src.old")] if Path(directory) == tgproxy_dir else []
+            shutil.copytree(tgproxy_dir, candidate, ignore=keep_local_files)
+            source.rename(candidate / "src")
+            (candidate / "version.txt").write_text(tag, encoding="utf-8")
+            _check_cancelled()
+            log("Устанавливаем Telegram Proxy…")
+            transaction.commit(tgproxy_dir, _COMPONENT)
+        transaction.cleanup_retired(tgproxy_dir, _COMPONENT)
+    finally:
+        # Эта папка только для подготовки; резервная копия хранится отдельно.
+        if source.exists() and not source.is_symlink() and not getattr(source, "is_junction", lambda: False)():
+            try:
+                shutil.rmtree(source)
+            except OSError:
+                logger.warning("Не удалось убрать подготовленные файлы Telegram Proxy", exc_info=True)
 
 
 def download_and_install_tg_proxy(
@@ -111,6 +202,7 @@ def download_and_install_tg_proxy(
 
 
 def _install(tgproxy_dir: Path, repo: str, log: Callable[[str], None]) -> str:
+    _check_cancelled()
     log("Проверяем обновления...")
     release = latest_release_for_user(repo)      # при лимите — повтор без своего DNS
     tag = release.get("tag_name", "")
@@ -127,29 +219,9 @@ def _install(tgproxy_dir: Path, repo: str, log: Callable[[str], None]) -> str:
         "зеркало SourceForge",
     )
 
-    tgproxy_dir.mkdir(parents=True, exist_ok=True)
-    new = tgproxy_dir / "src.new"
-    shutil.rmtree(new, ignore_errors=True)
-    try:
-        _extract(data, new)
-
-        log("Проверяю, что новая версия запускается...")
-        info = probe(new)
-        if info.get("error"):
-            logger.error(f"TG WS Proxy {tag}: пробный запуск не прошёл: {info['error']}")
-            keep = " Установленная версия продолжит работать." if is_installed(tgproxy_dir) else ""
-            raise ValueError(f"Версия {tag} не запускается в этой сборке FlowZap — "
-                             f"нужна новая версия FlowZap.{keep}")
-        if info.get("version") and info["version"] != tag.lstrip("vV"):
-            logger.info(f"Тег релиза {tag}, версия в коде: {info['version']}")
-        (new / "options.json").write_text(json.dumps(info, ensure_ascii=False), encoding="utf-8")
-
-        _swap(new, src_dir(tgproxy_dir))
-    finally:
-        shutil.rmtree(new, ignore_errors=True)
-
-    (tgproxy_dir / "version.txt").write_text(tag, encoding="utf-8")
+    _install_archive(data, tgproxy_dir, tag, log)
     # exe автора, который ставил FlowZap до 1.1, больше не нужен
-    migrate_legacy(tgproxy_dir)
+    if not _exit_requested.is_set():
+        migrate_legacy(tgproxy_dir)
     log(f"✓ Telegram Proxy установлен ({tag})")
     return f"Telegram Proxy установлен ({tag})"

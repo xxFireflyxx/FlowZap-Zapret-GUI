@@ -395,6 +395,25 @@ def main() -> None:
     config = load_config(CONFIG_PATH)
     config["_app_dir"] = str(ROOT)
 
+    # Вернуть прежнюю папку после прерванной замены до чтения пресетов и
+    # запуска фоновых задач. Здесь только переименования, без копирования.
+    from core.updates.zapret import recover_interrupted_update
+    from core.updates.tgproxy import recover_interrupted_update as recover_tg_update
+    core_dir = ROOT / config["zapret"]["presets_dir"]
+    try:
+        recover_interrupted_update(core_dir)
+    except Exception:
+        log.exception("Не удалось восстановить прерванное обновление zapret")
+        QMessageBox.warning(None, "FlowZap", "Не удалось восстановить zapret после обновления. Подробности в логе.")
+        sys.exit(1)
+
+    try:
+        recover_tg_update(ROOT / "tgproxy")
+    except Exception:
+        log.exception("Не удалось восстановить прерванное обновление Telegram Proxy")
+        QMessageBox.warning(None, "FlowZap", "Не удалось восстановить Telegram Proxy после обновления. Подробности в логе.")
+        sys.exit(1)
+
     from ui.theme import DEFAULT_THEME, theme
     theme.set_theme(config.get("ui", {}).get("theme", DEFAULT_THEME))
 

@@ -793,6 +793,7 @@ class DashboardTab(QWidget):
 
     # Состояние TG Proxy изменилось — «Параметры» перерисовывают свою строку статуса
     tgStatusChanged      = Signal()
+    coreUpdatingChanged  = Signal(bool)
 
     def __init__(self, parent=None, manager=None, config: dict = None, save_config_fn=None):
         super().__init__(parent)
@@ -1374,6 +1375,8 @@ class DashboardTab(QWidget):
         )
 
     def _on_game_filter_pick(self, key: str) -> None:
+        if self._installing_core:
+            return
         enabled = key != "off"
         if enabled == self._game_filter_enabled and (not enabled or key == self._game_filter_mode):
             return
@@ -1402,6 +1405,8 @@ class DashboardTab(QWidget):
         return self.manager is not None and self.manager.state in (ServiceState.RUNNING, ServiceState.STARTING)
 
     def _on_preset_selected(self, preset: dict) -> None:
+        if self._installing_core:
+            return
         log.debug(f"Пресет выбран: {preset['name']}")
         self._config.setdefault("zapret", {})["last_preset"] = preset["name"]
         if self._save_config_fn:
@@ -1573,6 +1578,8 @@ class DashboardTab(QWidget):
         self._restart_for_game_filter()
 
     def _restart_for_game_filter(self) -> None:
+        if self._installing_core or self._shutting_down:
+            return
         if self._bypass_on():
             bat = self._get_current_bat()
             if bat is not None:
@@ -1621,7 +1628,7 @@ class DashboardTab(QWidget):
         Не стартуем zapret вслепую на непроверенном пресете."""
         if self._installing_core:
             return
-        self._installing_core = True
+        self.set_component_updating("core", True)
         self._btn_toggle.setEnabled(False)
         self._tile_zapret.set_state(False, "Установка…", "accent")
         self._set_message("Пресеты не найдены — устанавливаю zapret…", "accent")
@@ -1636,7 +1643,9 @@ class DashboardTab(QWidget):
         self._set_message(msg, "accent")
 
     def _on_core_install_done(self, ok: bool, msg: str) -> None:
-        self._installing_core = False
+        if self._shutting_down:
+            return
+        self.set_component_updating("core", False)
         self._btn_toggle.setEnabled(True)
         self._tile_zapret.set_state(False, "Выключен")
         self._set_message(msg, "success" if ok else "error")
@@ -1912,6 +1921,8 @@ class DashboardTab(QWidget):
             self._tile_tg.set_hint(msg, "accent")
 
     def _on_tg_install_done(self, ok: bool, msg: str) -> None:
+        if self._shutting_down:
+            return
         self._tg_installing = False
         self._sw_tg.setEnabled(True)
         if not ok or not self._tg.is_available:
@@ -1926,6 +1937,8 @@ class DashboardTab(QWidget):
         self._on_tg_proxy_toggle()      # установлен — теперь включаем
 
     def _on_tg_proxy_done(self, running: bool, error: str) -> None:
+        if self._shutting_down:
+            return
         self._tg_running = running
         # Не включился (порт занят и т.п.) — «был включён» не стираем: иначе
         # одна неудача при запуске FlowZap отменяла восстановление навсегда
@@ -2325,6 +2338,8 @@ class DashboardTab(QWidget):
         запустился бы из файлов, которые как раз заменяются."""
         if component == "core":
             self._installing_core = busy
+            self._presets_panel.setEnabled(not busy)
+            self.coreUpdatingChanged.emit(busy)
             starting = self.manager is not None and self.manager.state in (ServiceState.STARTING,
                                                                           ServiceState.STOPPING)
             self._sw_zapret.setEnabled(not busy and not starting)
@@ -2340,7 +2355,7 @@ class DashboardTab(QWidget):
         self._lists_restart_timer.start()
 
     def _restart_for_lists(self) -> None:
-        if not self._bypass_on() or self._checking:
+        if not self._bypass_on() or self._checking or self._installing_core or self._shutting_down:
             return
         bat = self._get_current_bat()
         if bat is not None:
@@ -2376,6 +2391,13 @@ class DashboardTab(QWidget):
         if win is not None:
             win.hide()
             QApplication.processEvents()
+
+        from core.updates import zapret as core_update, tgproxy as tg_update
+        # Сначала отменяем подготовку обоих компонентов, затем ждём их замену.
+        core_update.request_exit()
+        tg_update.request_exit()
+        core_update.finish_before_exit()
+        tg_update.finish_before_exit()
 
         if not self._dns_toggle_event.wait(timeout=5):
             log.warning("DNS-операция не завершилась за 5 с при выходе — сбрасываем DNS принудительно")

@@ -61,8 +61,8 @@ using Microsoft.Win32.SafeHandles;
 [assembly: AssemblyTitle("FlowZap Service")]
 [assembly: AssemblyDescription("Фоновая служба FlowZap: запуск обхода и системные настройки")]
 [assembly: AssemblyProduct("FlowZap")]
-[assembly: AssemblyVersion("1.4.2.0")]
-[assembly: AssemblyFileVersion("1.4.2.0")]
+[assembly: AssemblyVersion("1.4.3.0")]
+[assembly: AssemblyFileVersion("1.4.3.0")]
 
 namespace FlowZap.Service
 {
@@ -70,7 +70,7 @@ namespace FlowZap.Service
     {
         public const string ServiceName = "FlowZapService";
         public const string DisplayName = "FlowZap Service";
-        public const string Version = "1.4.2";
+        public const string Version = "1.4.3";
         public const int Protocol = 1;
         // Файлы пресета (списки, .bin) — сейчас около 2 МБ; сообщение — они в base64
         public const int MaxRequestBytes = 16 * 1024 * 1024;
@@ -368,7 +368,57 @@ namespace FlowZap.Service
         long seq;
         readonly LinkedList<KeyValuePair<long, string>> lines = new LinkedList<KeyValuePair<long, string>>();
 
+        public Engine()
+        {
+            try { RecoverEngine(); }
+            catch (Exception e)
+            {
+                // DNS остаётся доступен даже при отказе восстановления winws.
+                // Новая замена повторит восстановление и не удалит резервную копию.
+                Log.Write("Не удалось восстановить движок после прерывания обновления: " + e);
+            }
+        }
+
         public static string EngineFile(string name) { return Path.Combine(Paths.Engine, name); }
+
+        static bool CompleteEngine(string directory)
+        {
+            if (!Directory.Exists(directory)) return false;
+            foreach (string file in Const.EngineFiles)
+            {
+                string path = Path.Combine(directory, file);
+                if (!File.Exists(path) || new FileInfo(path).Length == 0) return false;
+            }
+            string version = Path.Combine(directory, "version.txt");
+            return File.Exists(version) && File.ReadAllText(version).Trim().Length > 0;
+        }
+
+        static void RecoverEngine()
+        {
+            string old = Paths.Engine + ".old";
+            if (!Directory.Exists(old)) return;
+            Installer.CheckNoReparse(Paths.Engine);
+            Installer.CheckNoReparse(old);
+            // Вся новая папка переносится одним переименованием. Если она
+            // полная, замена закончилась; .old мог остаться из-за отказа уборки.
+            if (CompleteEngine(Paths.Engine)) return;
+            if (!CompleteEngine(old))
+                throw new InvalidOperationException("Резервная копия движка неполная — файлы сохранены");
+            string rejected = null;
+            if (Directory.Exists(Paths.Engine))
+            {
+                rejected = Paths.Engine + ".incomplete-" + Guid.NewGuid().ToString("N");
+                MoveDirWithRetry(Paths.Engine, rejected);
+            }
+            try { MoveDirWithRetry(old, Paths.Engine); }
+            catch
+            {
+                if (rejected != null && !Directory.Exists(Paths.Engine))
+                    MoveDirWithRetry(rejected, Paths.Engine);
+                throw;
+            }
+            Log.Write("После прерывания обновления восстановлен прежний движок zapret");
+        }
 
         // Поставить новые файлы движка (папка newDir уже проверена и заполнена):
         // остановить winws и драйвер WinDivert, поменять папки местами, при
@@ -377,13 +427,19 @@ namespace FlowZap.Service
         {
             lock (gate)
             {
+                RecoverEngine();
+                if (!CompleteEngine(newDir))
+                    throw new InvalidOperationException("Новая версия движка неполная — обновление отменено");
                 engineVersion = null;
                 StopLocked();
                 KillStrays();
                 Installer.TrySc("stop", "WinDivert");
                 Installer.TrySc("stop", "WinDivert14");
                 string old = Paths.Engine + ".old";
-                Installer.DeleteTree(old);
+                Installer.CheckNoReparse(old);
+                // Отказ уборки не должен назначать удаление этого пути при
+                // перезагрузке: здесь скоро будет новая резервная копия.
+                if (Directory.Exists(old)) Directory.Delete(old, true);
                 bool hadOld = Directory.Exists(Paths.Engine);
                 if (hadOld) MoveDirWithRetry(Paths.Engine, old);
                 try { MoveDirWithRetry(newDir, Paths.Engine); }
@@ -392,7 +448,8 @@ namespace FlowZap.Service
                     if (hadOld) MoveDirWithRetry(old, Paths.Engine);
                     throw;
                 }
-                Installer.DeleteTree(old);
+                try { if (Directory.Exists(old)) Directory.Delete(old, true); }
+                catch (Exception e) { Log.Write("Прежний движок сохранён после обновления: " + e.Message); }
                 AddLine("[служба] winws обновлён до zapret " + ReadEngineVersion());
             }
         }

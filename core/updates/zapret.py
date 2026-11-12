@@ -7,15 +7,18 @@ core/updates/zapret.py
 она обновляет и свою копию winws.
 """
 import logging
+import io
 import shutil
 import threading
 import time
-from pathlib import Path
+import zipfile
+from pathlib import Path, PureWindowsPath
 from typing import Callable, Optional
 
 from core.system import winproc
 from core.updates.releases import download_asset, latest_asset, retry_without_dns, run_install, sourceforge_url
-from core.zapret.winws import WINWS_EXE, ensure_user_lists, warmup_windivert
+from core.zapret.winws import WINWS_EXE, USER_LIST_FILES, ensure_user_lists, warmup_windivert
+from core.updates import component_transaction as transaction
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +35,35 @@ PRESETS_MANIFEST = "flowzap-presets.txt"
 # Установку могут начать и главная (первый запуск), и «Обновления» — две сразу
 # писали бы в одну папку zapret
 _install_lock = threading.Lock()
+_commit_lock = threading.Lock()
+_exit_requested = threading.Event()
 
 
 def is_installing() -> bool:
     return _install_lock.locked()
+
+
+def finish_before_exit() -> None:
+    """Запретить новую замену, дождаться уже начатой замены либо отката."""
+    request_exit()
+    with _commit_lock:
+        pass
+
+
+def request_exit() -> None:
+    """Отменить подготовку, не ожидая критической секции."""
+    _exit_requested.set()
+
+
+def _check_cancelled() -> None:
+    if _exit_requested.is_set():
+        raise ValueError("Обновление zapret прервано при выходе")
+
+
+def recover_interrupted_update(zapret_dir: Path) -> None:
+    """Вызывать при запуске до чтения пресетов и до фоновых операций."""
+    with _commit_lock:
+        transaction.recover(zapret_dir)
 
 
 def get_installed_core_version(zapret_dir: Path) -> Optional[str]:
@@ -94,7 +122,9 @@ def _merge_copy(src_dir: Path, dst_dir: Path) -> None:
         dst_item = dst_dir / item.name
         if item.is_dir():
             _merge_copy(item, dst_item)
-        elif item.name.lower().endswith("-user.txt") and dst_item.exists():
+        elif (item.name.lower().endswith("-user.txt")
+              or (item.parent.name.lower() == "lists" and item.name.lower() in USER_LIST_FILES)
+              or (item.parent.name.lower() == "utils" and item.name.lower() == "game_filter.enabled")) and dst_item.exists():
             logger.debug(f"Пропущен пользовательский файл: {item.name}")
         else:
             shutil.copy2(item, dst_item)
@@ -127,10 +157,85 @@ def _remove_stale_presets(src: Path, zapret_dir: Path) -> None:
 
 def _write_presets_manifest(src: Path, zapret_dir: Path) -> None:
     names = sorted(b.name for b in src.glob("*.bat"))
+    (zapret_dir / PRESETS_MANIFEST).write_text("\n".join(names) + "\n", encoding="utf-8")
+
+
+def _validate_payload(source: Path) -> None:
+    """Проверяем сам релиз до объединения со старой установкой."""
+    required = ("bin/winws.exe", "bin/WinDivert.dll", "bin/WinDivert64.sys",
+                "bin/cygwin1.dll", "lists/list-general.txt", "lists/ipset-all.txt")
+    for name in required:
+        path = source / name
+        if not path.is_file() or (not name.endswith(".txt") and path.stat().st_size == 0):
+            raise ValueError("В архиве zapret нет необходимых файлов — обновление не установлено")
+    if not any(p.is_file() and p.stat().st_size for p in source.glob("general*.bat")):
+        raise ValueError("В архиве zapret нет пресетов — обновление не установлено")
+
+
+def _install_archive(data: bytes, zapret_dir: Path, tag: str,
+                     log: Callable[[str], None], before_install=None) -> None:
     try:
-        (zapret_dir / PRESETS_MANIFEST).write_text("\n".join(names) + "\n", encoding="utf-8")
-    except OSError as e:
-        logger.warning(f"Не удалось записать {PRESETS_MANIFEST}: {e}")
+        _prepare_and_install(data, zapret_dir, tag, log, before_install)
+    except Exception:
+        # Ошибка распаковки/копирования не должна оставлять большой архив.
+        # Журнал и резервную копию незавершённого отката не удаляем.
+        try:
+            with _commit_lock:
+                transaction.discard_preparation(zapret_dir)
+            transaction.cleanup_retired(zapret_dir)
+        except Exception:
+            logger.warning("Временные файлы zapret сохранены для следующего запуска", exc_info=True)
+        raise
+
+
+def _prepare_and_install(data: bytes, zapret_dir: Path, tag: str,
+                         log: Callable[[str], None], before_install=None) -> None:
+    """До commit меняется только соседняя папка на том же диске."""
+    _check_cancelled()
+    recover_interrupted_update(zapret_dir)
+    transaction.cleanup_retired(zapret_dir)
+    work = transaction.transaction_dir(zapret_dir)
+    work.mkdir(parents=True)
+    raw = work / "archive"
+    raw.mkdir()
+    log("Распаковываем...")
+    # Отклоняем опасные пути, а не исправляем их при распаковке.
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for entry in archive.infolist():
+            path = PureWindowsPath(entry.filename)
+            if path.drive or path.root or any(p == ".." or ":" in p for p in path.parts):
+                raise ValueError("Архив zapret содержит некорректные пути")
+        archive.extractall(raw)
+    entries = list(raw.iterdir())
+    source = entries[0] if len(entries) == 1 and entries[0].is_dir() else raw
+    _validate_payload(source)
+    _check_cancelled()
+    # Копирование старой установки и замена защищены от обычного выхода.
+    # Внутри нет загрузки из сети: ожидание ограничено локальными операциями.
+    with _commit_lock:
+        _check_cancelled()
+        if before_install:
+            before_install()
+        from core.service import client as service_client
+        if not service_client.service_installed():
+            _unload_windivert()
+        candidate = work / "new"
+        if zapret_dir.exists():
+            shutil.copytree(zapret_dir, candidate)
+        else:
+            candidate.mkdir()
+        _remove_stale_presets(source, candidate)
+        _merge_copy(source, candidate)
+        _write_presets_manifest(source, candidate)
+        ensure_user_lists(candidate / "lists")
+        if any(not (candidate / "lists" / name).is_file() for name in USER_LIST_FILES):
+            raise ValueError("Не удалось подготовить списки zapret — обновление не установлено")
+        (candidate / "version.txt").write_text(tag, encoding="utf-8")
+        _validate_payload(candidate)
+        _check_cancelled()
+        log("Устанавливаем zapret…")
+        transaction.commit(zapret_dir)
+    transaction.cleanup_retired(zapret_dir)
 
 
 def download_and_install_core(
@@ -151,9 +256,9 @@ def download_and_install_core(
             _install_lock.release()
 
     def _install(log: Callable[[str], None]) -> str:
-        import zipfile, io, tempfile
         from core.service import client as service_client
 
+        _check_cancelled()
         tag, asset = latest_asset(repo, find_zip_asset, "Архив zapret", log)
         done_word = "обновлён до" if get_installed_core_version(zapret_dir) else "установлен:"
         data = download_asset(
@@ -162,28 +267,11 @@ def download_and_install_core(
             "зеркало SourceForge",
         )
 
-        if before_install:
-            before_install()
-        # Со службой winws работает из её папки, а не из zapret\bin: драйвер
-        # здесь не загружен, а без прав администратора его и не выгрузить
-        if not service_client.service_installed():
-            logger.info("Останавливаем WinDivert...")
-            _unload_windivert()
-        log("Распаковываем...")
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                zf.extractall(tmp)
-            entries = list(Path(tmp).iterdir())
-            src = entries[0] if len(entries) == 1 and entries[0].is_dir() else Path(tmp)
-            zapret_dir.mkdir(parents=True, exist_ok=True)
-            _remove_stale_presets(src, zapret_dir)
-            _merge_copy(src, zapret_dir)
-            _write_presets_manifest(src, zapret_dir)
-            (zapret_dir / "version.txt").write_text(tag, encoding="utf-8")
-
-        ensure_user_lists(zapret_dir / "lists")
+        _install_archive(data, zapret_dir, tag, log, before_install)
         log(f"✓ zapret {done_word} {tag}.")
 
+        if _exit_requested.is_set():
+            return f"zapret {done_word} {tag}"
         if service_client.service_installed():
             # winws работает из папки службы — она сама скачивает ту же версию
             # и сверяет sha256 (без UAC). Не вышло — повторит перед запуском.
