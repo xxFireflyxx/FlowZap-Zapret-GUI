@@ -1,0 +1,70 @@
+name: Закрытие неактивных обращений
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Только проверка без закрытия обращений
+        type: boolean
+        default: true
+
+permissions:
+  issues: write
+
+concurrency:
+  group: close-inactive-issues
+  cancel-in-progress: false
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Проверить срок последнего сообщения
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        with:
+          script: |
+            const repo = context.repo;
+            const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            const dryRun = process.env.DRY_RUN === 'true';
+            const message = 'Закрыто автоматически: в обсуждении не было новых сообщений 7 дней. Если вопрос ещё актуален, откройте обращение повторно.';
+            const hasBug = issue => issue.labels.some(label =>
+              (typeof label === 'string' ? label : label.name).toLowerCase() === 'bug');
+            async function lastMessage(issue) {
+              let latest = Date.parse(issue.created_at);
+              for await (const page of github.paginate.iterator(
+                github.rest.issues.listComments,
+                { ...repo, issue_number: issue.number, per_page: 100 }
+              )) {
+                for (const comment of page.data) {
+                  // Собственное пояснение при закрытии не начинает новый срок.
+                  if (comment.user?.login === 'github-actions[bot]' && comment.body === message) continue;
+                  latest = Math.max(latest, Date.parse(comment.created_at));
+                }
+              }
+              return latest;
+            }
+            const issues = await github.paginate(github.rest.issues.listForRepo,
+              { ...repo, state: 'open', per_page: 100 });
+            for (const issue of issues) {
+              if (issue.pull_request || hasBug(issue)) continue;
+              if (await lastMessage(issue) > cutoff) continue;
+              // Повторно проверяем состояние, метки и сообщения перед закрытием.
+              const { data: current } = await github.rest.issues.get(
+                { ...repo, issue_number: issue.number });
+              if (current.state !== 'open' || hasBug(current)) continue;
+              if (await lastMessage(current) > cutoff) continue;
+              if (dryRun) {
+                core.info(`Проверка: обращение #${issue.number} подлежит закрытию.`);
+                continue;
+              }
+              await github.rest.issues.update({ ...repo, issue_number: issue.number,
+                state: 'closed', state_reason: 'not_planned' });
+              await github.rest.issues.createComment({ ...repo,
+                issue_number: issue.number, body: message });
+              core.info(`Обращение #${issue.number} закрыто из-за отсутствия сообщений.`);
+            }

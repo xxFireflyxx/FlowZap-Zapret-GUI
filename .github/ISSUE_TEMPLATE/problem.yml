@@ -33,6 +33,11 @@ body:
       description: Если проблема с доступом к сервису, укажите, где проверяли.
       placeholder: Например, Chrome, Яндекс Браузер или Discord
   - type: input
+    id: provider
+    attributes:
+      label: Интернет-провайдер
+      description: Для проблем с доступом к сервисам — название интернет-провайдера.
+  - type: input
     id: preset
     attributes:
       label: Пресет zapret
