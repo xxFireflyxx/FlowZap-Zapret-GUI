@@ -310,6 +310,11 @@ class ZapretManager:
         return self.zapret.state
 
     @property
+    def last_error(self) -> Optional[str]:
+        """Понятная пользователю причина ошибки запуска; подробности — в логе."""
+        return self.zapret.last_error
+
+    @property
     def is_running(self) -> bool:
         return self.zapret.is_running
 
