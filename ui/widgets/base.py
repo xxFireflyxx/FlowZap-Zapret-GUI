@@ -58,6 +58,7 @@ class WrapLabel(QLabel):
     шрифта (QSS по role меняет его уже после первой раскладки)."""
 
     def __init__(self, text: str = "") -> None:
+        self._minimum_text_height = 0
         super().__init__(text)
         self.setWordWrap(True)
         self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -71,9 +72,16 @@ class WrapLabel(QLabel):
             return
         rect = self.fontMetrics().boundingRect(
             QRect(0, 0, width, 100000), int(Qt.TextWordWrap | self.alignment()), self.text())
-        h = rect.height() + m.top() + m.bottom() + 2 * self.margin()
+        h = max(self._minimum_text_height,
+                rect.height() + m.top() + m.bottom() + 2 * self.margin())
         if self.minimumHeight() != h:
-            self.setMinimumHeight(h)
+            super().setMinimumHeight(h)
+
+    def setMinimumHeight(self, height: int) -> None:
+        # Явный резерв (например, две строки пояснения карточки) должен
+        # сохраняться после смены текста, шрифта и ширины.
+        self._minimum_text_height = height
+        self._fit_height()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

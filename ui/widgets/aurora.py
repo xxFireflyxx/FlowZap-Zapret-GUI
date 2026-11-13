@@ -75,7 +75,6 @@ class AuroraBackground(QWidget):
         self._noise: QPixmap | None = None
         self._sprites: list[QPixmap] = []     # готовые картинки шаров — градиент считается один раз
         self._sprites_key = None
-        self._hold_until = 0.0                # пауза перерисовки на время коротких анимаций
         self._timer = QTimer(self)
         self._timer.setInterval(1000 // FPS)
         self._timer.timeout.connect(self._tick)
@@ -107,12 +106,6 @@ class AuroraBackground(QWidget):
         перерисовывает всё окно — незачем, пока на него не смотрят."""
         self._idle = idle
         self._sync_timer()
-
-    def hold(self, seconds: float = 0.4) -> None:
-        """Не перерисовывать фон ближайшие seconds: короткая анимация (подсветка
-        вкладок) получает всё время кадра. Шары продолжают «лететь» — после
-        паузы просто окажутся дальше."""
-        self._hold_until = max(self._hold_until, time.monotonic() + seconds)
 
     def _sync_timer(self) -> None:
         run = self._enabled and self.isVisible() and not self._paused and not self._idle
@@ -155,8 +148,7 @@ class AuroraBackground(QWidget):
             if b[1] < y0 or b[1] > y1:
                 b[3] = -b[3]
                 b[1] = min(max(b[1], y0), y1)
-        if now >= self._hold_until:
-            self.update()
+        self.update()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

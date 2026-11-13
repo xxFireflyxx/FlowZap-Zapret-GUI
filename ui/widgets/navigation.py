@@ -148,9 +148,6 @@ class TabBar(QFrame):
         self._current = index
         target = QRectF(self._buttons[index].geometry())
         if theme.animations and self._pill is not None and self.isVisible():
-            aurora = getattr(self.window(), "aurora", None)
-            if aurora is not None:
-                aurora.hold(self._anim.duration() / 1000 + 0.05)
             self._anim.stop()
             # Смена start/end у остановленной анимации сразу шлёт valueChanged с
             # конечной точкой — подсветка на кадр прыгала в цель и обратно.

@@ -228,7 +228,12 @@ class _RiseEffect(QGraphicsEffect):
 
     def draw(self, painter) -> None:
         if self._t <= 0.0:
-            return          # блок ещё спрятан (заставка) — снимок раз в 200 мс ни к чему
+            if getattr(self, "_prepare_snapshot", False):
+                # sourcePixmap можно получать только внутри draw. Готовим
+                # снимок скрытого блока при первом repaint, до движения вкладок.
+                self._snapshot()
+                self._prepare_snapshot = False
+            return          # блок ещё спрятан — рисовать содержимое пока не нужно
         if self._t >= 1.0:
             self.drawSource(painter)
             return
@@ -259,18 +264,20 @@ class _RiseEffect(QGraphicsEffect):
         painter.drawPixmap(0, 0, pix)
         painter.restore()
 
-    SNAPSHOT_MS = 200
-
     def _snapshot(self) -> QPixmap:
-        """Картинка блока, пока он всплывает. Qt заново рисует содержимое блока
-        на каждом кадре (фон-сияние под ним перерисовывается постоянно), и
-        кадры выходят то лёгкими, то тяжёлыми — движение неровное. Поэтому
-        берём картинку раз в SNAPSHOT_MS: если в блоке что-то поменялось,
-        это видно с задержкой не больше неё, а в конце блок рисуется как есть."""
+        """Кэш изображения блока; изменение размера обновляет его сразу."""
         now = time.monotonic()
-        if getattr(self, "_snap", None) is None or now - self._snap_at > self.SNAPSHOT_MS / 1000:
-            self._snap = self._padded(self.sourcePixmap(Qt.LogicalCoordinates, mode=QGraphicsEffect.PixmapPadMode.NoPad))
+        rect = self.sourceBoundingRect(Qt.LogicalCoordinates)
+        if (getattr(self, "_snap", None) is None
+                or rect != getattr(self, "_snap_rect", None)
+                or (now >= getattr(self, "_snapshot_hold_until", 0.0)
+                    and now - self._snap_at > 0.2)):
+            self._snap = self._padded(self.sourcePixmap(
+                Qt.LogicalCoordinates, mode=QGraphicsEffect.PixmapPadMode.NoPad))
             self._snap_at = now
+            self._snap_rect = rect
+            if getattr(self, "_prepare_snapshot", False):
+                self._snapshot_hold_until = now + 0.4
         return self._snap
 
     def _padded(self, pix: QPixmap) -> QPixmap:
@@ -349,7 +356,8 @@ def cascade_hide(steps: list[list[QWidget]]) -> None:
 
 
 def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: int = 90,
-               duration_ms: int = 550, lift: int = 18) -> None:
+               duration_ms: int = 550, lift: int = 18,
+               prepare_snapshots: bool = False) -> list[QSequentialAnimationGroup]:
     """Каскад появления (как в макете): ступени (см. page_steps) по очереди
     всплывают на lift px и проявляются за duration_ms. При запуске окна —
     медленнее и с большей высоты (приветствие). Повторный вызов прерывает
@@ -365,7 +373,8 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
                     old.stop()
                 w.setGraphicsEffect(None)
                 w._fz_rise_effect = None
-        return
+        return []
+    prepared = []
     for i, w in ((i, w) for i, step in enumerate(steps) for w in step):
         if getattr(w, "_fz_fading", False):
             continue        # уже исчезает (fade_out) — не перебивать
@@ -373,6 +382,7 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
         if old is not None:
             old.stop()
         effect = _RiseEffect(w, lift)
+        effect._prepare_snapshot = prepare_snapshots
         w._fz_rise_effect = effect          # без ссылки Python-обёртку соберёт GC
         w.setGraphicsEffect(effect)
 
@@ -396,7 +406,11 @@ def cascade_in(steps: list[list[QWidget]], first_delay_ms: int = 60, step_ms: in
         w._fz_rise = group
         # Удалить после остановки: иначе на каждую смену вкладки по группе
         # анимаций на блок копились бы весь сеанс
-        group.start(QAbstractAnimation.DeleteWhenStopped)
+        if prepare_snapshots:
+            prepared.append(group)
+        else:
+            group.start(QAbstractAnimation.DeleteWhenStopped)
+    return prepared
 
 
 def cascade_settle_ms(steps: int, first_delay_ms: int, step_ms: int, duration_ms: int) -> int:

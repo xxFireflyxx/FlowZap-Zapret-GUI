@@ -4,7 +4,7 @@ import logging
 import sys
 import threading
 
-from PySide6.QtCore import QEasingCurve, QEvent, Qt, QTimer, QVariantAnimation, Signal
+from PySide6.QtCore import QAbstractAnimation, QCoreApplication, QEasingCurve, QEvent, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -492,13 +492,23 @@ class MainWindow(QMainWindow):
     def show_tab(self, index: int):
         changed = index != self.stack.currentIndex()
         self.stack.setCurrentIndex(index)
+        prepared = []
         # Блоки новой страницы всплывают по очереди (каскад, как в макете)
         if changed and self.isVisible():
-            cascade_in(page_steps(self.stack.currentWidget()))
+            page = self.stack.currentWidget()
+            # Прокрутка и переносимый текст уточняют размеры на всех страницах.
+            # Обрабатываем только раскладку, без ввода и таймеров, до снимков.
+            QCoreApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+            QCoreApplication.sendPostedEvents(None, QEvent.LayoutRequest)
+            prepared = cascade_in(page_steps(page), prepare_snapshots=page.property("cascade") == "together")
         # Сначала отрисовать новую страницу (~10 мс), потом запускать «таблетку»
         # вкладок — иначе первый кадр её анимации пропадает и она дёргается.
         if self.isVisible():
             self.centralWidget().repaint()
+        # Снимки Настроек уже готовы: время их подготовки не должно
+        # съедать начало появления карточек и движения индикатора.
+        for group in prepared:
+            group.start(QAbstractAnimation.DeleteWhenStopped)
         self._tabs.set_current(index)
 
     # ── Автопроверка обновлений ─────────────────────
